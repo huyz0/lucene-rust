@@ -24,7 +24,10 @@ pub mod phrase;
 
 pub use fields::{fields, ARGS_SUFFIX, MAX_TEMPLATE_BYTES, TEMPLATE_SUFFIX};
 pub use format::{decode_args, encode_args, join, split, Split, VARIABLE};
-pub use phrase::{pattern_phrase_query, PatternPhraseSource, PhraseTokens, Tokenizer};
+pub use phrase::{
+    pattern_phrase_query, pattern_positional_query, PatternPhraseSource, PhraseTokens, Positional,
+    Tokenizer,
+};
 
 /// What can go wrong reading a pattern-text value.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

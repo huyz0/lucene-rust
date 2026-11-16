@@ -157,6 +157,20 @@ final class NativeSelfTestExtended {
                 for (int q = 0; q < 40; q++) {
                     add(queries, shapes, "nested", nested(r));
                     add(queries, shapes, "span", roots(span(r, 0)));
+                    // A gap between two frequent words, at each slop.
+                    add(
+                        queries,
+                        shapes,
+                        "span",
+                        roots(
+                            SpanNearQuery.newOrderedNearQuery("body")
+                                .setSlop(q % 3)
+                                .addClause(new SpanTermQuery(new Term("body", WORDS[q % 3])))
+                                .addGap(q % 4)
+                                .addClause(new SpanTermQuery(new Term("body", WORDS[(q + 1) % 3])))
+                                .build()
+                        )
+                    );
                     add(queries, shapes, "intervals", roots(interval(r)));
                     add(queries, shapes, "combined_fields", roots(combined(r)));
                     add(queries, shapes, "function_score", roots(functionScore(r)));
@@ -226,12 +240,6 @@ final class NativeSelfTestExtended {
         }
         // The shapes left to Lucene fall back by name.
         Predicate<String> any = f -> true;
-        SpanNearQuery gap = SpanNearQuery.newOrderedNearQuery("body")
-            .addClause(new SpanTermQuery(new Term("body", "alpha")))
-            .addGap(1)
-            .addClause(new SpanTermQuery(new Term("body", "beta")))
-            .build();
-        check.accept("span_gap".equals(QueryEncoder.encode(gap, any).fallbackReason()), "a span_near with a gap falls back");
         Query minScore = new FunctionScoreQuery(MatchAllDocsQuery.INSTANCE, new WeightFactorFunction(2f), CombineFunction.MULTIPLY, 1f, Float.MAX_VALUE);
         check.accept("function_score_min_score".equals(QueryEncoder.encode(minScore, any).fallbackReason()), "a function_score min_score falls back");
     }
@@ -290,7 +298,22 @@ final class NativeSelfTestExtended {
         if (depth >= 2) {
             return spanTerm(r);
         }
-        return switch (r.nextInt(10)) {
+        return switch (r.nextInt(12)) {
+            case 10 -> {
+                SpanNearQuery.Builder b = SpanNearQuery.newOrderedNearQuery("body").setSlop(r.nextInt(3)).addClause(span(r, depth + 1));
+                if (r.nextBoolean()) {
+                    b.addGap(1 + r.nextInt(3));
+                }
+                b.addClause(span(r, depth + 1));
+                if (r.nextBoolean()) {
+                    b.addGap(r.nextInt(3));
+                    b.addClause(spanTerm(r));
+                }
+                yield b.build();
+            }
+            case 11 -> r.nextBoolean()
+                ? new SpanOrQuery(spanTerm(r), new org.opensearch.lucene.queries.SpanMatchNoDocsQuery("body", "no match"))
+                : new SpanNearQuery(new SpanQuery[] { spanTerm(r), new org.opensearch.lucene.queries.SpanMatchNoDocsQuery("body", "no match") }, 2, true);
             case 0 -> spanTerm(r);
             case 1 -> new SpanNearQuery(new SpanQuery[] { span(r, depth + 1), span(r, depth + 1) }, r.nextInt(4), r.nextBoolean());
             case 2 -> new SpanOrQuery(span(r, depth + 1), span(r, depth + 1));

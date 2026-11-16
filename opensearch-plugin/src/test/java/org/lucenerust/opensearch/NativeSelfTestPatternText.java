@@ -233,12 +233,8 @@ final class NativeSelfTestPatternText {
                                 Query q = PatternPhraseQuery.of("message", p, analyzer, slop == 0, parts);
                                 int got = searcher.count(q);
                                 check.accept(got == want, "pattern_text " + which + " [" + text + "]~" + slop + " parts=" + parts + ": " + got + " hits, positional " + want);
-                                if (slop == 0) {
-                                    queries.add(q);
-                                    queries.add(new BooleanQuery.Builder().add(q, Occur.MUST).add(new TermQuery(new Term("id", "7")), Occur.SHOULD).build());
-                                } else {
-                                    check.accept(QueryEncoder.encode(q, f -> true).blob() == null, "a phrase with slop runs in Java");
-                                }
+                                queries.add(q);
+                                queries.add(new BooleanQuery.Builder().add(q, Occur.MUST).add(new TermQuery(new Term("id", "7")), Occur.SHOULD).build());
                             }
                         }
                     }
@@ -254,6 +250,28 @@ final class NativeSelfTestPatternText {
                     int want = searcher.count(mpp.build());
                     check.accept(want > 0 && searcher.count(mq) == want, "pattern_text " + which + " stacked terms: " + searcher.count(mq) + " hits, positional " + want);
                     queries.add(mq);
+                    // A prefix on the last position (match_phrase_prefix), at two expansion limits.
+                    for (int max : new int[] { 50, 1 }) {
+                        for (int slop : new int[] { 0, 1 }) {
+                            org.opensearch.common.lucene.search.MultiPhrasePrefixQuery pp = new org.opensearch.common.lucene.search.MultiPhrasePrefixQuery("message");
+                            pp.setMaxExpansions(max);
+                            pp.setSlop(slop);
+                            pp.add(new Term("message", "connection"));
+                            pp.add(new Term("message", "c"));
+                            org.opensearch.common.lucene.search.MultiPhrasePrefixQuery pq = new org.opensearch.common.lucene.search.MultiPhrasePrefixQuery("positional");
+                            pq.setMaxExpansions(max);
+                            pq.setSlop(slop);
+                            pq.add(new Term("positional", "connection"));
+                            pq.add(new Term("positional", "c"));
+                            BooleanQuery.Builder approx = new BooleanQuery.Builder();
+                            approx.add(new TermQuery(new Term("message", "connection")), Occur.FILTER);
+                            approx.add(new org.apache.lucene.search.PrefixQuery(new Term("message", "c")), Occur.FILTER);
+                            Query pattern = new PatternPhraseQuery("message", approx.build(), pp, analyzer, null, null, true);
+                            int wantPrefix = searcher.count(pq);
+                            check.accept(max != 50 || searcher.count(pattern) == wantPrefix, "pattern_text " + which + " prefix max " + max + " slop " + slop + ": " + searcher.count(pattern) + " hits, positional " + wantPrefix);
+                            queries.add(pattern);
+                        }
+                    }
                     for (Query q : queries) {
                         QueryEncoder.Encoded enc = QueryEncoder.encode(q, f -> true);
                         check.accept(enc.blob() != null, "pattern_text phrase does not encode: " + q + " (" + enc.fallbackReason() + ")");
