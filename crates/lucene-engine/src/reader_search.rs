@@ -205,14 +205,10 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         }
         // A nested `half_float`, `scaled_float` or `unsigned_long` key is a `Float`, `Double`
         // or `Long` key whose child values are converted as they are read.
-        let nested_converted = flags & SORT_NESTED != 0
-            && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT | SORT_UNSIGNED_LONG);
-        if !nested_converted
-            && matches!(
-                ty,
-                SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG | SORT_SCALED_FLOAT
-            )
-        {
+        // Without a nested path, a `half_float` or `scaled_float` key is read the same way, so it
+        // skips with the field's points as any numeric key does.
+        let nested_converted = flags & SORT_NESTED != 0 && ty == SORT_UNSIGNED_LONG;
+        if !nested_converted && matches!(ty, SORT_SHARD_DOC | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             continue;
         }
@@ -288,7 +284,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let children = boolean_of(&decode_query(c.bytes()?)?);
             let max_children = c.i32()?;
             Some(Arc::new(NestedSort {
-                convert,
+                convert: convert.clone(),
                 parents,
                 children,
                 max_children,
@@ -302,6 +298,11 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             reverse: flags & SORT_REVERSE != 0,
             selector,
             missing,
+            convert: if nested.is_none() {
+                convert
+            } else {
+                lucene_search::top_field::ChildConvert::None
+            },
             nested,
             rewritten: None,
         });
@@ -554,6 +555,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     max_children,
                 })),
                 rewritten: None,
+                convert: lucene_search::top_field::ChildConvert::None,
             },
             false,
         ));

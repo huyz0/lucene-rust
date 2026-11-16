@@ -248,7 +248,7 @@ pub(crate) fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
                     .map_or(0, |i| i + 1)
             };
             let at = ((n - 1) / 2 + first) % n;
-            if n % 2 == 0 {
+            if n.is_multiple_of(2) {
                 let sum = values[at].wrapping_add(values[(at + 1) % n]);
                 (((sum as u64) >> 1) as i64).wrapping_add(sum & 1)
             } else {

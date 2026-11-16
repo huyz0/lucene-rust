@@ -577,7 +577,23 @@ pub enum ChildConvert {
     Unsigned,
 }
 
+// A `Geo` key's origins are finite and a scaling factor is finite and positive.
+impl Eq for ChildConvert {}
+
 impl ChildConvert {
+    /// One stored value as the key's, for a conversion that works value by value
+    /// (every one but [`ChildConvert::Geo`], which maps a document's values together).
+    #[inline]
+    fn apply_one(&self, v: i64) -> i64 {
+        match self {
+            ChildConvert::None | ChildConvert::Unsigned | ChildConvert::Geo(_) => v,
+            ChildConvert::ScaledFloat { inverse } => double_to_sortable_long(v as f64 * *inverse),
+            ChildConvert::HalfFloat => i64::from(float_to_sortable_int(
+                lucene_util::half_float::sortable_short_to_half_float(v as i16),
+            )),
+        }
+    }
+
     fn apply(&self, buf: &mut Vec<i64>) {
         match self {
             ChildConvert::None | ChildConvert::Unsigned => {}
@@ -631,6 +647,11 @@ pub struct SortField {
     pub nested: Option<Arc<NestedSort>>,
     /// A custom key's source once [`rewrite_sort`] rewrote it.
     pub rewritten: Option<RewrittenSource>,
+    /// How a key without a nested path reads its stored values: a `half_float` and a
+    /// `scaled_float` store something other than the numbers they sort by, and the key
+    /// skips with the field's points as a numeric one does ([`ChildConvert::None`] for
+    /// the others). A nested key converts its children with [`NestedSort::convert`].
+    pub convert: ChildConvert,
 }
 
 impl SortField {
@@ -654,6 +675,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -666,12 +688,17 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
     /// The width of the field's points, which `NumericComparator` insists
     /// match (`bytesCount`); `None` for the score and the document.
     fn point_bytes(&self) -> Option<usize> {
+        if self.convert == ChildConvert::HalfFloat && self.nested.is_none() {
+            // `HalfFloatPoint`: the sortable short.
+            return Some(2);
+        }
         match self.ty {
             SortType::Long | SortType::Double => Some(8),
             SortType::Int | SortType::Float => Some(4),
@@ -694,6 +721,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -707,6 +735,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -739,6 +768,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 }
@@ -828,6 +858,11 @@ fn sortable_bytes_to_long(b: &[u8]) -> i64 {
             let mut a = [0u8; 4];
             a.copy_from_slice(b);
             i64::from((u32::from_be_bytes(a) ^ 0x8000_0000) as i32)
+        }
+        2 => {
+            let mut a = [0u8; 2];
+            a.copy_from_slice(b);
+            i64::from((u16::from_be_bytes(a) ^ 0x8000) as i16)
         }
         _ => 0,
     }
@@ -1541,7 +1576,15 @@ fn sortable_int_to_float(v: i64) -> f32 {
 enum Column<'a> {
     Absent,
     Single(NumericReader<'a>),
-    Multi(SortedNumericReader<'a>, Vec<i64>, Selector, SortType),
+    Multi(
+        SortedNumericReader<'a>,
+        Vec<i64>,
+        Selector,
+        SortType,
+        ChildConvert,
+    ),
+    /// A single-valued column whose values are converted as they are read.
+    Converted(NumericReader<'a>, ChildConvert),
     /// The segment's decoded copy ([`SortColumn::Longs`]).
     Cached(Arc<SortColumn>),
     /// A root document's value from its children ([`NestedSort`]).
@@ -1553,10 +1596,17 @@ impl Column<'_> {
         Ok(match self {
             Column::Absent => None,
             Column::Single(r) => r.value(doc).map_err(crate::Error::from)?,
-            Column::Multi(r, buf, selector, ty) => {
+            Column::Multi(r, buf, selector, ty, convert) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
+                if *convert != ChildConvert::None {
+                    convert.apply(buf);
+                }
                 selector.pick(*ty, buf)
             }
+            Column::Converted(r, convert) => r
+                .value(doc)
+                .map_err(crate::Error::from)?
+                .map(|v| convert.apply_one(v)),
             Column::Cached(c) => cached_long(c, doc),
             Column::Nested(n) => Some(n.value(doc)?),
         })
@@ -2203,6 +2253,8 @@ struct Competitive<'a> {
     skipper: Option<&'a lucene_codecs::doc_values::DocValuesSkipIndex>,
     field_number: i32,
     bytes: usize,
+    /// The key a point's value converts to ([`SortField::convert`]).
+    convert: ChildConvert,
     point_doc_count: i32,
     max_doc: i32,
     leaf_top_set: bool,
@@ -2433,6 +2485,7 @@ impl Competitive<'_> {
         self.missing_range = Some(range);
         let max_doc = usize::try_from(self.max_doc).unwrap_or(0);
         let mut visitor = CompetitiveVisitor {
+            convert: self.convert.clone(),
             min: self.min_value,
             max: self.max_value,
             max_doc_visited: self.max_doc_visited,
@@ -2537,6 +2590,7 @@ impl Competitive<'_> {
         }
         let threshold = ((self.iterator_cost as u64) >> 3) as i64;
         let mut visitor = CompetitiveVisitor {
+            convert: self.convert.clone(),
             min: self.min_value,
             max: self.max_value,
             max_doc_visited: self.max_doc_visited,
@@ -2637,6 +2691,8 @@ impl Competitive<'_> {
 /// The `IntersectVisitor` `doUpdateCompetitiveIterator` builds: documents past
 /// `maxDocVisited` whose value is in `[min, max]`.
 struct CompetitiveVisitor {
+    /// How a point's value becomes the key it is compared as.
+    convert: ChildConvert,
     min: i64,
     max: i64,
     max_doc_visited: i32,
@@ -2655,6 +2711,16 @@ struct CompetitiveVisitor {
 }
 
 impl CompetitiveVisitor {
+    /// A point's stored value as the key it sorts by (monotone, so a cell's bounds
+    /// convert to the bounds of its keys).
+    #[inline]
+    fn key(&self, stored: i64) -> i64 {
+        match self.convert {
+            ChildConvert::None => stored,
+            _ => self.convert.apply_one(stored),
+        }
+    }
+
     #[inline]
     fn add(&mut self, doc: i32) {
         if !self.in_segment(doc) {
@@ -2703,8 +2769,10 @@ impl CompetitiveVisitor {
 
 impl IntersectVisitor for CompetitiveVisitor {
     fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
-        let min = sortable_bytes_to_long(min_packed);
-        let max = sortable_bytes_to_long(max_packed);
+        let (min, max) = (
+            self.key(sortable_bytes_to_long(min_packed)),
+            self.key(sortable_bytes_to_long(max_packed)),
+        );
         if min > self.max || max < self.min {
             Relation::CellOutsideQuery
         } else if min < self.min || max > self.max {
@@ -2769,7 +2837,7 @@ impl IntersectVisitor for CompetitiveVisitor {
         if doc_id <= self.max_doc_visited {
             return;
         }
-        let v = sortable_bytes_to_long(packed_value);
+        let v = self.key(sortable_bytes_to_long(packed_value));
         if v >= self.min && v <= self.max {
             self.add(doc_id);
         }
@@ -2913,14 +2981,15 @@ fn cache_longs<'a>(
 ) -> Result<Column<'a>> {
     let worth = match &column {
         Column::Single(r) => !r.has_dense_fast(),
-        Column::Multi(..) => true,
+        Column::Multi(..) | Column::Converted(..) => true,
         _ => false,
     };
     let Some(cache) = seg.cache.filter(|_| worth) else {
         return Ok(column);
     };
     let key = match &column {
-        Column::Multi(..) => format!("num\0{}\0{:?}", f.field, f.selector),
+        Column::Multi(..) => format!("num\0{}\0{:?}\0{:?}", f.field, f.selector, f.convert),
+        Column::Converted(..) => format!("num\0{}\0{:?}", f.field, f.convert),
         _ => format!("num\0{}", f.field),
     };
     let mut fresh = column.clone();
@@ -3577,6 +3646,7 @@ fn open_leaf<'a>(
                                         Vec::new(),
                                         f.selector,
                                         f.ty,
+                                        f.convert.clone(),
                                     ),
                                     WithValue::of(data, &e.numeric),
                                 )
@@ -3596,9 +3666,12 @@ fn open_leaf<'a>(
                         }
                     },
                 };
-                let column = match &f.nested {
-                    None => cache_longs(seg, f, column, max_doc)?,
-                    Some(n) => {
+                let column = match (&f.nested, column) {
+                    (None, Column::Single(r)) if f.convert != ChildConvert::None => {
+                        cache_longs(seg, f, Column::Converted(r, f.convert.clone()), max_doc)?
+                    }
+                    (None, column) => cache_longs(seg, f, column, max_doc)?,
+                    (Some(n), column) => {
                         let make = |values: Column<'a>| -> Result<NestedColumn<'a>> {
                             Ok(NestedColumn {
                                 values: match values {
@@ -3674,6 +3747,15 @@ fn open_leaf<'a>(
                     // A sum can pass every one of the values the points hold, so the
                     // points' range says nothing about it: such a key never skips.
                     _ if f.selector == Selector::Sum => None,
+                    // A converted key's average or median can lie between the values the points
+                    // hold, so only a least or a greatest value is found by them.
+                    _ if f.convert != ChildConvert::None
+                        && !matches!(f.selector, Selector::Min | Selector::Max) =>
+                    {
+                        None
+                    }
+                    // The skip index holds the stored values, not the keys they convert to.
+                    (_, None, Some(_)) if f.convert != ChildConvert::None => None,
                     (Pruning::None, _, _) | (_, _, None) => None,
                     // `buildCompetitiveDISIBuilder`: no points for the
                     // field, so its doc-values skip index, if it has one.
@@ -3687,6 +3769,7 @@ fn open_leaf<'a>(
                                         skipper: Some(index),
                                         field_number: info.number,
                                         bytes,
+                                        convert: f.convert.clone(),
                                         // `skipper.docCount()`.
                                         point_doc_count: index.doc_count,
                                         max_doc,
@@ -3732,6 +3815,7 @@ fn open_leaf<'a>(
                             skipper: None,
                             field_number: num,
                             bytes,
+                            convert: f.convert.clone(),
                             point_doc_count: pf.doc_count,
                             max_doc,
                             leaf_top_set: c.top_set,
@@ -5381,6 +5465,11 @@ mod tests {
     #[test]
     fn child_values_are_converted_before_they_are_picked() {
         let mut v = vec![-250i64, 0, 350];
+        assert_eq!(ChildConvert::HalfFloat.apply_one(0x3c00 ^ 0), {
+            let mut h = vec![0x3c00];
+            ChildConvert::HalfFloat.apply(&mut h);
+            h[0]
+        });
         ChildConvert::None.apply(&mut v);
         assert_eq!(v, [-250, 0, 350]);
         ChildConvert::ScaledFloat { inverse: 0.01 }.apply(&mut v);
@@ -5975,6 +6064,7 @@ mod tests {
         let key = SortField {
             nested: Some(nested.clone()),
             rewritten: None,
+            convert: ChildConvert::None,
             ..SortField::numeric("l", SortType::Long, false)
         };
         assert_eq!(key, key.clone());
@@ -6204,8 +6294,11 @@ mod tests {
         );
         assert_eq!(sortable_bytes_to_long(&[0x80, 0, 0, 5]), 5);
         assert_eq!(sortable_bytes_to_long(&[0x7f, 0xff, 0xff, 0xff]), -1);
+        // A half-float point: two bytes, the sign bit flipped.
+        assert_eq!(sortable_bytes_to_long(&[0x80, 5]), 5);
+        assert_eq!(sortable_bytes_to_long(&[0x7f, 0xff]), -1);
         assert_eq!(
-            sortable_bytes_to_long(&[1, 2]),
+            sortable_bytes_to_long(&[1, 2, 3]),
             0,
             "no other width is a sortable number"
         );
@@ -6253,6 +6346,7 @@ mod tests {
             skipper: None,
             field_number: 0,
             bytes: 8,
+            convert: ChildConvert::None,
             point_doc_count: 0,
             max_doc: 10,
             leaf_top_set: false,
@@ -6301,6 +6395,7 @@ mod tests {
     #[test]
     fn the_visitor_moves_to_a_bit_set_past_the_upgrade_size() {
         let mut v = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 10,
             max: 20,
             max_doc_visited: 2,
@@ -6331,6 +6426,7 @@ mod tests {
         // In bulk: below the floor dropped, the list kept until a run would
         // pass the upgrade size, then set directly.
         let mut v = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 0,
             max: 0,
             max_doc_visited: 4,
@@ -6355,6 +6451,7 @@ mod tests {
         v.visit(64);
         assert_eq!(v.corrupt, Some(64));
         let mut w = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 0,
             max: 0,
             max_doc_visited: -1,
@@ -6403,6 +6500,7 @@ mod tests {
             skipper: None,
             field_number,
             bytes: 8,
+            convert: ChildConvert::None,
             point_doc_count: max_doc,
             max_doc,
             leaf_top_set: false,
