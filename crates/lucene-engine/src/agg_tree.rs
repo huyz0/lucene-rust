@@ -1172,13 +1172,19 @@ pub fn aggregate_tree_blobs_cached(
         .global
         .as_ref()
         .is_some_and(|(_, g)| g.iter().any(AggNode::needs_scores));
+    let q = if min_score.is_some() || main_scores {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
     let mut norm_fields: Vec<String> = Vec::new();
     if min_score.is_some() || main_scores {
-        norm_fields.extend(
-            crate::clauses::clause_field_names(&q)
-                .into_iter()
-                .map(str::to_string),
-        );
+        norm_fields.extend(crate::clauses::norm_field_names(&q));
+    } else {
+        norm_fields.extend(crate::clauses::min_score_field_names(&q));
     }
     if let (true, Some(gq)) = (global_scores, global_query) {
         for f in crate::clauses::clause_field_names(gq) {

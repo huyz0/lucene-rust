@@ -187,7 +187,8 @@ fn point_range_query<'q>(query: &'q BooleanQuery, field: &str) -> Option<RangeBo
                 return Some(RangeBounds::Long(p.min, p.max));
             }
             Clause::Extended(e) => match &**e {
-                ExtendedQuery::FunctionScore(f) => &f.in_query,
+                // A `min_score` drops documents the wrapped query matches.
+                ExtendedQuery::FunctionScore(f) if f.min_score.is_none() => &f.in_query,
                 ExtendedQuery::IndexOrDocValues(q) => &q.index_query,
                 ExtendedQuery::PointRange(p) if p.field == field => {
                     return Some(RangeBounds::Packed(&p.lower, &p.upper));

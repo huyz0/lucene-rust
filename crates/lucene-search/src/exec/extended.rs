@@ -127,7 +127,8 @@ pub(crate) fn norms_cursor<'a>(
     ctx: &LeafContext<'a>,
     field: &str,
 ) -> Option<FieldNormsCursor<'a, 'a>> {
-    ctx.norms.and_then(|m| m.get(field)).map(|n| n.cursor())
+    // Norms that cannot be built score as a field without norms.
+    super::build::leaf_norms_cursor(ctx, field).ok().flatten()
 }
 
 fn pe(e: lucene_codecs::postings::Error) -> crate::Error {
@@ -896,7 +897,7 @@ fn synonym<'a>(
             members,
             boosts,
             scorer,
-            Norms::One(norms_cursor(ctx, &q.field)),
+            Norms::One(norms_cursor(ctx, &q.field).map(Box::new)),
             false,
         )
         .with_impacts(mode == Mode::TopScores),
@@ -952,7 +953,7 @@ fn merge_impacts(lists: &[Vec<Impact>]) -> Option<Vec<Impact>> {
 /// How a [`FreqSumScorer`] reads a document's norm.
 enum Norms<'a> {
     /// The field's own norm, `1` without one.
-    One(Option<FieldNormsCursor<'a, 'a>>),
+    One(Option<Box<FieldNormsCursor<'a, 'a>>>),
     /// `MultiNormsLeafSimScorer`: the weighted sum of every field's decoded
     /// length, re-encoded -- with [`DenseMemo`] when the fields allow it.
     Multi(
