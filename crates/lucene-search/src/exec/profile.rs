@@ -484,3 +484,120 @@ pub fn root<'a>(
 ) -> Result<Option<super::Bulk<'a>>> {
     Ok(super::build::build(ctx, clause, 1.0, mode, true)?.map(super::Bulk::scorer))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, TermQuery};
+
+    fn term(t: &str) -> Clause {
+        Clause::Term(TermQuery {
+            field: "f".into(),
+            term: t.as_bytes().to_vec(),
+            doc_freq: None,
+        })
+    }
+
+    #[test]
+    fn a_timer_times_every_call_at_first_then_samples() {
+        let mut t = Timer::default();
+        assert_eq!((t.count(), t.nanos(), t.earliest_start()), (0, 0, 0));
+        for _ in 0..300 {
+            t.start();
+            t.stop();
+        }
+        assert_eq!(t.count(), 300);
+        assert!(t.earliest_start() > 0);
+        assert!(t.nanos() > 0);
+        for _ in 0..5000 {
+            t.start();
+            t.stop();
+        }
+        assert_eq!(t.count(), 5300);
+        assert!(t.last_count <= t.count);
+    }
+
+    #[test]
+    fn the_clock_never_reads_zero_and_does_not_go_back() {
+        let a = clock();
+        let b = clock();
+        assert!(a > 0 && b >= a);
+    }
+
+    #[test]
+    fn kinds_are_the_variant_names() {
+        assert_eq!(kind_of(&term("a")), "Term");
+        let b = Clause::Boost(Box::new(BoostQuery::new(term("a"), 2.0)));
+        assert_eq!(kind_of(&b), "Boost");
+        let c = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(term("a"), 1.0)));
+        assert_eq!(kind_of(&c), "ConstantScore");
+    }
+
+    #[test]
+    fn children_follow_the_paths_steps() {
+        assert!(children(&term("a")).is_empty());
+        let dm = Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+            vec![term("a"), term("b")],
+            0.0,
+        )));
+        assert_eq!(children(&dm).len(), 2);
+        let cs = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(dm.clone(), 1.0)));
+        assert_eq!(children(&cs).len(), 1);
+        let boost = Clause::Boost(Box::new(BoostQuery::new(cs.clone(), 2.0)));
+        assert_eq!(children(&boost).len(), 1);
+        let paths = descendants(&boost);
+        // boost -> constant score (0) -> dismax (0.0) -> its two disjuncts (0.0.0, 0.0.1)
+        assert_eq!(paths.len(), 4);
+        let mut found: Vec<_> = paths.values().cloned().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![vec![0], vec![0, 0], vec![0, 0, 0], vec![0, 0, 1]]
+        );
+    }
+
+    #[test]
+    fn a_session_installs_per_thread_and_nests() {
+        assert!(!active());
+        let outer = Session::new();
+        let inner = Session::new();
+        {
+            let _a = Guard::install(&outer);
+            assert!(active());
+            {
+                let _b = Guard::install(&inner);
+                assert!(Rc::ptr_eq(&current().unwrap(), &inner));
+            }
+            assert!(Rc::ptr_eq(&current().unwrap(), &outer));
+        }
+        assert!(!active());
+        assert!(current().is_none());
+    }
+
+    #[test]
+    fn nothing_is_recorded_without_a_session() {
+        let clause = term("a");
+        let built = profiled(&clause, || Ok(None)).unwrap();
+        assert!(built.is_none());
+        let ran = unless_profiled(|| Ok(Some(7))).unwrap();
+        assert_eq!(ran, Some(7));
+    }
+
+    #[test]
+    fn a_profiled_build_records_the_root_and_hides_fused_shapes() {
+        let session = Session::new();
+        session.set_segment(3);
+        let _guard = Guard::install(&session);
+        let clause = term("a");
+        let built = profiled(&clause, || Ok(None)).unwrap();
+        assert!(built.is_none());
+        let none: Result<Option<i32>> = unless_profiled(|| Ok(Some(1)));
+        assert!(none.unwrap().is_none());
+        let report = session.report();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].segment, 3);
+        assert_eq!(report[0].kind, "Term");
+        assert!(report[0].path.is_empty());
+        assert_eq!(report[0].timers[Kind::BuildScorer as usize].count(), 1);
+    }
+}

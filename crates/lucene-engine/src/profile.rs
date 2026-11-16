@@ -15,6 +15,11 @@ pub const COLLECT_MATCHES: u8 = 0;
 /// The `n` best by score, counting under `track_total_hits`.
 pub const COLLECT_TOP_SCORES: u8 = 1;
 
+/// The timers each node of the answer carries, one per [`lucene_search::profile_search::Kind`].
+pub const TIMERS: usize = 8;
+const _: () =
+    assert!(lucene_search::profile_search::Kind::SetMinCompetitiveScore as usize + 1 == TIMERS);
+
 /// Runs the query of request blob `blob` over `h`'s segments with a timer around each clause.
 ///
 /// The answer, little-endian: `clock: u64` (the timers' clock when the run began), `total: u64`
@@ -77,7 +82,12 @@ pub fn profile_blob(
     let collecting = if collect == COLLECT_TOP_SCORES {
         lucene_search::profile_search::Collect::TopScores {
             top_n,
-            total_hits_threshold: u64::try_from(count_limit).unwrap_or(0),
+            // `Integer.MAX_VALUE` (or more) is `track_total_hits: true`: exact, scored as COMPLETE.
+            total_hits_threshold: if count_limit >= i64::from(i32::MAX) {
+                u64::MAX
+            } else {
+                u64::try_from(count_limit).unwrap_or(0)
+            },
         }
     } else {
         lucene_search::profile_search::Collect::Matches

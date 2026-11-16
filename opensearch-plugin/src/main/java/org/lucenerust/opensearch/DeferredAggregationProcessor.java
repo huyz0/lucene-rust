@@ -43,7 +43,8 @@ final class DeferredAggregationProcessor implements AggregationProcessor {
 
     @Override
     public void preProcess(SearchContext context) {
-        if (context.aggregations() == null) {
+        // A profiled search shows the aggregators, so they are built as OpenSearch builds them.
+        if (context.aggregations() == null || context.getProfilers() != null) {
             delegate.preProcess(context);
             return;
         }
