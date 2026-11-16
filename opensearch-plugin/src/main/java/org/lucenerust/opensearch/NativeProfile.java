@@ -203,6 +203,7 @@ final class NativeProfile {
             }
             return out;
         }
+        if (q instanceof org.lucenerust.opensearch.neural.query.HybridQuery h) return new ArrayList<>(h.getSubQueries());
         // BoostQuery.createWeight calls its query's, not the searcher's: no node of the query under it.
         if (q instanceof ConstantScoreQuery c) return List.of(c.getQuery());
         if (q instanceof DisjunctionMaxQuery d) {
@@ -243,6 +244,56 @@ final class NativeProfile {
             out[i] = q instanceof DisjunctionMaxQuery ? (i + 1) % out.length : i;
         }
         return out;
+    }
+
+    /**
+     * One report for a hybrid query: sub-query {@code i}'s nodes under step {@code i}, and a root
+     * (the hybrid scorer) that builds as slowly as its slowest sub-query and steps through every
+     * sub-query's documents. All starts are {@link System#nanoTime} readings.
+     */
+    static Report hybridReport(Query hybrid, List<Query> subs, List<Report> reports, long[] javaClocks) {
+        List<Node> nodes = new ArrayList<>();
+        Map<Integer, long[][]> roots = new HashMap<>();
+        long total = 0;
+        for (int i = 0; i < subs.size(); i++) {
+            Report r = reports.get(i);
+            total += r.total();
+            int[] root = rootPath(subs.get(i), r);
+            for (Node n : r.nodes()) {
+                if (n.path().length < root.length || java.util.Arrays.equals(n.path(), 0, root.length, root, 0, root.length) == false) {
+                    continue;
+                }
+                int[] path = new int[n.path().length - root.length + 1];
+                path[0] = i;
+                System.arraycopy(n.path(), root.length, path, 1, path.length - 1);
+                long[] starts = new long[TIMERS];
+                for (int t = 0; t < TIMERS; t++) {
+                    starts[t] = n.starts()[t] == 0 ? 0 : javaClocks[i] + (n.starts()[t] - r.clock());
+                }
+                nodes.add(new Node(n.segment(), path, n.kind(), n.nanos(), n.counts(), starts));
+                if (path.length == 1) {
+                    long[][] agg = roots.computeIfAbsent(n.segment(), k -> new long[3][TIMERS]);
+                    for (int t = 0; t < TIMERS; t++) {
+                        agg[0][t] = Math.max(agg[0][t], n.nanos()[t]);
+                        agg[1][t] += n.counts()[t];
+                        agg[2][t] = agg[2][t] == 0 ? starts[t] : starts[t] == 0 ? agg[2][t] : Math.min(agg[2][t], starts[t]);
+                    }
+                }
+            }
+        }
+        for (Map.Entry<Integer, long[][]> e : roots.entrySet()) {
+            long[][] agg = e.getValue();
+            long[] nanos = new long[TIMERS];
+            long[] counts = new long[TIMERS];
+            long[] starts = new long[TIMERS];
+            for (int t : new int[] { 0, 1 }) {
+                nanos[t] = agg[0][t];
+                counts[t] = t == 0 ? 1 : agg[1][t];
+                starts[t] = agg[2][t];
+            }
+            nodes.add(0, new Node(e.getKey(), new int[0], "Hybrid", nanos, counts, starts));
+        }
+        return new Report(0, total, nodes);
     }
 
     /** The native nodes by path, over every segment. */

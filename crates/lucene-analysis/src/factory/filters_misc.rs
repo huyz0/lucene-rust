@@ -893,7 +893,11 @@ impl FactoryClass for PatternCaptureGroupFilterFactory {
         let mut more = Vec::new();
         while args.get(&format!("pattern{}", more.len() + 1)).is_some() {
             let key = format!("pattern{}", more.len() + 1);
-            more.push(args::get_pattern(args, &key, "PatternCaptureGroupFilterFactory")?);
+            more.push(args::get_pattern(
+                args,
+                &key,
+                "PatternCaptureGroupFilterFactory",
+            )?);
         }
         let preserve_original = args
             .get("preserve_original")
