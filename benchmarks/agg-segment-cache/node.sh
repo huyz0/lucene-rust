@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# node.sh NAME IMAGE DATADIR [extra docker args]
+# node.sh NAME VARIANT DATADIR [LIB.so] [-e setting=value ...]
+# A node on port 9250 with a 4 GB heap (nodectl.py variant `plugin` or `stock-min`), optionally with
+# another native library than the zip's; waits until it answers.
 set -e
-docker rm -f "$1" >/dev/null 2>&1 || true
-docker run -d --name "$1" -p 9250:9200 -v "$3":/usr/share/opensearch/data "${@:4}" \
-  -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
-  -e cluster.routing.allocation.disk.threshold_enabled=false \
-  -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms4g -Xmx4g" "$2" >/dev/null
-for _ in $(seq 1 120); do curl -sf localhost:9250 >/dev/null && echo UP && exit 0; sleep 2; done
-docker logs --tail 50 "$1"; exit 1
+HERE=$(cd "$(dirname "$0")" && pwd)
+name=$1 variant=$2 data=$3; shift 3
+lib=()
+if [[ "${1:-}" == *.so ]]; then lib=(--lib "$1"); shift; fi
+args=()
+while [[ $# -gt 0 ]]; do
+  [[ "$1" == -e ]] && { args+=(--setting "$2"); shift 2; } || shift
+done
+python3 "$HERE/../../opensearch-plugin/e2e/nodectl.py" rm "$name" >/dev/null 2>&1 || true
+python3 "$HERE/../../opensearch-plugin/e2e/nodectl.py" run "$name" "$variant" 9250 --heap 4g --data "$data" \
+  ${lib[@]+"${lib[@]}"} ${args[@]+"${args[@]}"} >/dev/null && echo UP

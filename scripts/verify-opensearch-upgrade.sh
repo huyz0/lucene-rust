@@ -8,7 +8,7 @@
 #      (opensearch-plugin/e2e/verify_upgrade.py load).
 #   2. The node stops and its data directory is copied. OpenSearch 3.9.0 with
 #      this plugin opens the original in place (the in-place node upgrade); a
-#      stock 3.9.0 node, the same image without the plugin, opens the copy.
+#      stock 3.9.0 node, the same distribution without the plugin, opens the copy.
 #   3. verify_upgrade.py verify: every index opens with its Lucene 9.12
 #      segments, the plugin node answers every request of the matrix
 #      (verify_opensearch.py's, plus aggregations and vector requests) as the
@@ -21,12 +21,12 @@
 #      (verify_upgrade.py removed).
 #
 # Both 3.9.0 nodes keep the bundled k-NN plugin (the knn_vector mapping needs
-# it) and drop the rest, as the 2.19 node does; see opensearch-plugin/docker/.
+# it) and drop the rest, as the 2.19 node does; the nodes are plain processes
+# (opensearch-plugin/e2e/nodectl.py), no Docker.
 #
 #   scripts/verify-opensearch-upgrade.sh [--docs N] [--keep] [--no-build]
 #
-# Needs Docker, a JDK 25 and Gradle (the plugin build, as verify-opensearch.sh),
-# and cargo. Listens on localhost:${OS_PORT:-9240} (plugin), +2 (stock), +4 (2.x).
+# Needs a JDK 25 and Gradle (the plugin build, as verify-opensearch.sh), and cargo. Listens on localhost:${OS_PORT:-9240} (plugin), +2 (stock), +4 (2.x).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -46,100 +46,72 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-OLD_IMAGE="lucene-rust-upgrade-src:${OLD_VERSION}"
-PLUGIN_IMAGE="lucene-rust-opensearch-knn:${VERSION}"
-STOCK_IMAGE="lucene-rust-upgrade-stock:${VERSION}"
-VOL_OLD="${PREFIX}-data"
-VOL_STOCK="${PREFIX}-data-stock"
-VOL_SNAP="${PREFIX}-snap"
-CONTAINERS=("${PREFIX}-old" "${PREFIX}-plugin" "${PREFIX}-stock" "${PREFIX}-removed")
+nodectl() { python3 opensearch-plugin/e2e/nodectl.py "$@"; }
+# Every node keeps opensearch-knn and nothing else bundled, so the 2.x cluster state holds nothing
+# a 3.9.0 node lacks a plugin for.
+OLD_VARIANT=old-knn
+PLUGIN_VARIANT=plugin-knn
+STOCK_VARIANT=stock-knn
+NODES=("${PREFIX}-old" "${PREFIX}-plugin" "${PREFIX}-stock" "${PREFIX}-removed")
+WORK="$(mktemp -d)"
+VOL_OLD="$WORK/data"
+VOL_STOCK="$WORK/data-stock"
+VOL_SNAP="$WORK/snap"
+export UPGRADE_SNAP="$VOL_SNAP"
 
 cleanup() {
-    docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1 || true
-    docker volume rm "$VOL_OLD" "$VOL_STOCK" "$VOL_SNAP" >/dev/null 2>&1 || true
+    for n in "${NODES[@]}"; do nodectl rm "$n" >/dev/null 2>&1 || true; done
+    rm -rf "$WORK"
 }
 if [[ $KEEP == 0 ]]; then
     trap cleanup EXIT
 fi
-cleanup
 
 if [[ $BUILD == 1 ]]; then
     scripts/opensearch-dist.sh
     gradle --no-daemon -q -p opensearch-plugin bundlePlugin
-    rm -f opensearch-plugin/docker/*.zip
-    cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
 fi
-docker image inspect "opensearchproject/opensearch:${OLD_VERSION}" >/dev/null 2>&1 \
-    || docker pull -q "opensearchproject/opensearch:${OLD_VERSION}" >/dev/null
-docker image inspect alpine:3 >/dev/null 2>&1 || docker pull -q alpine:3 >/dev/null
-# Every node keeps opensearch-knn and nothing else bundled, so the 2.x
-# cluster state holds nothing a 3.9.0 node lacks a plugin for.
-keep_knn() { # base-image tag
-    printf 'FROM %s\nRUN cd /usr/share/opensearch/plugins && for p in *; do [ "$p" = opensearch-knn ] || rm -rf "$p"; done\n' "$1" \
-        | docker build -q -t "$2" - >/dev/null
-}
-keep_knn "opensearchproject/opensearch:${OLD_VERSION}" "$OLD_IMAGE"
-keep_knn "opensearchproject/opensearch:${VERSION}" "$STOCK_IMAGE"
-docker build -q --build-arg KEEP_PLUGINS="opensearch-knn opensearch-custom-codecs" -t "$PLUGIN_IMAGE" opensearch-plugin/docker >/dev/null
+nodectl dist "$OLD_VARIANT" --version "$OLD_VERSION" --keep opensearch-knn --no-store-key >/dev/null
+nodectl dist "$STOCK_VARIANT" --keep opensearch-knn --no-store-key >/dev/null
+mkdir -p "$VOL_OLD" "$VOL_STOCK" "$VOL_SNAP"
 
-for v in "$VOL_OLD" "$VOL_STOCK" "$VOL_SNAP"; do
-    docker volume create "$v" >/dev/null
-done
-# The images run as uid 1000; a fresh volume mounted where the image has no
-# directory is root's.
-docker run --rm -v "$VOL_SNAP:/snap" alpine:3 chown 1000:1000 /snap
-
-start_node() { # name port image data-volume
-    docker run -d --name "$1" -p "$2:9200" -v "$4:/usr/share/opensearch/data" \
-        -v "$VOL_SNAP:/usr/share/opensearch/snap" -e path.repo=/usr/share/opensearch/snap \
-        -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
-        -e cluster.routing.allocation.disk.threshold_enabled=false \
-        -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms1g -Xmx1g" \
-        "$3" >/dev/null
-}
-wait_http() { # port
-    for _ in $(seq 1 120); do curl -sf "localhost:$1" >/dev/null && return 0; sleep 2; done
-    echo "verify-opensearch-upgrade: nothing answers on port $1" >&2
-    return 1
+start_node() { # name port variant data-dir [version]; nodectl run waits until the node answers
+    nodectl run "$1" "$3" "$2" --data "$4" --setting path.repo="$VOL_SNAP" ${5:+--version "$5"} >/dev/null
 }
 
 echo "== OpenSearch ${OLD_VERSION}: index and snapshot"
-start_node "${PREFIX}-old" "$((PORT + 4))" "$OLD_IMAGE" "$VOL_OLD"
-wait_http "$((PORT + 4))"
+start_node "${PREFIX}-old" "$((PORT + 4))" "$OLD_VARIANT" "$VOL_OLD" "$OLD_VERSION"
 python3 opensearch-plugin/e2e/verify_upgrade.py load "http://localhost:$((PORT + 4))" "$DOCS"
-docker stop -t 60 "${PREFIX}-old" >/dev/null
-docker rm "${PREFIX}-old" >/dev/null
+nodectl stop "${PREFIX}-old"
+nodectl rm "${PREFIX}-old"
 
 # The stock node's copy: the same bytes, owners and modes.
-docker run --rm -v "$VOL_OLD:/from:ro" -v "$VOL_STOCK:/to" alpine:3 cp -a /from/. /to/
+cp -a "$VOL_OLD/." "$VOL_STOCK/"
 
 echo "== OpenSearch ${VERSION}: in-place upgrade (plugin) and a stock node on a copy"
-start_node "${PREFIX}-plugin" "$PORT" "$PLUGIN_IMAGE" "$VOL_OLD"
-start_node "${PREFIX}-stock" "$((PORT + 2))" "$STOCK_IMAGE" "$VOL_STOCK"
-wait_http "$PORT"
-wait_http "$((PORT + 2))"
+start_node "${PREFIX}-plugin" "$PORT" "$PLUGIN_VARIANT" "$VOL_OLD"
+start_node "${PREFIX}-stock" "$((PORT + 2))" "$STOCK_VARIANT" "$VOL_STOCK"
 
 status=0
 RECORD="$(mktemp)"
 UPGRADE_RECORD="$RECORD" python3 opensearch-plugin/e2e/verify_upgrade.py verify "http://localhost:$PORT" "http://localhost:$((PORT + 2))" || status=$?
-if docker logs "${PREFIX}-plugin" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
+if nodectl logs "${PREFIX}-plugin" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
     echo "verify-opensearch-upgrade: the plugin node's JVM crashed" >&2
     status=1
 fi
 # The only native refusals expected are the k-NN codec's (see verify_upgrade.py).
-if docker logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" >/dev/null; then
+if nodectl logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" >/dev/null; then
     echo "verify-opensearch-upgrade: a native reader open failed for something other than the k-NN codec:" >&2
-    docker logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" | head -5 >&2
+    nodectl logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" | head -5 >&2
     status=1
 fi
 
 # The plugin removed: a stock node opens the plugin node's data directory as it is.
 echo "== OpenSearch ${VERSION} without the plugin, on the plugin node's data"
-docker stop -t 60 "${PREFIX}-plugin" >/dev/null
-if [[ $KEEP == 1 ]]; then docker logs "${PREFIX}-plugin" > "${PREFIX}-plugin.log" 2>&1 || true; fi
-docker rm "${PREFIX}-plugin" >/dev/null
-start_node "${PREFIX}-removed" "$PORT" "$STOCK_IMAGE" "$VOL_OLD"
-wait_http "$PORT"
+nodectl stop "${PREFIX}-plugin"
+if [[ $KEEP == 1 ]]; then nodectl logs "${PREFIX}-plugin" > "${PREFIX}-plugin.log" 2>&1 || true; fi
+nodectl rm "${PREFIX}-plugin"
+start_node "${PREFIX}-removed" "$PORT" "$STOCK_VARIANT" "$VOL_OLD"
 python3 opensearch-plugin/e2e/verify_upgrade.py removed "http://localhost:$PORT" "$RECORD" || status=$?
 rm -f "$RECORD"
 exit $status

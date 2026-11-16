@@ -215,7 +215,7 @@ decode it, and is freed with the segment).
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
 | `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh`: an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.9.0 with this plugin, answered as a stock 3.9.0 node answers it, natively, before and after a force merge |
-| `docker/Dockerfile` | the test node: the pinned image, bundled plugins removed, this one installed |
+| `e2e/nodectl.py` | the test node: the pinned tarball distribution as a plain process, bundled plugins removed, this one installed (no Docker) |
 
 The Rust side is plain C ABI, unit-tested without a JVM:
 `crates/lucene-ffi/src/jvm_reader.rs` and `engine_writer.rs`, which the
