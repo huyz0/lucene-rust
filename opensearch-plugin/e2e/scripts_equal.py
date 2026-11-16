@@ -186,6 +186,14 @@ def shapes():
     s["expr histogram agg"] = {"size": 0, "aggs": {"a": {"histogram": {"script": ex("doc['l'].value"), "interval": 500}}}}
     s["expr terms_set"] = {"size": 30, "query": {"terms_set": {"tag": {"terms": ["t1", "t2", "t3"], "minimum_should_match_script": ex("1 + doc['l'].empty")}}}}
     s["expr min_score fs"] = {"size": 30, "query": {"function_score": {"query": body, "functions": [{"script_score": {"script": ex("doc['l'].value / 100")}}], "min_score": 20, "boost_mode": "replace"}}}
+    for name, src in [("score", "_score * 2 + doc['l'].value"), ("alone", "_score")]:
+        s["expr sort _score " + name] = {"size": 30, "query": body, "sort": [{"_script": {"type": "number", "script": ex(src), "order": "desc"}}, "_doc"]}
+    s["painless sort _score"] = {"size": 30, "query": body, "sort": [{"_script": {"type": "number", "script": {"source": "_score * 3 + (doc['l'].size() == 0 ? 0 : doc['l'].value)"}, "order": "asc"}}, "_doc"]}
+    for qn, qq in [("match_all", ma), ("term", {"term": {"tag": "t1"}}), ("fs", {"function_score": {"query": body, "functions": [{"weight": 5}]}}),
+                   ("bool", {"bool": {"must": [body], "should": [{"term": {"tag": "t1"}}]}}), ("const", {"constant_score": {"filter": {"term": {"tag": "t1"}}, "boost": 7}})]:
+        s["painless sort _score q " + qn] = {"size": 30, "query": qq, "sort": [{"_script": {"type": "number", "script": {"source": "_score * 10 + (doc['l'].size() == 0 ? 0 : doc['l'].value)"}, "order": "desc"}}, "_doc"]}
+        s["expr sort _score q " + qn] = {"size": 30, "query": qq, "sort": [{"_script": {"type": "number", "script": ex("_score * 10 + doc['l'].value"), "order": "desc"}}, "_doc"]}
+    s["painless sort _score hits"] = {"size": 30, "track_total_hits": True, "query": body, "sort": [{"_script": {"type": "number", "script": {"source": "_score"}, "order": "desc"}}], "track_scores": True}
     s["expr date year"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.year")}}}
     s["expr date method"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.getHourOfDay() + doc['dt'].date.dayOfWeek")}}}
     s["expr date short"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].getYear() + doc['dt'].getMonth()")}}}
