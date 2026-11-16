@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# One entry point for testing and benchmarking lucene-rust on a plain Linux box (a cloud VM, a CI
+# runner, WSL2): no Docker anywhere. OpenSearch nodes are tarball distributions started as
+# processes by opensearch-plugin/e2e/nodectl.py. docs/testing-without-docker.md is the strategy.
+#
+#   scripts/lr doctor                       what this box has and lacks
+#   scripts/lr build [--lib-only]           native library (dist profile) and the plugin zip
+#   scripts/lr test quick                   static checks + unit tests of the crates you changed (minutes, no node)
+#   scripts/lr test e2e                     quick + one real node: the query matrix, force merge, SIGKILL (~20 min)
+#   scripts/lr test full                    the gate + every node proof: YAML suites, engine, cluster, rollback, upgrade, k-NN
+#   scripts/lr test ci                      what the OpenSearch CI jobs run, in sequence (nothing outside this repo's runners)
+#   scripts/lr bench opensearch|realtime|tenants|memory|ab|knn|text|conc [args]
+#   scripts/lr corpus synthetic|loghub|bgl|taxi|marco ...
+#   scripts/lr node run|kill|start|stop|rm|logs|list ...   (nodectl.py)
+#
+# Environment: NODE_HOME (default ~/os-native: tarball, variants, node state and data), NATIVE_LIB
+# (a prebuilt liblucene_ffi.so; default target/dist/ then target/release/), CARGO_TARGET_DIR.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+ROOT="$PWD"
+NODECTL=(python3 opensearch-plugin/e2e/nodectl.py)
+
+say() { printf '\n== %s\n' "$*" >&2; }
+
+native_lib() {
+    local t="${CARGO_TARGET_DIR:-target}" c
+    for c in "${NATIVE_LIB:-}" "$t/dist/liblucene_ffi.so" "$t/release/liblucene_ffi.so"; do
+        [[ -n "$c" && -f "$c" ]] && { realpath "$c"; return 0; }
+    done
+    return 1
+}
+
+use_lib() { # exports the library for Gradle (cargoBuild is skipped when nativeLib is set)
+    local lib
+    if lib=$(native_lib); then export ORG_GRADLE_PROJECT_nativeLib="$lib"; fi
+}
+
+doctor() {
+    local ok=1 v
+    chk() { # name command [hint]
+        if v=$("${@:2}" 2>&1 | head -1); then printf '  %-12s %s\n' "$1" "$v"; else printf '  %-12s MISSING %s\n' "$1" "${3:-}"; ok=0; fi
+    }
+    echo "lucene-rust test environment ($(uname -sm), $(nproc) cores, $(free -g | awk '/Mem:/{print $2}') GB RAM)"
+    chk cargo cargo --version "(rustup: rust-toolchain.toml pins the version)"
+    chk java bash -c 'java -version 2>&1 | head -1' "(JDK 21 runs Gradle; the node tarball brings JDK 25)"
+    chk gradle bash -c 'gradle --version 2>&1 | grep -m1 Gradle' "(8.14.3)"
+    chk python3 python3 --version
+    chk taskset bash -c 'command -v taskset'
+    echo "  user         $(id -un) $([[ $(id -u) == 0 ]] && echo "(root: nodes run as ${NODE_USER:-osbench})")"
+    echo "  disk free    $(df -BG --output=avail "${NODE_HOME:-$HOME}" 2>/dev/null | tail -1 | tr -d ' ') under ${NODE_HOME:-$HOME/os-native} (a debug build needs ~40 GB, nodes ~2 GB)"
+    if [[ -x "${NODE_HOME:-$HOME/os-native}/stock/bin/opensearch" ]]; then echo "  tarball      cached"; else echo "  tarball      not downloaded yet (nodectl.py fetches it, 1.1 GB)"; fi
+    if lib=$(native_lib); then echo "  library      $lib"; else echo "  library      not built (scripts/lr build)"; fi
+    ls opensearch-plugin/build/distributions/lucene-rust-*.zip >/dev/null 2>&1 \
+        && echo "  plugin zip   $(ls opensearch-plugin/build/distributions/lucene-rust-*.zip)" || echo "  plugin zip   not built (scripts/lr build)"
+    [[ -f /sys/fs/cgroup/cgroup.controllers || -d /sys/fs/cgroup/memory ]] \
+        && echo "  cgroups      memory limits available (MEM_LIMIT, as root)" || echo "  cgroups      none: MEM_LIMIT is ignored"
+    command -v docker >/dev/null 2>&1 && echo "  docker       present, and not used by anything here"
+    [[ $ok == 1 ]]
+}
+
+build() {
+    local t="${CARGO_TARGET_DIR:-target}"
+    say "native library (dist profile, mimalloc)"
+    CARGO_INCREMENTAL=0 cargo build --profile dist -p lucene-ffi --features mimalloc
+    [[ "${1:-}" == --lib-only ]] && return 0
+    say "plugin zip"
+    scripts/opensearch-dist.sh
+    ORG_GRADLE_PROJECT_nativeLib="$ROOT/$t/dist/liblucene_ffi.so" gradle --no-daemon -q -p opensearch-plugin bundlePlugin
+}
+
+changed_crates() { # crate names touched since the merge base with origin/main; empty means "all"
+    local base files
+    base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
+    files=$( { git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+    if grep -qE '^(Cargo\.(toml|lock)|rust-toolchain\.toml|\.config/)' <<<"$files"; then return 0; fi
+    # a crate and every crate that depends on it would need cargo metadata; the crate itself is the quick check
+    grep -oE '^crates/[^/]+' <<<"$files" | sort -u | sed 's|crates/||'
+}
+
+static_checks() { # every check runs; the failures are listed at the end
+    say "static checks"
+    local s failed=()
+    for s in check-arith-allows check-port-invariants test-bench-micro-report check-parity check-wire-constants \
+        check-dev-notes test-benchhttp test-nodectl; do
+        python3 "scripts/$s.py" || failed+=("$s")
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        echo "static checks failed: ${failed[*]}" >&2
+        return 1
+    fi
+}
+
+unit_tests() { # all, or the changed crates
+    local crates args=() c runner=(cargo test)
+    command -v cargo-nextest >/dev/null 2>&1 && runner=(cargo nextest run)
+    crates=$(changed_crates)
+    export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0
+    if [[ -z "$crates" || "${1:-}" == --all ]]; then
+        say "unit tests: whole workspace"
+        "${runner[@]}" --workspace
+    else
+        for c in $crates; do args+=(-p "$c"); done
+        say "unit tests: ${crates//$'\n'/ }"
+        "${runner[@]}" "${args[@]}"
+    fi
+}
+
+node_proofs() { # tier
+    use_lib
+    local tier=$1
+    case "$tier" in
+        e2e)
+            scripts/verify-opensearch.sh --docs 20000 ;;
+        ci)
+            scripts/verify-opensearch.sh --docs 20000 --yaml
+            scripts/verify-opensearch.sh --engine --yaml
+            scripts/verify-opensearch-cluster.sh --no-build
+            scripts/verify-opensearch-upgrade.sh
+            python3 scripts/check-knn-plugin.py
+            python3 scripts/check-knn-upgrade.py
+            python3 scripts/check-knn-rest.py
+            python3 scripts/check-hybrid.py
+            python3 scripts/check-neural-plugin.py ;;
+        full)
+            scripts/verify-opensearch.sh --docs 100000 --yaml
+            scripts/verify-opensearch.sh --engine --yaml
+            scripts/verify-opensearch-cluster.sh --no-build
+            scripts/verify-rollback.sh --docs 20000 --no-build
+            scripts/verify-opensearch-upgrade.sh --no-build
+            python3 scripts/check-knn-plugin.py
+            python3 scripts/check-knn-upgrade.py
+            python3 scripts/check-knn-rest.py
+            python3 scripts/check-hybrid.py
+            python3 scripts/check-neural-plugin.py
+            python3 scripts/check-sparse-plugin.py
+            python3 scripts/check-pattern-text-plugin.py ;;
+    esac
+}
+
+test_tier() {
+    case "${1:-quick}" in
+        quick) static_checks; unit_tests ;;
+        e2e) static_checks; unit_tests; node_proofs e2e ;;
+        ci) node_proofs ci ;;
+        full) scripts/gate.sh; node_proofs full ;;
+        *) echo "scripts/lr test quick|e2e|full|ci" >&2; exit 2 ;;
+    esac
+}
+
+bench() {
+    local what=${1:-}; shift || true
+    use_lib
+    case "$what" in
+        opensearch) scripts/bench-opensearch.sh "$@" ;;
+        realtime) scripts/bench-realtime.sh "$@" ;;
+        tenants) scripts/bench-tenants.sh "$@" ;;
+        memory) scripts/bench-memory-bounds.sh "$@" ;;
+        # alternating A/B of builds against stock on a prepared corpus: CORPUS=... BUILDS="main=a.so,new=b.so" scripts/lr bench ab
+        ab) benchmarks/native-node/ab.sh "$@" ;;
+        knn) MODE=knn benchmarks/native-node/ab.sh "$@" ;;
+        text) benchmarks/native-node/text-ab.sh "$@" ;;
+        conc) benchmarks/native-node/cc.sh "$@" ;;
+        *) echo "scripts/lr bench opensearch|realtime|tenants|memory|ab|knn|text|conc  (docs/testing-without-docker.md lists the knobs)" >&2; exit 2 ;;
+    esac
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+    doctor) doctor ;;
+    build) build "$@" ;;
+    test) test_tier "$@" ;;
+    bench) bench "$@" ;;
+    corpus) python3 -I benchmarks/corpus/fetch.py "$@" ;;
+    node) "${NODECTL[@]}" "$@" ;;
+    *) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

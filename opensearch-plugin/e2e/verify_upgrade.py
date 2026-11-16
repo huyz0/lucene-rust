@@ -49,6 +49,8 @@ import verify_opensearch as vo  # noqa: E402
 
 OLD_LUCENE = "9.12."
 NEW_LUCENE = "10.5."
+# The snapshot repository directory (the nodes' path.repo), set by scripts/verify-opensearch-upgrade.sh.
+SNAP_DIR = os.environ.get("UPGRADE_SNAP", "/usr/share/opensearch/snap")
 REPO = "upgrade_repo"
 SNAPSHOT = "from-2x"
 DIM = 8
@@ -114,7 +116,7 @@ def load(base, docs):
     vo.load_nested("nest", 1500, 31)
     create_knn()
     add_vectors("knn", 1000, 41)
-    vo.req("PUT", f"/_snapshot/{REPO}", {"type": "fs", "settings": {"location": "/usr/share/opensearch/snap"}})
+    vo.req("PUT", f"/_snapshot/{REPO}", {"type": "fs", "settings": {"location": SNAP_DIR}})
     snap = vo.req("PUT", f"/_snapshot/{REPO}/{SNAPSHOT}?wait_for_completion=true",
                   {"indices": ",".join(INDICES), "include_global_state": False})
     vo.check(snap["snapshot"]["state"] == "SUCCESS", f"snapshot on 2.x: {snap['snapshot']['state']}")
@@ -289,7 +291,7 @@ def verify(plugin, stock):
     # The 2.x snapshot, restored next to the in-place copy on both nodes.
     for base in (plugin, stock):
         on(base)
-        vo.req("PUT", f"/_snapshot/{REPO}", {"type": "fs", "settings": {"location": "/usr/share/opensearch/snap"}})
+        vo.req("PUT", f"/_snapshot/{REPO}", {"type": "fs", "settings": {"location": SNAP_DIR}})
         vo.req("POST", f"/_snapshot/{REPO}/{SNAPSHOT}/_restore?wait_for_completion=true",
                {"indices": ",".join(INDICES), "rename_pattern": "(.+)", "rename_replacement": "restored_$1",
                 "include_global_state": False})

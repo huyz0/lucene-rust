@@ -22,7 +22,7 @@ against it, so it is real memory pressure. `NODE_CPUS`, `HEAP`, `PORT`, `NODE_AR
 What the script handles: OpenSearch refuses to run as root (a `osbench` user is created);
 the bundled JDK 25 is used (`JAVA_HOME` and the sandbox's `JAVA_TOOL_OPTIONS` are unset for the
 node); bundled plugins other than `opensearch-custom-codecs` are removed from the plugin node, as
-in `opensearch-plugin/docker/Dockerfile` (neural-search's query phase searcher conflicts); the
+in `opensearch-plugin/e2e/nodectl.py`, variant `plugin` (neural-search's query phase searcher conflicts); the
 library inside the zip must be named `liblucene_ffi.so` (`NATIVE_LIB` copies it under that name);
 `bench_nodes.py run` takes `native` as its CONTAINER argument to read the node's RSS with `ps`.
 
