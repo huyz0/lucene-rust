@@ -299,8 +299,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
             if (reason == null) {
-                blob = similarities.prefix(blob);
-                hitsBlob = similarities.prefix(hitsBlob);
+                boolean sameBlob = blob == hitsBlob;
+                blob = NativeDfs.prefix(searcher, similarities.prefix(blob));
+                hitsBlob = sameBlob ? blob : NativeDfs.prefix(searcher, similarities.prefix(hitsBlob));
             }
         }
         // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
@@ -810,8 +811,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // differently from the native pass (ascending); stay on OpenSearch's.
         if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
         // dfs_query_then_fetch scores with statistics aggregated across shards
-        // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
+        // (ContextIndexSearcher.setAggregatedDfs), which NativeDfs hands the native statistics pass.
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return "dfs";
         // Another plugin may replace the top-docs collector (QueryPhase's own first question).
         try {
             if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(

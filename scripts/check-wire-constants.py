@@ -90,6 +90,7 @@ RENAMES = {
     ("NativeDocValues.java", "NONE"): ("fetch.rs", "DV_NONE"),
     ("NativeDocValues.java", "SORTED_NUMERIC"): ("fetch.rs", "DV_SORTED_NUMERIC"),
     ("NativeDocValues.java", "SORTED_SET"): ("fetch.rs", "DV_SORTED_SET"),
+    ("NativeDfs.java", "QUERY_DFS"): ("similarity.rs", "QUERY_DFS"),
     ("SortEncoder.java", "MAX_KEYS"): ("reader_search.rs", "MAX_SORT_KEYS"),
     ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("reader_search.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("reader_search.rs", "SORT_GEO_DISTANCE"),
