@@ -384,24 +384,14 @@ public final class AnalyzerSpec {
 
         /**
          * A word list argument: the set's words as an inline resource, and its {@code ignoreCase}.
-         * Null when a word cannot survive {@code getWordSet}'s line format.
          */
         String words(String key, CharArraySet set, String ignoreCaseKey) {
-            StringBuilder sb = new StringBuilder();
+            List<String> all = new ArrayList<>();
             for (Object o : set) {
-                String word = new String((char[]) o);
-                if (word.isEmpty()
-                    || word.startsWith("#")
-                    || word.indexOf('\n') >= 0
-                    || word.indexOf('\r') >= 0
-                    || word.charAt(0) <= ' '
-                    || word.charAt(word.length() - 1) <= ' '
-                    || word.startsWith("\uFEFF")) {
-                    return "analysis_words";
-                }
-                sb.append(word).append('\n');
+                all.add(new String((char[]) o));
             }
-            arg(key, writer.resource(sb.toString()));
+            String text = lines(all);
+            arg(key, writer.resource(text));
             if (ignoreCaseKey != null) {
                 arg(ignoreCaseKey, flag(ignoreCase(set)));
             }
@@ -490,17 +480,28 @@ public final class AnalyzerSpec {
     }
 
     /**
-     * Words one per line, as {@code getWordSet} reads them back; null when one cannot survive that
-     * format (empty, a comment, a line break, or edge whitespace).
+     * Words one per line, as {@code getWordSet} reads them back. When one cannot survive that
+     * format (empty, a comment, a line break, or edge whitespace) the whole list is written in the
+     * native exact format instead: a marker line, then each word with {@code %}, line feed and
+     * carriage return escaped, taken as written.
      */
     private static String lines(Collection<String> words) {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder plain = new StringBuilder();
+        boolean exact = false;
         for (String t : words) {
-            if (t.isEmpty() || t.startsWith("#") || t.startsWith("﻿") || t.indexOf('\n') >= 0 || t.indexOf('\r') >= 0
+            if (t.isEmpty() || t.startsWith("#") || t.startsWith("\uFEFF") || t.indexOf('\n') >= 0 || t.indexOf('\r') >= 0
                 || t.charAt(0) <= ' ' || t.charAt(t.length() - 1) <= ' ') {
-                return null;
+                exact = true;
+                break;
             }
-            sb.append(t).append('\n');
+            plain.append(t).append('\n');
+        }
+        if (exact == false) {
+            return plain.toString();
+        }
+        StringBuilder sb = new StringBuilder("\u0001exact\n");
+        for (String t : words) {
+            sb.append(t.replace("%", "%25").replace("\n", "%0A").replace("\r", "%0D")).append('\n');
         }
         return sb.toString();
     }
@@ -1119,7 +1120,6 @@ public final class AnalyzerSpec {
         map("core.TypeTokenFilter", (o, c) -> {
             @SuppressWarnings("unchecked")
             String types = lines((Set<String>) read(o, "stopTypes"));
-            if (types == null) return "analysis_words";
             c.name = "type";
             c.arg("types", c.writer.resource(types)).arg("useWhitelist", flag(readBool(o, "useWhiteList")));
             return null;
@@ -1370,7 +1370,6 @@ public final class AnalyzerSpec {
         map("ja.JapanesePartOfSpeechStopFilter", (o, c) -> {
             @SuppressWarnings("unchecked")
             String tags = lines((Set<String>) read(o, "stopTags"));
-            if (tags == null) return "analysis_words";
             c.name = "japanesePartOfSpeechStop";
             c.arg("tags", c.writer.resource(tags));
             return null;
@@ -1417,9 +1416,9 @@ public final class AnalyzerSpec {
         });
         map("ko.KoreanPartOfSpeechStopFilter", (o, c) -> {
             Set<?> tags = (Set<?>) read(o, "stopTags");
-            // An empty argument means the default tags, not none.
-            if (tags.isEmpty()) return "analysis_korean_tags";
+            // An empty argument means the default tags, so none is spelled "-".
             StringJoiner names = new StringJoiner(",");
+            if (tags.isEmpty()) names.add("-");
             for (Object t : tags) {
                 names.add(((Enum<?>) t).name());
             }
