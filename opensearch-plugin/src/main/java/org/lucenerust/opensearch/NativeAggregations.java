@@ -208,13 +208,13 @@ public final class NativeAggregations {
      * The native aggregations of a search, or null when some aggregation must run on Lucene:
      * {@code entries} in the request's order, each a {@link Metric} or a {@link Terms}.
      */
-    public record Plan(List<Object> entries) {
-        List<Metric> metrics() {
-            return entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList();
-        }
-
-        List<Terms> terms() {
-            return entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList();
+    public record Plan(List<Object> entries, List<Metric> metrics, List<Terms> terms) {
+        Plan(List<Object> entries) {
+            this(
+                entries,
+                entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList(),
+                entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList()
+            );
         }
 
         /**
