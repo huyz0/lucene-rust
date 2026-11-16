@@ -92,6 +92,9 @@ pub const SORT_MODE_MEDIAN: u8 = 12;
 /// root filter and the inner query (query blobs, `len: i32` each) and
 /// `max_children: i32`.
 pub const SORT_NESTED: u8 = 16;
+/// Key flag on a keyword key ([`SORT_STRING`]): the field has no doc values, its terms are
+/// read back from the postings (`_id`).
+pub const SORT_UNINVERTED: u8 = 32;
 /// Sort-blob options: track the max score over every match.
 pub const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// Sort-blob options: `terminate_after`, its count (`i32`, at least 1)
@@ -186,7 +189,11 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
     let mut keys = Vec::new();
     for _ in 0..n {
         let ty = c.u8()?;
-        let flags = c.u8()?;
+        let mut flags = c.u8()?;
+        let uninverted = ty == SORT_STRING && flags & SORT_UNINVERTED != 0;
+        if uninverted {
+            flags &= !SORT_UNINVERTED;
+        }
         if flags & !(SORT_REVERSE | SORT_MAX | SORT_MODE_MASK | SORT_NESTED) != 0 {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
@@ -305,6 +312,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             },
             nested,
             rewritten: None,
+            uninverted,
         });
     }
     let after = match c.u8()? {
@@ -556,6 +564,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                 })),
                 rewritten: None,
                 convert: lucene_search::top_field::ChildConvert::None,
+                uninverted: false,
             },
             false,
         ));
