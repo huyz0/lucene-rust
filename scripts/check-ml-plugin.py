@@ -117,6 +117,14 @@ class Node:
 JAVA_EXTRA, MOUNT_EXTRA = "", ()
 
 
+def proxy_opts():
+    """KEEP_JAVA_TOOL_OPTIONS=1: the -D flags (HTTPS proxy, truststore) of this shell's JAVA_TOOL_OPTIONS
+    for the node, so DJL can download libtorch where egress goes through a TLS-intercepting proxy."""
+    if not os.environ.get("KEEP_JAVA_TOOL_OPTIONS"):
+        return []
+    return [o for o in os.environ.get("JAVA_TOOL_OPTIONS", "").split() if o.startswith("-D") and "|" not in o]
+
+
 def start(name, port, image, env=(), mounts=()):
     """Start node NAME on a nodectl variant (`plugin`, or `stock`). A mount `host:container[:ro]`
     of the old container run is a path now: its container path in env and JVM flags becomes the host's."""
@@ -130,7 +138,7 @@ def start(name, port, image, env=(), mounts=()):
     nodectl.run(name, image, port, transport=port + 100, heap="1g",
                 settings=[e for e in env if "." in e.split("=")[0]],
                 env=[e for e in env if "." not in e.split("=")[0]],
-                java_opts=real(JAVA_EXTRA).split(), keep_java_tool_options=False, wait=False)
+                java_opts=real(JAVA_EXTRA).split() + proxy_opts(), wait=False)
 
 
 def wait(node):

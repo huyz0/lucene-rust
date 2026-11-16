@@ -1218,7 +1218,7 @@ public final class NativeAggregationTree {
                 // The documents with no doc value in the field: a one-bucket filter over "field does
                 // not exist", read from the same doc values the aggregator reads.
                 ValuesSourceConfig mc = (ValuesSourceConfig) CONFIG.get(f);
-                if (mc == null || mc.script() != null
+                if (mc == null || mc.script() != null || mc.missing() != null
                     || agg.getClass().getName().equals(AGGS + "bucket.missing.MissingAggregator") == false) {
                     return null;
                 }

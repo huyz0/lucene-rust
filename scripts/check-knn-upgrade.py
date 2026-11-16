@@ -121,14 +121,14 @@ def write(prefix, rust, plugin=True):
 
 
 def snapshot(name, indices):
-    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": "/usr/share/opensearch/repo"}})
+    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": REPO}})
     r = ck.req(NODE[1], "PUT", f"/_snapshot/repo/{name}?wait_for_completion=true",
                {"indices": ",".join(indices), "include_global_state": False}, timeout=600)
     assert r["snapshot"]["state"] == "SUCCESS", json.dumps(r)[:500]
 
 
 def restore(name, failures, settings=None):
-    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": "/usr/share/opensearch/repo"}})
+    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": REPO}})
     body = {"rename_pattern": "(.+)", "rename_replacement": "restored-$1", "include_global_state": False}
     if settings:
         body["index_settings"] = settings
