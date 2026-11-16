@@ -251,7 +251,7 @@ public class HybridSearchCollectorResultUtil {
 
     private boolean shouldRescore() {
         List<RescoreContext> rescoreContexts = hybridSearchCollectorResultsDTO.getRescoreContexts();
-        return CollectionUtils.isEmpty(rescoreContexts) == false;
+        return CollectionUtils.isEmpty(rescoreContexts) == false && hybridSearchCollectorResultsDTO.isRescoredNatively() == false;
     }
 
     private List<TopDocs> rescore(List<TopDocs> topDocs) {

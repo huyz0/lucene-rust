@@ -136,6 +136,124 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
     })
 }
 
+/// Opens a view of the reader `base` names: its segments, each hiding the fields the `hidden`
+/// blob lists for it, and masked with these live docs -- what a search sees through a reader
+/// wrapper that filters fields and documents (the security plugin's field- and document-level
+/// security). Nothing is read from disk. `base` stays open and independent: closing either leaves
+/// the other searchable.
+///
+/// `hidden` holds, for each of the `segment_count` segments in order, a little-endian `u32` count
+/// of names, then each name as a little-endian `u32` byte length and its UTF-8 bytes; a name the
+/// segment has no field for is ignored. `expected_max_docs`, `live_words` and `live_word_counts`
+/// are [`ffi_open_jvm_reader`]'s.
+///
+/// # Safety
+/// `hidden` must be valid for `hidden_len` bytes, `expected_max_docs` and (when non-null)
+/// `live_word_counts` for `segment_count` elements each, `live_words` for the sum of
+/// `live_word_counts` `u64`s, and `out_handle` for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_open_jvm_reader_view(
+    base: u64,
+    hidden: *const u8,
+    hidden_len: usize,
+    expected_max_docs: *const i32,
+    segment_count: usize,
+    live_words: *const u64,
+    live_word_counts: *const usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() || (expected_max_docs.is_null() && segment_count > 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let hidden_bytes = unsafe { bytes_from_raw(hidden, hidden_len)? };
+        let hidden_sets = parse_hidden_fields(hidden_bytes, segment_count)?;
+        let (expected, counts): (&[i32], Option<&[usize]>) = if segment_count == 0 {
+            (&[], None)
+        } else {
+            // SAFETY: caller contract, non-null checked above / here.
+            unsafe {
+                (
+                    std::slice::from_raw_parts(expected_max_docs, segment_count),
+                    (!live_word_counts.is_null())
+                        .then(|| std::slice::from_raw_parts(live_word_counts, segment_count)),
+                )
+            }
+        };
+        let total_words = counts
+            .unwrap_or(&[])
+            .iter()
+            .try_fold(0usize, |acc, &c| acc.checked_add(c))
+            .ok_or_else(|| {
+                set_last_error("live-docs word counts overflow");
+                FfiStatus::InvalidArgument
+            })?;
+        if total_words > 0 && live_words.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let words: &[u64] = if total_words == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract: `live_words` holds the sum of the counts.
+            unsafe { std::slice::from_raw_parts(live_words, total_words) }
+        };
+        let base = lookup(
+            base,
+            "ffi_open_jvm_reader_view: unknown or already-closed base handle",
+        )?;
+        let opened =
+            lucene_engine::reader_handle::open_view(&base, &hidden_sets, expected, counts, words)?;
+        let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(opened))?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// [`ffi_open_jvm_reader_view`]'s `hidden` blob: per segment, the names of its hidden fields.
+fn parse_hidden_fields(
+    bytes: &[u8],
+    segment_count: usize,
+) -> Result<Vec<std::collections::HashSet<String>>, FfiStatus> {
+    fn bad(what: &str) -> FfiStatus {
+        set_last_error(format!("the hidden-fields blob is malformed: {what}"));
+        FfiStatus::InvalidArgument
+    }
+    fn u32_at(bytes: &[u8], at: &mut usize) -> Result<usize, FfiStatus> {
+        let end = at.checked_add(4).ok_or_else(|| bad("offset"))?;
+        let raw: [u8; 4] = bytes
+            .get(*at..end)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| bad("truncated"))?;
+        *at = end;
+        usize::try_from(u32::from_le_bytes(raw)).map_err(|_| bad("length"))
+    }
+    let mut at = 0usize;
+    let mut sets = Vec::new();
+    for _ in 0..segment_count {
+        let n = u32_at(bytes, &mut at)?;
+        let mut set = std::collections::HashSet::new();
+        for _ in 0..n {
+            let len = u32_at(bytes, &mut at)?;
+            let end = at.checked_add(len).ok_or_else(|| bad("name length"))?;
+            let name = bytes.get(at..end).ok_or_else(|| bad("truncated name"))?;
+            set.insert(
+                std::str::from_utf8(name)
+                    .map_err(|_| bad("a name that is not UTF-8"))?
+                    .to_owned(),
+            );
+            at = end;
+        }
+        sets.push(set);
+    }
+    if at != bytes.len() {
+        return Err(bad("bytes after the last segment"));
+    }
+    Ok(sets)
+}
+
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
@@ -1191,6 +1309,10 @@ pub(crate) mod tests {
 
     /// A hybrid blob over `subs` keeping `top_n`, with `slices` (none = one).
     fn hybrid_blob(subs: &[Vec<u8>], top_n: i32, slices: &[&[i32]]) -> Vec<u8> {
+        hybrid_blob_flags(subs, top_n, slices, 0)
+    }
+
+    fn hybrid_blob_flags(subs: &[Vec<u8>], top_n: i32, slices: &[&[i32]], flags: u8) -> Vec<u8> {
         let mut b = vec![subs.len() as u8];
         for q in subs {
             b.extend_from_slice(&(q.len() as i32).to_le_bytes());
@@ -1204,6 +1326,7 @@ pub(crate) mod tests {
                 b.extend_from_slice(&s.to_le_bytes());
             }
         }
+        b.push(flags);
         b
     }
 
@@ -1218,6 +1341,7 @@ pub(crate) mod tests {
         let mut res = Vec::new();
         for _ in 0..slices {
             let total = c.i64().unwrap();
+            c.i32().unwrap();
             let mut per = Vec::new();
             for _ in 0..subs {
                 let n = c.i32().unwrap();
@@ -1249,7 +1373,7 @@ pub(crate) mod tests {
             vec![sd(2, 0.0)],
         ];
         let mut c = HybridCollector::new(2, 1);
-        c.segment(&scored, 10);
+        c.segment(&scored, 10, None, None);
         // Window 0: docs 0 and 1 (threshold 0), 1 pushes 0 out (threshold
         // 1.0). Window 1: 4096 and 4097 beat 1.0, 4098 does not.
         assert_eq!(c.total, 4);
@@ -1264,8 +1388,8 @@ pub(crate) mod tests {
         assert!(c.queues[0].heap.is_empty());
         // The next segment starts from threshold 0 again, the queue kept.
         let mut c = HybridCollector::new(1, 1);
-        c.segment(&[vec![sd(0, 5.0)]], 0);
-        c.segment(&[vec![sd(0, 1.0)]], 1);
+        c.segment(&[vec![sd(0, 5.0)]], 0, None, None);
+        c.segment(&[vec![sd(0, 1.0)]], 1, None, None);
         assert_eq!(c.total, 2);
         let hits = c.queues.remove(0).into_sorted();
         assert_eq!((hits[0].doc, hits[0].score), (0, 5.0));
@@ -1306,12 +1430,12 @@ pub(crate) mod tests {
             assert_eq!(&got, want);
         }
         assert!(two[0].1.iter().flatten().all(|&(d, _)| d >= 4));
-        // Refused: no sub-query, no hits kept, a segment in two slices,
+        // Refused: no sub-query, a segment in two slices, an unknown flag,
         // trailing bytes.
         for bad in [
             hybrid_blob(&[], 2, &[]),
-            hybrid_blob(&subs, 0, &[]),
             hybrid_blob(&subs, 2, &[&[0], &[0, 1]]),
+            hybrid_blob_flags(&subs, 2, &[], 0x80),
             [hybrid_blob(&subs, 2, &[]), vec![0]].concat(),
         ] {
             assert_eq!(
@@ -1319,6 +1443,238 @@ pub(crate) mod tests {
                 Some(FfiStatus::InvalidArgument)
             );
         }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_hybrid_search_with_no_room_still_counts_and_lists_the_counted_documents() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let kept = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        );
+        let none = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 0, &[])).unwrap(),
+            2,
+        );
+        assert_eq!(none.len(), 1);
+        assert!(none[0].1.iter().all(Vec::is_empty));
+        // No room: every score is turned away, so the thresholds rise at once and
+        // the count can only be below the union's.
+        assert!(none[0].0 > 0 && none[0].0 <= kept[0].0);
+        // With the documents: after the hits, `n` and each counted document with the
+        // sum of its scores.
+        let out = search_hybrid_blobs(h, &hybrid_blob_flags(&subs, 100, &[], 1)).unwrap();
+        let mut c = Cursor::new(&out);
+        assert_eq!(c.i32().unwrap(), 1);
+        let total = c.i64().unwrap();
+        c.i32().unwrap();
+        let mut sums = std::collections::BTreeMap::new();
+        for hits in &kept[0].1 {
+            for &(d, s) in hits {
+                *sums.entry(d).or_insert(0.0f32) += s;
+            }
+        }
+        for _ in 0..2 {
+            let n = c.i32().unwrap();
+            for _ in 0..n {
+                c.i32().unwrap();
+                c.i32().unwrap();
+            }
+        }
+        let n = c.i32().unwrap();
+        assert_eq!(i64::from(n), total);
+        for _ in 0..n {
+            let d = c.i32().unwrap();
+            let s = f32::from_bits(c.i32().unwrap() as u32);
+            assert_eq!(sums[&d], s);
+        }
+        assert_eq!(c.remaining(), 0);
+        // A post filter narrows the count and the hits, not the listed documents.
+        let filter = term_blob("body", "dog");
+        let mut blob = hybrid_blob_flags(&subs, 100, &[], 3);
+        blob.extend_from_slice(&(filter.len() as i32).to_le_bytes());
+        blob.extend_from_slice(&filter);
+        let out = search_hybrid_blobs(h, &blob).unwrap();
+        let mut c = Cursor::new(&out);
+        assert_eq!(c.i32().unwrap(), 1);
+        let filtered_total = c.i64().unwrap();
+        c.i32().unwrap();
+        let dogs: std::collections::BTreeSet<i32> = run_limit(h, &filter, 100, i64::MAX)
+            .unwrap()
+            .0
+            .iter()
+            .map(|&(d, _)| d)
+            .collect();
+        assert_eq!(filtered_total, dogs.len() as i64);
+        for hits in 0..2 {
+            let n = c.i32().unwrap();
+            for _ in 0..n {
+                assert!(dogs.contains(&c.i32().unwrap()), "sub-query {hits}");
+                c.i32().unwrap();
+            }
+        }
+        assert_eq!(i64::from(c.i32().unwrap()), total);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_sorted_hybrid_search_orders_each_sub_querys_hits_and_pages_after_one() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let sorted = |sort: Vec<u8>, top_n: i32| {
+            let mut blob = hybrid_blob_flags(&subs, top_n, &[], 4);
+            blob.extend_from_slice(&i64::MAX.to_le_bytes());
+            blob.extend_from_slice(&(sort.len() as i32).to_le_bytes());
+            blob.extend_from_slice(&sort);
+            let out = search_hybrid_blobs(h, &blob).unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let mut per = Vec::new();
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                let hits: Vec<(i32, f32, i64)> = (0..n)
+                    .map(|_| {
+                        (
+                            c.i32().unwrap(),
+                            f32::from_bits(c.i32().unwrap() as u32),
+                            c.i64().unwrap(),
+                        )
+                    })
+                    .collect();
+                let terms = c.i32().unwrap();
+                assert_eq!(terms, 0);
+                per.push(hits);
+            }
+            assert_eq!(c.remaining(), 0);
+            (total, per)
+        };
+        let plain = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        );
+        // By document, descending: the same documents and total, in the sort's order.
+        let (total, per) = sorted(sort_blob(&[(SORT_DOC, SORT_REVERSE, "", 0)], None), 100);
+        assert_eq!(total, plain[0].0);
+        for (got, want) in per.iter().zip(&plain[0].1) {
+            let mut docs: Vec<i32> = want.iter().map(|&(d, _)| d).collect();
+            docs.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), docs);
+            // Each hit keeps its sub-query's score.
+            for g in got {
+                assert!(want.contains(&(g.0, g.1)));
+            }
+        }
+        // The page after a sub-query's first hit.
+        let first = per[0][0];
+        let (_, page) = sorted(
+            sort_blob(
+                &[(SORT_DOC, SORT_REVERSE, "", 0)],
+                Some((first.0, &[first.2])),
+            ),
+            100,
+        );
+        assert_eq!(
+            page[0].iter().map(|g| g.0).collect::<Vec<_>>(),
+            per[0].iter().skip(1).map(|g| g.0).collect::<Vec<_>>()
+        );
+        // No room keeps no hits.
+        let (_, none) = sorted(sort_blob(&[(SORT_DOC, 0, "", 0)], None), 0);
+        assert!(none.iter().all(Vec::is_empty));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_hybrid_search_ends_after_terminate_after_documents() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let run = |limit: i64| {
+            let mut blob = hybrid_blob_flags(&subs, 100, &[], 8);
+            blob.extend_from_slice(&limit.to_le_bytes());
+            let out = search_hybrid_blobs(h, &blob).unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let mut hits = 0;
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                hits += n;
+                for _ in 0..n {
+                    c.i32().unwrap();
+                    c.i32().unwrap();
+                }
+            }
+            let flag = c.u8().unwrap();
+            assert_eq!(c.remaining(), 0);
+            (total, hits, flag)
+        };
+        let all = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        )[0]
+        .0;
+        let (total, hits, flag) = run(3);
+        assert_eq!((total, flag), (3, 1));
+        assert!(hits > 0);
+        // Exactly the matches there are, in one segment's reach: no document past the limit.
+        let (total, _, flag) = run(all + 5);
+        assert_eq!((total, flag), (all, 0));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_collapsing_hybrid_search_counts_to_its_threshold_and_groups_the_documents_without_a_value()
+    {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let run = |threshold: i64| {
+            let sort = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
+            let mut blob = hybrid_blob_flags(&subs, 100, &[], 4 | 16);
+            blob.extend_from_slice(&threshold.to_le_bytes());
+            blob.extend_from_slice(&(sort.len() as i32).to_le_bytes());
+            blob.extend_from_slice(&sort);
+            blob.extend_from_slice(&7i32.to_le_bytes());
+            blob.extend_from_slice(b"nofield");
+            blob.extend_from_slice(&[0]);
+            let out = search_hybrid_blobs(h, &blob);
+            let out = out.unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let gte = c.u8().unwrap();
+            let mut per = Vec::new();
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                for _ in 0..n {
+                    c.i32().unwrap();
+                    c.i32().unwrap();
+                    c.i64().unwrap();
+                    assert_eq!(c.u8().unwrap(), 0, "a document without a value");
+                }
+                assert_eq!(c.i32().unwrap(), 0);
+                per.push((n, c.i32().unwrap()));
+            }
+            assert_eq!(c.remaining(), 0);
+            (total, gte, per)
+        };
+        let all = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        )[0]
+        .0;
+        let (total, gte, per) = run(i64::MAX);
+        assert_eq!((total, gte), (all, 0));
+        assert!(per.iter().all(|&(n, collected)| n == collected));
+        // The document that reaches the threshold is counted and not collected; so is the
+        // first one of each later segment.
+        let (total, gte, per) = run(3);
+        assert_eq!((total, gte), (4, 1));
+        assert!(per.iter().all(|&(n, collected)| n == collected && n <= 2));
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
@@ -4518,5 +4874,193 @@ pub(crate) mod tests {
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+    /// `hidden[i]`'s names for segment `i` in [`ffi_open_jvm_reader_view`]'s blob layout.
+    fn hidden_blob(hidden: &[&[&str]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for names in hidden {
+            out.extend_from_slice(&(names.len() as u32).to_le_bytes());
+            for name in *names {
+                out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                out.extend_from_slice(name.as_bytes());
+            }
+        }
+        out
+    }
+
+    /// A view over `base` hiding `names` in every segment, `live[i]` the live words of segment `i`
+    /// (none: no deletions).
+    fn open_view_over(base: u64, names: &[&str], live: Option<&[Vec<u64>]>) -> Result<u64, i32> {
+        let b = lookup(base, "base").unwrap();
+        let max_docs: Vec<i32> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.max_doc)
+            .collect();
+        let hidden = hidden_blob(&vec![names; max_docs.len()]);
+        // No live docs given: the base's own, as the plugin passes a leaf's live docs.
+        let own: Vec<Vec<u64>> = b
+            .live_docs
+            .iter()
+            .map(|l| l.as_ref().map_or(Vec::new(), |l| l.words().to_vec()))
+            .collect();
+        let live = live.unwrap_or(&own);
+        let counts: Vec<usize> = live.iter().map(Vec::len).collect();
+        let words: Vec<u64> = live.concat();
+        let mut handle = 0u64;
+        let rc = unsafe {
+            ffi_open_jvm_reader_view(
+                base,
+                hidden.as_ptr(),
+                hidden.len(),
+                max_docs.as_ptr(),
+                max_docs.len(),
+                if words.is_empty() {
+                    std::ptr::null()
+                } else {
+                    words.as_ptr()
+                },
+                counts.as_ptr(),
+                &mut handle,
+            )
+        };
+        if rc == 0 {
+            Ok(handle)
+        } else {
+            Err(rc)
+        }
+    }
+
+    /// A view hides a field from every kind of read: its terms, its statistics and a sort on its
+    /// doc values answer as if the segment never had it, the other fields are unchanged, and
+    /// neither handle disturbs the other.
+    #[test]
+    fn a_view_hides_fields_from_postings_and_doc_values() {
+        let base = open_fixture("sorted_search_index");
+        let q = term_blob("body", "w0");
+        let (_, all) = run(base, &q, 10, true).unwrap();
+        assert!(all > 10);
+        assert!(doc_freq(base, b"body", b"w0").unwrap() > 0);
+
+        let view = open_view_over(base, &["body"], None).unwrap();
+        assert_eq!(run(view, &q, 10, true).unwrap(), (Vec::new(), 0));
+        assert_eq!(doc_freq(view, b"body", b"w0").unwrap(), 0);
+        // Another field of the same view is intact, and the base still sees `body`.
+        let (_, on_l) = run(view, &tree(N::All), 0, true).unwrap();
+        let (_, on_l_base) = run(base, &tree(N::All), 0, true).unwrap();
+        assert_eq!(on_l, on_l_base);
+        assert_eq!(run(base, &q, 10, true).unwrap().1, all);
+
+        // A sort on a hidden field has no values: documents come in index order.
+        let by_l = sort_blob(&[(SORT_LONG, 0, "l", 0)], None);
+        let hidden_l = open_view_over(base, &["l"], None).unwrap();
+        let sorted = |h: u64| {
+            run_sorted(h, &term_blob("body", "w0"), &by_l, 10, i64::MAX)
+                .unwrap()
+                .0
+        };
+        let keys = |h: u64| sorted(h).into_iter().map(|(_, k)| k).collect::<Vec<_>>();
+        let on_view = keys(hidden_l);
+        assert!(on_view.windows(2).all(|w| w[0] == w[1]), "{on_view:?}");
+        assert_ne!(keys(base), on_view, "the base sorts by the field's values");
+
+        // Closing the base leaves the view searchable: it holds the segments itself.
+        assert_eq!(ffi_close_jvm_reader(base), 0);
+        assert_eq!(
+            run(hidden_l, &term_blob("body", "w0"), 10, true).unwrap().1,
+            all
+        );
+        assert_eq!(ffi_close_jvm_reader(view), 0);
+        assert_eq!(ffi_close_jvm_reader(hidden_l), 0);
+    }
+
+    /// A view's live docs replace the base's, as an opened reader's do, and are validated the same.
+    #[test]
+    fn a_view_masks_documents_with_its_own_live_docs() {
+        let base = open_fixture("sorted_search_index");
+        let b = lookup(base, "base").unwrap();
+        let sizes: Vec<usize> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| bits2words(s.max_doc as usize))
+            .collect();
+        let q = tree(N::All);
+        let (_, total) = run(base, &q, 0, true).unwrap();
+        let none: Vec<Vec<u64>> = sizes.iter().map(|&n| vec![0u64; n]).collect();
+        let view = open_view_over(base, &[], Some(&none)).unwrap();
+        assert_eq!(run(view, &q, 0, true).unwrap().1, 0);
+        // One document live in the first segment.
+        let mut one = none.clone();
+        one[0][0] = 1;
+        let single = open_view_over(base, &[], Some(&one)).unwrap();
+        assert_eq!(run(single, &q, 5, true).unwrap().0.len(), 1);
+        // Bits past maxDoc are refused, as for an opened reader.
+        let mut past = none.clone();
+        let last = past.len() - 1;
+        let tail = past[last].len() - 1;
+        past[last][tail] = u64::MAX;
+        let max_doc = b.reader.segment_readers()[last].max_doc as usize;
+        if !max_doc.is_multiple_of(64) {
+            assert!(open_view_over(base, &[], Some(&past)).is_err());
+        }
+        assert!(total > 0);
+        for h in [view, single, base] {
+            assert_eq!(ffi_close_jvm_reader(h), 0);
+        }
+    }
+
+    /// A malformed hidden-fields blob, a closed base and a different segment list are refused.
+    #[test]
+    fn a_view_refuses_bad_arguments() {
+        let base = open_fixture("sorted_search_index");
+        let b = lookup(base, "base").unwrap();
+        let max_docs: Vec<i32> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.max_doc)
+            .collect();
+        let mut out = 0u64;
+        let open = |blob: &[u8], max: &[i32], base: u64, out: &mut u64| unsafe {
+            ffi_open_jvm_reader_view(
+                base,
+                blob.as_ptr(),
+                blob.len(),
+                max.as_ptr(),
+                max.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                out,
+            )
+        };
+        let good = hidden_blob(&vec![&["x"][..]; max_docs.len()]);
+        assert_eq!(open(&good, &max_docs, base, &mut out), 0);
+        assert_eq!(ffi_close_jvm_reader(out), 0);
+        let invalid = FfiStatus::InvalidArgument.code();
+        // Truncated, trailing bytes, a name that is not UTF-8, a count with no names behind it.
+        assert_eq!(
+            open(&good[..good.len() - 1], &max_docs, base, &mut out),
+            invalid
+        );
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert_eq!(open(&trailing, &max_docs, base, &mut out), invalid);
+        let mut bad_utf8 = hidden_blob(&vec![&["a"][..]; max_docs.len()]);
+        bad_utf8[8] = 0xff;
+        assert_eq!(open(&bad_utf8, &max_docs, base, &mut out), invalid);
+        let mut lying = vec![0u8; 0];
+        lying.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(open(&lying, &max_docs, base, &mut out), invalid);
+        // Another segment list than the base's.
+        let mut other = max_docs.clone();
+        other[0] += 1;
+        assert_eq!(open(&good, &other, base, &mut out), invalid);
+        assert_eq!(
+            open(&good, &max_docs, u64::MAX, &mut out),
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(ffi_close_jvm_reader(base), 0);
     }
 }

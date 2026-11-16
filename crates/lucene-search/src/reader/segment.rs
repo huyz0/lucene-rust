@@ -1774,7 +1774,13 @@ impl LeafReader for SegmentReader {
         }
         match self.term_vectors_reader()? {
             None => Ok(None),
-            Some(r) => Ok(r.document(doc)?),
+            Some(r) => {
+                let mut document = r.document(doc)?;
+                if let (Some(d), Some(hidden)) = (document.as_mut(), self.hidden_fields()) {
+                    d.fields.retain(|f| !hidden.contains(&f.field_number));
+                }
+                Ok(document)
+            }
         }
     }
 

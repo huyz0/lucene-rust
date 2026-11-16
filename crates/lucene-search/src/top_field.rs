@@ -100,7 +100,7 @@ mod opensearch;
 pub(crate) use collapse::GroupColumn;
 pub use collapse::{
     search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
-    MULTI_VALUED,
+    HybridGroup, MULTI_VALUED,
 };
 pub use opensearch::{HalfFloatSort, ScaledFloatSort, ShardDocSort, UnsignedLongSort};
 
@@ -1394,6 +1394,126 @@ impl FedTopField {
     /// The hits, best first, and the count (`topDocs()`).
     pub fn top_docs(self) -> TopFieldDocs {
         self.0.top_docs()
+    }
+}
+
+/// One sub-query's `FieldValueHitQueue` of neural-search's hybrid sorted collector
+/// (`SimpleFieldCollector`, or `PagingFieldCollector` behind `search_after`), fed a
+/// document at a time by the hybrid bulk scorer's replay. The queue is the top-field
+/// collector's: ties keep the lower document, a document ranked at or after the
+/// `search_after` value is not collected. Nothing is skipped: the hybrid collector
+/// has no competitive iterator, and ends a segment early (an index-sorted search)
+/// by itself, over every sub-query at once.
+pub struct HybridSortQueue {
+    tf: TopField,
+    /// The slots the queue has filled: the next one's index.
+    added: usize,
+}
+
+/// One segment's side of a [`HybridSortQueue`].
+pub struct HybridSortLeaf<'a>(Leaf<'a>);
+
+/// What [`HybridSortQueue::collect`] did with a document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HybridCollected {
+    /// It took a new slot of the queue (`new`), or replaced the bottom one's document; `slot`
+    /// is the slot it holds.
+    Entered { slot: usize, new: bool },
+    /// The queue is full and the document does not beat its bottom, or a
+    /// `search_after` value ranks it on an earlier page.
+    Skipped,
+}
+
+impl HybridSortQueue {
+    /// A queue of the `top_n` best by `sort` (at least one), after `after` when given.
+    ///
+    /// # Errors
+    /// A sort without keys.
+    pub fn new(sort: &[SortField], top_n: usize, after: Option<&FieldDoc>) -> Result<Self> {
+        if sort.is_empty() {
+            return Err(SortError::NoKeys.into());
+        }
+        Ok(Self {
+            tf: TopField::new(sort, top_n.max(1), u64::MAX, after),
+            added: 0,
+        })
+    }
+
+    /// Whether the queue holds `top_n` hits (`queueFull`).
+    pub fn is_full(&self) -> bool {
+        self.tf.queue_full
+    }
+
+    /// The queue's leaf over `seg` (read from `reader`).
+    ///
+    /// # Errors
+    /// What opening the sort's columns reports.
+    pub fn leaf<'a>(
+        &mut self,
+        reader: &'a SegmentReader,
+        seg: &OpenSegment<'a>,
+    ) -> Result<HybridSortLeaf<'a>> {
+        let mut leaf = open_leaf(&mut self.tf, reader, seg, i64::from(reader.max_doc))?;
+        leaf.early = false;
+        leaf.doc_competitive = None;
+        Ok(HybridSortLeaf(leaf))
+    }
+
+    /// Collects `doc` (segment-local) of `leaf`'s segment; `score` is what a score key
+    /// reads.
+    ///
+    /// # Errors
+    /// What reading the sort's columns reports.
+    pub fn collect(
+        &mut self,
+        leaf: &mut HybridSortLeaf<'_>,
+        doc: i32,
+        score: f32,
+    ) -> Result<HybridCollected> {
+        let leaf = &mut leaf.0;
+        let full = self.tf.queue_full;
+        let bottom = self.tf.queue.top().map_or(0, |e| e.slot);
+        leaf.score = score;
+        leaf.score_doc = doc;
+        let before = self.tf.entered;
+        leaf.collect(&mut self.tf, doc, None)?;
+        if self.tf.entered == before {
+            return Ok(HybridCollected::Skipped);
+        }
+        if full {
+            return Ok(HybridCollected::Entered {
+                slot: bottom,
+                new: false,
+            });
+        }
+        let slot = self.added;
+        self.added += 1;
+        Ok(HybridCollected::Entered { slot, new: true })
+    }
+
+    /// The end of `leaf`'s segment (its keyword keys read their terms).
+    ///
+    /// # Errors
+    /// What reading the terms reports.
+    pub fn finish(&mut self, mut leaf: HybridSortLeaf<'_>) -> Result<()> {
+        leaf.0.finish(&mut self.tf)
+    }
+
+    /// Whether the sort is led by the document id, ascending (`canEarlyTerminateOnDocId`).
+    pub fn doc_first(&self) -> bool {
+        self.tf.doc_first
+    }
+
+    /// The hits, best first, each with the slot of the queue that holds it (the slot
+    /// carries the score the hybrid collector stored when it filled it).
+    pub fn into_hits(mut self) -> Vec<(usize, FieldDoc)> {
+        let mut hits = Vec::with_capacity(self.tf.queue.heap.len());
+        let any_terms = self.tf.any_terms();
+        while let Some(e) = self.tf.queue.pop(&self.tf.comps) {
+            hits.push((e.slot, self.tf.slot_hit(e.slot, e.doc, any_terms)));
+        }
+        hits.reverse();
+        hits
     }
 }
 
@@ -4170,7 +4290,22 @@ impl ScoringCollector for BulkLeaf<'_, '_> {
     /// scorers skip only what scores strictly less, as Lucene's
     /// `setMinCompetitiveScore(bottom)` means.
     fn min_competitive_score(&self) -> Option<f32> {
-        (self.tf.min_competitive_score > 0.0).then(|| self.tf.min_competitive_score.next_down())
+        if self.tf.min_competitive_score <= 0.0 {
+            return None;
+        }
+        // A page after a hit of a search ordered by the score alone (a scroll's later pages), with no total
+        // wanted: a later document that only ties the bottom loses on its higher id, so the scorer may stop
+        // at the next float up, as `PagingTopScoreDocCollector`'s `setMinCompetitiveScore(nextUp(bottom))`
+        // does. Without it a constant-score page after the first walks the whole index.
+        if self.tf.after.is_some()
+            && self.tf.comps.len() == 1
+            && self.tf.comps[0].field.ty == SortType::Score
+            && !self.tf.comps[0].field.reverse
+            && self.tf.threshold == self.tf.num_hits as u64
+        {
+            return Some(self.tf.min_competitive_score.next_up());
+        }
+        Some(self.tf.min_competitive_score.next_down())
     }
 
     fn score_mode(&self) -> ScoreMode {
