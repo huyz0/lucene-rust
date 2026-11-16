@@ -253,6 +253,9 @@ pub(crate) fn build<'a>(
         }
         // `PhraseWildcardQuery.createWeight` expands its multi-terms over
         // the whole reader.
+        ExtendedQuery::MoreLikeThisHighlight(_) => Err(crate::Error::IllegalState(
+            "MoreLikeThisQuery is only highlighted here".into(),
+        )),
         ExtendedQuery::MultiPhrasePrefix(_) => Err(crate::Error::IllegalState(
             "MultiPhrasePrefixQuery is only highlighted".into(),
         )),

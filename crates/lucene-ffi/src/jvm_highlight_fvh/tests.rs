@@ -271,18 +271,65 @@ fn what_java_throws_on_runs_the_stock_highlighter() {
     // a negative margin: SimpleFragListBuilder refuses it
     let mut req = Req::new("tv", &["fox"]);
     req.margin = Some(-5);
-    assert_eq!(run(h, &req, &[D0]).0, STATUS_STOCK);
+    assert_eq!(run(h, &req, &[D0]).0, STATUS_THROWS);
     // offsets past the values: StringIndexOutOfBoundsException
     assert_eq!(
         run(h, &Req::new("tv", &["fox"]), &["short"]).0,
-        STATUS_STOCK
+        STATUS_THROWS
     );
-    // a fragment holding half a surrogate pair
+}
+
+#[test]
+fn what_java_throws_is_named_with_its_class_and_message() {
+    let h = open_fixture("uhighlight/index");
+    let mut req = Req::new("tv", &["fox"]);
+    req.margin = Some(-5);
+    let values = vec![utf16(D0)];
+    let out = highlight(h, &req.bytes(), 0, 0, &values).unwrap();
+    let mut c = Cursor::new(&out);
+    assert_eq!(c.u8().unwrap(), STATUS_THROWS);
+    let mut string = || String::from_utf8(c.bytes().unwrap().to_vec()).unwrap();
+    assert_eq!(string(), "java.lang.IllegalArgumentException");
+    assert_eq!(string(), "margin(-5) is too small. It must be 0 or higher.");
+    // offsets past the values: String.substring's own exception
+    let out = highlight(
+        h,
+        &Req::new("tv", &["fox"]).bytes(),
+        0,
+        0,
+        &[utf16("short")],
+    )
+    .unwrap();
+    let mut c = Cursor::new(&out);
+    assert_eq!(c.u8().unwrap(), STATUS_THROWS);
+    assert_eq!(
+        c.bytes().unwrap(),
+        b"java.lang.StringIndexOutOfBoundsException"
+    );
+}
+
+#[test]
+fn a_fragment_keeps_half_a_surrogate_pair() {
+    let h = open_fixture("uhighlight/index");
+    // an unpaired surrogate inside the value, in a fragment
     let mut text: Vec<u16> = utf16(D0);
     text[17] = 0xD83D;
-    let values = vec![text];
+    let values = vec![text.clone()];
     let out = highlight(h, &Req::new("tv", &["fox"]).bytes(), 0, 0, &values).unwrap();
-    assert_eq!(out[0], STATUS_STOCK);
+    assert_eq!(out[0], STATUS_FRAGMENTS);
+    let mut c = Cursor::new(&out);
+    c.u8().unwrap();
+    let n = c.i32().unwrap();
+    let mut seen = false;
+    for _ in 0..n {
+        let len = c.i32().unwrap() as usize;
+        for _ in 0..len {
+            let lo = c.u8().unwrap();
+            let hi = c.u8().unwrap();
+            seen |= u16::from_le_bytes([lo, hi]) == 0xD83D;
+        }
+    }
+    assert!(seen, "the unpaired surrogate is in a fragment as it was");
 }
 
 #[test]

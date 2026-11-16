@@ -18,7 +18,7 @@
 //! | `frag_list: u8`, `margin: i32` | `0` single, `1` simple (`margin` -1 for the default) |
 //! | `phrase_limit: i32`, `frag_char_size: i32`, `max_fragments: i32` | |
 //! | `score_order: u8`, `fix_broken_analysis: u8`, `discrete_values: u8` | |
-//! | `scanner: u8`, `max_scan: i32`, `chars: i32` × `u16` | `0` chars, `1` sentence, `2` word |
+//! | `scanner: u8`, `max_scan: i32`, `chars: i32` × `u16` | `0` chars, `1` sentence, `2` word; `BREAKS_THAI` set when the locale is Thai |
 //! | `pre_tags: i32` × `bytes`, `post_tags: i32` × `bytes` | UTF-8 |
 //! | `html: u8`, `no_match_size: i32` | |
 //!
@@ -27,17 +27,16 @@
 //! `subs: i32` × (`term: bytes`, `node`).
 //!
 //! Result layout: `status: u8`; with [`STATUS_FRAGMENTS`], `count: i32` and
-//! per fragment `len: i32` and `len` UTF-16 units. [`STATUS_STOCK`] means
-//! Java's highlighter throws for this hit (or gives text this one cannot
-//! give exactly): the plugin runs OpenSearch's for it; the rest of the
-//! result says why (UTF-8).
+//! per fragment `len: i32` and `len` UTF-16 units. [`STATUS_THROWS`] means
+//! Java's highlighter throws for this hit: the exception's class and message
+//! follow, each as `len: i32` and UTF-8 `bytes`, and the plugin throws it.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use lucene_codecs::term_vectors::ChunkCursor;
-use lucene_highlighter::unified::break_iterators::BreakIterator;
+use lucene_highlighter::unified::break_iterators::{word_instance_for, BreakIterator};
 use lucene_highlighter::vectorhighlight::{
     BoundaryScanner, BreakIteratorBoundaryScanner, FieldFragList, FieldPhraseList, FieldQuery,
     FieldTermStack, FragListBuilder, FragListKind, FragmentsBuilder, FragmentsOrder,
@@ -48,7 +47,7 @@ use lucene_highlighter::{
 };
 
 use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_highlight::{invalid, put_i32, utf8};
+use crate::jvm_highlight::{invalid, put_i32, utf8, BREAKS_THAI};
 use crate::jvm_reader::{self};
 use lucene_engine::query_blob::Cursor;
 
@@ -57,8 +56,8 @@ pub(crate) const REQUEST_VERSION: u8 = 1;
 
 /// The fragments follow.
 pub(crate) const STATUS_FRAGMENTS: u8 = 0;
-/// Run OpenSearch's highlighter for this hit.
-pub(crate) const STATUS_STOCK: u8 = 1;
+/// Java's highlighter throws for this hit.
+pub(crate) const STATUS_THROWS: u8 = 1;
 
 /// At most this many requests are kept per thread.
 const CACHED_PER_THREAD: usize = 16;
@@ -70,7 +69,7 @@ const MAX_DEPTH: usize = 1024;
 #[derive(Debug, Clone)]
 enum Scanner {
     Chars(i32, Vec<u16>),
-    Break(BreakKind),
+    Break(BreakKind, bool),
 }
 
 /// A decoded request.
@@ -194,6 +193,8 @@ fn decode(blob: &[u8]) -> Result<Fvh, FfiStatus> {
     let fix_broken_analysis = c.u8()? != 0;
     let discrete_values = c.u8()? != 0;
     let kind = c.u8()?;
+    let thai = kind & BREAKS_THAI != 0;
+    let kind = kind & !BREAKS_THAI;
     let max_scan = c.i32()?;
     let n = count(&mut c, "boundary chars")?;
     let mut chars = Vec::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
@@ -204,8 +205,8 @@ fn decode(blob: &[u8]) -> Result<Fvh, FfiStatus> {
     }
     let scanner = match kind {
         0 => Scanner::Chars(max_scan, chars),
-        1 => Scanner::Break(BreakKind::Sentence),
-        2 => Scanner::Break(BreakKind::Word),
+        1 => Scanner::Break(BreakKind::Sentence, thai),
+        2 => Scanner::Break(BreakKind::Word, thai),
         k => return Err(invalid(format!("fvh highlight request: scanner {k}"))),
     };
     let pre_tags = tags(&mut c, "pre tags")?;
@@ -262,9 +263,12 @@ impl Fvh {
             Scanner::Chars(max_scan, chars) => {
                 Box::new(SimpleBoundaryScanner::with_chars(*max_scan, chars))
             }
-            Scanner::Break(kind) => {
-                let bi: Box<dyn BreakIterator> =
-                    Box::new(RuleBreakIterator::from_utf16(*kind, Vec::new()));
+            Scanner::Break(kind, thai) => {
+                let bi: Box<dyn BreakIterator> = if *thai && matches!(kind, BreakKind::Word) {
+                    word_instance_for(true)
+                } else {
+                    Box::new(RuleBreakIterator::from_utf16(*kind, Vec::new()))
+                };
                 Box::new(BreakIteratorBoundaryScanner::new(bi))
             }
         };
@@ -276,10 +280,12 @@ impl Fvh {
         let mut b = FragmentsBuilder::new(order).with_boundary_scanner(scanner);
         b.set_discrete_multi_value_highlighting(self.discrete_values);
         b.set_fix_broken_analysis(self.fix_broken_analysis);
-        b.set_strict_utf16(true);
         b
     }
 }
+
+/// A hit's fragments, as UTF-16 units.
+type Fragments = Vec<Vec<u16>>;
 
 /// One hit's fragments, `None` for none (or Java's error, as `Err`).
 fn fragments(
@@ -287,7 +293,7 @@ fn fragments(
     segment: &lucene_search::directory_reader::SegmentReader,
     doc: i32,
     values: &[Vec<u16>],
-) -> Result<Result<Option<Vec<String>>, lucene_highlighter::Error>, FfiStatus> {
+) -> Result<Result<Option<Fragments>, lucene_highlighter::Error>, FfiStatus> {
     let read = |e: &dyn std::fmt::Display| {
         set_last_error(format!("fvh highlight: reading term vectors: {e}"));
         FfiStatus::Decode
@@ -336,7 +342,7 @@ fn fragments(
         Box::new(DefaultEncoder)
     };
     let mut builder = h.fragments_builder();
-    let mut run = || -> Result<Option<Vec<String>>, lucene_highlighter::Error> {
+    let mut run = || -> Result<Option<Vec<Vec<u16>>>, lucene_highlighter::Error> {
         let frag_list = match h.margin {
             None => SingleFragListBuilder.create_field_frag_list(&phrases, h.frag_char_size)?,
             Some(-1) => {
@@ -345,7 +351,7 @@ fn fragments(
             Some(m) => SimpleFragListBuilder::with_margin(m)?
                 .create_field_frag_list(&phrases, h.frag_char_size)?,
         };
-        let found = builder.create_fragments_from_values(
+        let found = builder.create_fragments_units(
             values,
             &frag_list,
             h.max_fragments,
@@ -358,14 +364,7 @@ fn fragments(
         }
         let mut summary = FieldFragList::new(FragListKind::Simple);
         summary.add(0, h.no_match_size, &[]);
-        builder.create_fragments_from_values(
-            values,
-            &summary,
-            1,
-            &h.pre_tags,
-            &h.post_tags,
-            &*encoder,
-        )
+        builder.create_fragments_units(values, &summary, 1, &h.pre_tags, &h.post_tags, &*encoder)
     };
     Ok(run())
 }
@@ -402,12 +401,14 @@ pub(crate) fn highlight(
     let found = match fragments(&h, seg, doc, values)? {
         Ok(found) => found.unwrap_or_default(),
         Err(e) => {
-            let mut out = vec![STATUS_STOCK];
-            out.extend_from_slice(format!("{}: {}", e.class(), e.message()).as_bytes());
-            return Ok(out);
+            return Ok(crate::jvm_highlight::throws(
+                STATUS_THROWS,
+                e.class(),
+                &e.message(),
+            ));
         }
     };
-    let encoded: Vec<Vec<u16>> = found.iter().map(|f| f.encode_utf16().collect()).collect();
+    let encoded = found;
     let units: usize = encoded.iter().map(Vec::len).sum();
     let mut out = crate::raw::try_with_capacity::<u8>(
         encoded

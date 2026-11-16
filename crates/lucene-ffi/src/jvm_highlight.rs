@@ -18,7 +18,7 @@
 //! | `offset_source: u8` | `0` analysis, `1` postings, `2` postings with term vectors, `3` term vectors |
 //! | `analyzers: i32`, then per analyzer `field: bytes`, `spec: bytes` | the index analyzers of the field and its `matched_fields` that are described ([`lucene_engine::analysis`]) |
 //! | `offset_limit: i32` | `max_analyzer_offset` (a `LimitTokenOffsetFilter`), `-1` for none |
-//! | `breaks: u8`, `max_len: i32` | `0` one passage per value, `1` sentences, `2` sentences bounded to `max_len`, `3` words |
+//! | `breaks: u8`, `max_len: i32` | `0` one passage per value, `1` sentences, `2` sentences bounded to `max_len`, `3` words; [`BREAKS_THAI`] set when `boundary_scanner_locale` is Thai (the word iterators are the host's) |
 //! | `max_passages: i32` | `number_of_fragments` (`i32::MAX - 1` for all) |
 //! | `no_match_size: i32` | |
 //! | `pre_tag: bytes`, `post_tag: bytes` | UTF-8 |
@@ -49,6 +49,10 @@ use lucene_engine::query_blob::{Cursor, JvmQuery};
 
 /// The request layout's version.
 pub(crate) const REQUEST_VERSION: u8 = 1;
+
+/// Added to the break iterator kind (and to the fast vector highlighter's
+/// scanner) when the request's locale is Thai.
+pub(crate) const BREAKS_THAI: u8 = 0x80;
 
 /// The snippets follow.
 pub(crate) const STATUS_SNIPPETS: u8 = 0;
@@ -174,6 +178,8 @@ fn decode(blob: &[u8]) -> Result<Prepared, FfiStatus> {
         l => return Err(invalid(format!("highlight request: offset limit {l}"))),
     };
     let kind = c.u8()?;
+    let thai = kind & BREAKS_THAI != 0;
+    let kind = kind & !BREAKS_THAI;
     let max_len = c.i32()?;
     let breaks = match kind {
         0 => Breaks::Values,
@@ -238,6 +244,7 @@ fn decode(blob: &[u8]) -> Result<Prepared, FfiStatus> {
         breaks,
         max_passages,
         no_match_size,
+        thai,
         pre_tag,
         post_tag,
         html,
@@ -301,6 +308,17 @@ pub(crate) fn put_i32(out: &mut Vec<u8>, v: i32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
+/// A result that says Java's highlighter throws `class` with `message` here:
+/// `status`, then each as `len: i32` and UTF-8 bytes.
+pub(crate) fn throws(status: u8, class: &str, message: &str) -> Vec<u8> {
+    let mut out = vec![status];
+    for s in [class, message] {
+        put_i32(&mut out, i32::try_from(s.len()).unwrap_or(i32::MAX));
+        out.extend_from_slice(s.as_bytes());
+    }
+    out
+}
+
 fn encode(snippets: &[Snippet]) -> Result<Vec<u8>, FfiStatus> {
     let units: usize = snippets.iter().map(|s| s.text.len()).sum();
     let mut out = crate::raw::try_with_capacity::<u8>(
@@ -339,12 +357,13 @@ pub(crate) fn highlight(
         if p.needs_analyzer {
             return Ok(vec![STATUS_NEEDS_ANALYZER]);
         }
+        // the highlighter refuses the option before it looks at the query
+        if p.offset_limit.is_some_and(|l| l > p.max_analyzed_offset) {
+            return Ok(vec![STATUS_OFFSET_LIMIT]);
+        }
         // CustomUnifiedHighlighter.highlightField
         if p.highlighter.is_noop() && p.no_match_size_is_zero() {
             return Ok(vec![STATUS_NOOP]);
-        }
-        if p.offset_limit.is_some_and(|l| l > p.max_analyzed_offset) {
-            return Ok(vec![STATUS_OFFSET_LIMIT]);
         }
         let too_long = i32::try_from(content.len()).map_or(true, |n| n > p.max_analyzed_offset);
         if p.analysis && too_long && p.offset_limit.is_none() {
@@ -445,6 +464,55 @@ pub unsafe extern "C" fn ffi_jvm_highlight_unified_alloc(
         let encoded = highlight(handle, request, segment, doc, content)?;
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// The host's Thai word boundaries: `(text, len, out, cap) -> n`, the
+/// boundaries of `text` (`len` UTF-16 units) in ascending order written to
+/// `out` (`cap` is `len + 2`), `n` of them, or a negative number
+/// when the host's iterator failed. Called on any thread that highlights.
+pub type ThaiWordsUpcall = unsafe extern "C" fn(*const u16, i64, *mut i32, i64) -> i64;
+
+static THAI_WORDS: std::sync::OnceLock<ThaiWordsUpcall> = std::sync::OnceLock::new();
+
+fn thai_word_boundaries(text: &[u16]) -> Option<Vec<i32>> {
+    let upcall = *THAI_WORDS.get()?;
+    let cap = text.len().checked_add(2)?;
+    let mut out = crate::raw::try_with_capacity::<i32>(cap).ok()?;
+    out.resize(cap, 0);
+    // SAFETY: `text` and `out` are valid for the lengths passed; the host's stub
+    // writes at most `cap` boundaries (the contract of [`ThaiWordsUpcall`]).
+    let n = unsafe {
+        upcall(
+            text.as_ptr(),
+            i64::try_from(text.len()).ok()?,
+            out.as_mut_ptr(),
+            i64::try_from(cap).ok()?,
+        )
+    };
+    let n = usize::try_from(n).ok().filter(|&n| n <= cap)?;
+    out.truncate(n);
+    Some(out)
+}
+
+/// Registers the host's Thai word iterator ([`ThaiWordsUpcall`]), once per
+/// process: the JDK's dictionary-based word iterator is data this library
+/// cannot carry, so a request in the Thai locale asks the JVM for each
+/// text's word boundaries.
+///
+/// # Safety
+/// `upcall` must have [`ThaiWordsUpcall`]'s contract and stay callable for
+/// the life of the process; the highlight entry points must then be called
+/// on JVM threads, in non-critical downcalls.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_highlight_set_thai_upcall(upcall: Option<ThaiWordsUpcall>) -> i32 {
+    crate::error::guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = THAI_WORDS.set(upcall);
+        lucene_highlighter::unified::break_iterators::install_thai_word_boundaries(
+            thai_word_boundaries,
+        );
         Ok(())
     })
 }

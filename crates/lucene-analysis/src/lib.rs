@@ -113,7 +113,7 @@ pub use char_array_set::CharArraySet;
 pub use graph_finite_strings::{FiniteStringsTokenStream, GraphTokenStreamFiniteStrings};
 pub use graph_token_filter::{GraphTokenFilter, MAX_GRAPH_STACK_SIZE, MAX_TOKEN_CACHE_SIZE};
 pub use keyword_tokenizer::KeywordTokenizer;
-pub use reader::{CharFilter, CharReader, StrReader};
+pub use reader::{CharFilter, CharReader, StrReader, UnitsReader};
 pub use standard::{StandardAnalyzer, StandardTokenizer};
 pub use stopword_analyzer_base::StopwordAnalyzerBase;
 pub use token_stream::{
