@@ -33,9 +33,9 @@ use std::sync::Arc;
 
 use lucene_search::similarities::{
     AfterEffect, BasicModel, Bm25Similarity, BooleanSimilarity, ClassicSimilarity, CollectionModel,
-    DfiSimilarity, DfrSimilarity, Distribution, IbSimilarity, Independence, Lambda,
-    LegacyBm25Similarity, LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization,
-    CollectionStatistics, PerFieldSimilarity, Similarity, TermStatistics,
+    CollectionStatistics, DfiSimilarity, DfrSimilarity, Distribution, IbSimilarity, Independence,
+    Lambda, LegacyBm25Similarity, LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization,
+    PerFieldSimilarity, Similarity, TermStatistics,
 };
 
 use crate::query_blob::Cursor;
@@ -284,6 +284,44 @@ mod tests {
 
     fn f(v: f32) -> [u8; 4] {
         v.to_bits().to_le_bytes()
+    }
+
+    fn bytes(b: &[u8]) -> Vec<u8> {
+        [&(b.len() as i32).to_le_bytes()[..], b].concat()
+    }
+
+    #[test]
+    fn dfs_decodes_term_and_field_statistics() {
+        let mut blob = 1i32.to_le_bytes().to_vec();
+        blob.extend(bytes(b"body"));
+        blob.extend(bytes(b"fox"));
+        blob.extend(7i64.to_le_bytes());
+        blob.extend(9i64.to_le_bytes());
+        blob.extend(1i32.to_le_bytes());
+        blob.extend(bytes(b"body"));
+        for v in [100i64, 90, 800, 80] {
+            blob.extend(v.to_le_bytes());
+        }
+        let dfs = decode_dfs(&mut Cursor::new(&blob)).unwrap();
+        let t = &dfs.terms[&("body".to_string(), b"fox".to_vec())];
+        assert_eq!((t.doc_freq, t.total_term_freq), (7, 9));
+        let c = &dfs.fields["body"];
+        assert_eq!(
+            (
+                c.max_doc,
+                c.doc_count,
+                c.sum_total_term_freq,
+                c.sum_doc_freq
+            ),
+            (100, 90, 800, 80)
+        );
+    }
+
+    #[test]
+    fn truncated_dfs_is_an_error() {
+        let mut blob = 1i32.to_le_bytes().to_vec();
+        blob.extend(bytes(b"body"));
+        assert!(decode_dfs(&mut Cursor::new(&blob)).is_err());
     }
 
     #[test]
