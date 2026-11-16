@@ -1222,6 +1222,13 @@ public final class AnalyzerSpec {
                 .arg("withRotation", flag(readBool(o, "withRotation")));
             return null;
         });
+        map("shingle.FixedShingleFilter", (o, c) -> {
+            c.name = "fixedShingle";
+            c.arg("shingleSize", readInt(o, "shingleSize"))
+                .arg("tokenSeparator", (String) read(o, "tokenSeparator"))
+                .arg("fillerToken", (String) read(o, "fillerToken"));
+            return null;
+        });
         map("miscellaneous.TypeAsSynonymFilter", (o, c) -> {
             c.name = "typeAsSynonym";
             String prefix = (String) read(o, "prefix");

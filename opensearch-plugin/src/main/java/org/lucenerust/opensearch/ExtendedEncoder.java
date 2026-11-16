@@ -922,6 +922,9 @@ final class ExtendedEncoder {
         if (isExpression(factory)) {
             return expressionSpec(factory, context, "", 0, out, "sort_script");
         }
+        if (isExpression(factory)) {
+            return expressionSpec(factory, PainlessScore.SORT, "", 0, out, "sort_script");
+        }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
             return "sort_script";

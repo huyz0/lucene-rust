@@ -577,7 +577,7 @@ pub struct NestedSort {
 }
 
 /// How a nested key's child values are read ([`NestedSort::convert`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChildConvert {
     /// The values are the key's own (`Long`, `Int`, `Double`, `Float`).
     None,
@@ -586,15 +586,44 @@ pub enum ChildConvert {
     ScaledFloat { inverse: f64 },
     /// A `half_float`: the stored sortable short as a `Float` key's sortable int.
     HalfFloat,
+    /// A `geo_point` under `_geo_distance`: the stored encoded points as the sorted distances
+    /// to the origins (a `Double` key's sortable longs); the sort's mode is not used here.
+    Geo(Arc<crate::document::geo::OpenSearchGeoDistanceSort>),
+    /// An `unsigned_long`: the stored longs are the unsigned values' bits. The key is a `Long`
+    /// one whose picked value (and missing value) has its sign bit flipped, so signed longs
+    /// order as the unsigned values do.
+    Unsigned,
 }
 
+// A `Geo` key's origins are finite and a scaling factor is finite and positive.
+impl Eq for ChildConvert {}
+
 impl ChildConvert {
-    fn apply(self, buf: &mut [i64]) {
+    /// One stored value as the key's, for a conversion that works value by value
+    /// (every one but [`ChildConvert::Geo`], which maps a document's values together).
+    #[inline]
+    fn apply_one(&self, v: i64) -> i64 {
         match self {
-            ChildConvert::None => {}
+            ChildConvert::None | ChildConvert::Unsigned | ChildConvert::Geo(_) => v,
+            ChildConvert::ScaledFloat { inverse } => double_to_sortable_long(v as f64 * *inverse),
+            ChildConvert::HalfFloat => i64::from(float_to_sortable_int(
+                lucene_util::half_float::sortable_short_to_half_float(v as i16),
+            )),
+        }
+    }
+
+    fn apply(&self, buf: &mut Vec<i64>) {
+        match self {
+            ChildConvert::None | ChildConvert::Unsigned => {}
+            ChildConvert::Geo(sort) => {
+                let mut distances = Vec::new();
+                sort.distances(buf, &mut distances);
+                buf.clear();
+                buf.extend(distances.into_iter().map(double_to_sortable_long));
+            }
             ChildConvert::ScaledFloat { inverse } => {
                 for v in buf {
-                    *v = double_to_sortable_long(*v as f64 * inverse);
+                    *v = double_to_sortable_long(*v as f64 * *inverse);
                 }
             }
             ChildConvert::HalfFloat => {
@@ -636,6 +665,11 @@ pub struct SortField {
     pub nested: Option<Arc<NestedSort>>,
     /// A custom key's source once [`rewrite_sort`] rewrote it.
     pub rewritten: Option<RewrittenSource>,
+    /// How a key without a nested path reads its stored values: a `half_float` and a
+    /// `scaled_float` store something other than the numbers they sort by, and the key
+    /// skips with the field's points as a numeric one does ([`ChildConvert::None`] for
+    /// the others). A nested key converts its children with [`NestedSort::convert`].
+    pub convert: ChildConvert,
 }
 
 impl SortField {
@@ -659,6 +693,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -671,12 +706,17 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
     /// The width of the field's points, which `NumericComparator` insists
     /// match (`bytesCount`); `None` for the score and the document.
     fn point_bytes(&self) -> Option<usize> {
+        if self.convert == ChildConvert::HalfFloat && self.nested.is_none() {
+            // `HalfFloatPoint`: the sortable short.
+            return Some(2);
+        }
         match self.ty {
             SortType::Long | SortType::Double => Some(8),
             SortType::Int | SortType::Float => Some(4),
@@ -699,6 +739,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -712,6 +753,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 
@@ -744,6 +786,7 @@ impl SortField {
             missing: 0,
             nested: None,
             rewritten: None,
+            convert: ChildConvert::None,
         }
     }
 }
@@ -833,6 +876,11 @@ fn sortable_bytes_to_long(b: &[u8]) -> i64 {
             let mut a = [0u8; 4];
             a.copy_from_slice(b);
             i64::from((u32::from_be_bytes(a) ^ 0x8000_0000) as i32)
+        }
+        2 => {
+            let mut a = [0u8; 2];
+            a.copy_from_slice(b);
+            i64::from((u16::from_be_bytes(a) ^ 0x8000) as i16)
         }
         _ => 0,
     }
@@ -1546,7 +1594,15 @@ fn sortable_int_to_float(v: i64) -> f32 {
 enum Column<'a> {
     Absent,
     Single(NumericReader<'a>),
-    Multi(SortedNumericReader<'a>, Vec<i64>, Selector, SortType),
+    Multi(
+        SortedNumericReader<'a>,
+        Vec<i64>,
+        Selector,
+        SortType,
+        ChildConvert,
+    ),
+    /// A single-valued column whose values are converted as they are read.
+    Converted(NumericReader<'a>, ChildConvert),
     /// The segment's decoded copy ([`SortColumn::Longs`]).
     Cached(Arc<SortColumn>),
     /// A root document's value from its children ([`NestedSort`]).
@@ -1558,10 +1614,17 @@ impl Column<'_> {
         Ok(match self {
             Column::Absent => None,
             Column::Single(r) => r.value(doc).map_err(crate::Error::from)?,
-            Column::Multi(r, buf, selector, ty) => {
+            Column::Multi(r, buf, selector, ty, convert) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
+                if *convert != ChildConvert::None {
+                    convert.apply(buf);
+                }
                 selector.pick(*ty, buf)
             }
+            Column::Converted(r, convert) => r
+                .value(doc)
+                .map_err(crate::Error::from)?
+                .map(|v| convert.apply_one(v)),
             Column::Cached(c) => cached_long(c, doc),
             Column::Nested(n) => Some(n.value(doc)?),
         })
@@ -1662,11 +1725,69 @@ impl NestedColumn<'_> {
         Ok(self.last_value)
     }
 
+    /// `pick` for an `unsigned_long` key: `MultiValueMode`'s unsigned picks (a child's least
+    /// or greatest by [`opensearch::unsigned_pick`], compared unsigned; sums wrapping; an
+    /// average through `divideUnsignedAndRoundUp`). The result has its sign bit flipped
+    /// ([`ChildConvert::Unsigned`]); a root without values is the (already flipped) missing
+    /// value.
+    fn pick_unsigned(&mut self, start: i32, end: i32) -> Result<i64> {
+        let mut acc: i64 = match self.selector {
+            // `MAX_UNSIGNED_LONG_VALUE_AS_LONG` for a least, `MIN_UNSIGNED_LONG_VALUE_AS_LONG` for a greatest.
+            Selector::Min => -1,
+            _ => 0,
+        };
+        let (mut total_count, mut count, mut has) = (0i64, 0i32, false);
+        let mut doc = start;
+        while doc < end {
+            if self.read(doc)? {
+                count = count.saturating_add(1);
+                if count > self.max_children {
+                    break;
+                }
+                has = true;
+                match self.selector {
+                    Selector::Min => {
+                        let v = opensearch::unsigned_pick(Selector::Min, &self.buf);
+                        if (v as u64) < (acc as u64) {
+                            acc = v;
+                        }
+                    }
+                    Selector::Max => {
+                        let v = opensearch::unsigned_pick(Selector::Max, &self.buf);
+                        if (v as u64) > (acc as u64) {
+                            acc = v;
+                        }
+                    }
+                    _ => {
+                        for &v in &self.buf {
+                            acc = acc.wrapping_add(v);
+                        }
+                        total_count += self.buf.len() as i64;
+                    }
+                }
+            }
+            doc = self.next_child();
+        }
+        if !has {
+            return Ok(self.missing);
+        }
+        let picked = match self.selector {
+            Selector::Avg if total_count > 1 => {
+                opensearch::divide_unsigned_and_round_up(acc, total_count)
+            }
+            _ => acc,
+        };
+        Ok(picked ^ i64::MIN)
+    }
+
     /// `pick(values, missingValue, docItr, startDoc, endDoc, maxChildren)`
     /// for the key's type: longs for a `Long`/`Int` key, doubles for a
     /// `Double`/`Float` one (a `Float` result cast to `float`), each returned
     /// in the comparator's encoding.
     fn pick(&mut self, start: i32, end: i32) -> Result<i64> {
+        if self.convert == ChildConvert::Unsigned {
+            return self.pick_unsigned(start, end);
+        }
         let float = self.ty == SortType::Float;
         let floating = float || self.ty == SortType::Double;
         let d = |v: i64| {
@@ -2150,6 +2271,8 @@ struct Competitive<'a> {
     skipper: Option<&'a lucene_codecs::doc_values::DocValuesSkipIndex>,
     field_number: i32,
     bytes: usize,
+    /// The key a point's value converts to ([`SortField::convert`]).
+    convert: ChildConvert,
     point_doc_count: i32,
     max_doc: i32,
     leaf_top_set: bool,
@@ -2380,6 +2503,7 @@ impl Competitive<'_> {
         self.missing_range = Some(range);
         let max_doc = usize::try_from(self.max_doc).unwrap_or(0);
         let mut visitor = CompetitiveVisitor {
+            convert: self.convert.clone(),
             min: self.min_value,
             max: self.max_value,
             max_doc_visited: self.max_doc_visited,
@@ -2484,6 +2608,7 @@ impl Competitive<'_> {
         }
         let threshold = ((self.iterator_cost as u64) >> 3) as i64;
         let mut visitor = CompetitiveVisitor {
+            convert: self.convert.clone(),
             min: self.min_value,
             max: self.max_value,
             max_doc_visited: self.max_doc_visited,
@@ -2584,6 +2709,8 @@ impl Competitive<'_> {
 /// The `IntersectVisitor` `doUpdateCompetitiveIterator` builds: documents past
 /// `maxDocVisited` whose value is in `[min, max]`.
 struct CompetitiveVisitor {
+    /// How a point's value becomes the key it is compared as.
+    convert: ChildConvert,
     min: i64,
     max: i64,
     max_doc_visited: i32,
@@ -2602,6 +2729,16 @@ struct CompetitiveVisitor {
 }
 
 impl CompetitiveVisitor {
+    /// A point's stored value as the key it sorts by (monotone, so a cell's bounds
+    /// convert to the bounds of its keys).
+    #[inline]
+    fn key(&self, stored: i64) -> i64 {
+        match self.convert {
+            ChildConvert::None => stored,
+            _ => self.convert.apply_one(stored),
+        }
+    }
+
     #[inline]
     fn add(&mut self, doc: i32) {
         if !self.in_segment(doc) {
@@ -2650,8 +2787,10 @@ impl CompetitiveVisitor {
 
 impl IntersectVisitor for CompetitiveVisitor {
     fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
-        let min = sortable_bytes_to_long(min_packed);
-        let max = sortable_bytes_to_long(max_packed);
+        let (min, max) = (
+            self.key(sortable_bytes_to_long(min_packed)),
+            self.key(sortable_bytes_to_long(max_packed)),
+        );
         if min > self.max || max < self.min {
             Relation::CellOutsideQuery
         } else if min < self.min || max > self.max {
@@ -2716,7 +2855,7 @@ impl IntersectVisitor for CompetitiveVisitor {
         if doc_id <= self.max_doc_visited {
             return;
         }
-        let v = sortable_bytes_to_long(packed_value);
+        let v = self.key(sortable_bytes_to_long(packed_value));
         if v >= self.min && v <= self.max {
             self.add(doc_id);
         }
@@ -2860,14 +2999,15 @@ fn cache_longs<'a>(
 ) -> Result<Column<'a>> {
     let worth = match &column {
         Column::Single(r) => !r.has_dense_fast(),
-        Column::Multi(..) => true,
+        Column::Multi(..) | Column::Converted(..) => true,
         _ => false,
     };
     let Some(cache) = seg.cache.filter(|_| worth) else {
         return Ok(column);
     };
     let key = match &column {
-        Column::Multi(..) => format!("num\0{}\0{:?}", f.field, f.selector),
+        Column::Multi(..) => format!("num\0{}\0{:?}\0{:?}", f.field, f.selector, f.convert),
+        Column::Converted(..) => format!("num\0{}\0{:?}", f.field, f.convert),
         _ => format!("num\0{}", f.field),
     };
     let mut fresh = column.clone();
@@ -3524,6 +3664,7 @@ fn open_leaf<'a>(
                                         Vec::new(),
                                         f.selector,
                                         f.ty,
+                                        f.convert.clone(),
                                     ),
                                     WithValue::of(data, &e.numeric),
                                 )
@@ -3543,26 +3684,75 @@ fn open_leaf<'a>(
                         }
                     },
                 };
-                let column = match &f.nested {
-                    None => cache_longs(seg, f, column, max_doc)?,
-                    Some(n) => Column::Nested(Box::new(NestedColumn {
-                        values: match column {
-                            Column::Single(r) => ChildValues::Single(r),
-                            Column::Multi(r, ..) => ChildValues::Multi(r),
-                            _ => ChildValues::Absent,
-                        },
-                        parents: nested_docs(seg, &n.parents)?,
-                        children: nested_docs(seg, &n.children)?,
-                        pos: None,
-                        selector: f.selector,
-                        ty: f.ty,
-                        missing: f.missing,
-                        max_children: n.max_children,
-                        convert: n.convert,
-                        last_parent: -1,
-                        last_value: f.missing,
-                        buf: Vec::new(),
-                    })),
+                let column = match (&f.nested, column) {
+                    (None, Column::Single(r)) if f.convert != ChildConvert::None => {
+                        cache_longs(seg, f, Column::Converted(r, f.convert.clone()), max_doc)?
+                    }
+                    (None, column) => cache_longs(seg, f, column, max_doc)?,
+                    (Some(n), column) => {
+                        let make = |values: Column<'a>| -> Result<NestedColumn<'a>> {
+                            Ok(NestedColumn {
+                                values: match values {
+                                    Column::Single(r) => ChildValues::Single(r),
+                                    Column::Multi(r, ..) => ChildValues::Multi(r),
+                                    _ => ChildValues::Absent,
+                                },
+                                parents: nested_docs(seg, &n.parents)?,
+                                children: nested_docs(seg, &n.children)?,
+                                pos: None,
+                                selector: f.selector,
+                                ty: f.ty,
+                                missing: f.missing,
+                                max_children: n.max_children,
+                                convert: n.convert.clone(),
+                                last_parent: -1,
+                                last_value: f.missing,
+                                buf: Vec::new(),
+                            })
+                        };
+                        // A root's value is the same for every search of the segment: kept
+                        // as a column once the key has been used twice, which spares the
+                        // two nested queries and the walk over the children.
+                        let cached = match seg.cache {
+                            Some(cache) => {
+                                let key = format!(
+                                    "nested\0{}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{:?}\0{:?}",
+                                    f.field,
+                                    f.selector,
+                                    f.ty,
+                                    f.missing,
+                                    n.convert,
+                                    n.max_children,
+                                    n.parents,
+                                    n.children
+                                );
+                                let source = column.clone();
+                                cache.sort_column(&key, max_doc, &mut || {
+                                    let mut col = make(source.clone())?;
+                                    let len = usize::try_from(max_doc).unwrap_or(0);
+                                    let mut values = Vec::with_capacity(len);
+                                    let mut has = FixedBitSet::new(len);
+                                    values.resize(len, 0);
+                                    // The roots, ascending, as the comparator asks. A document
+                                    // that is no root has no value here (the key's missing
+                                    // one): OpenSearch only ever ranks roots, and a child read
+                                    // as a root would also move the children's iterator past
+                                    // the ones its own root needs.
+                                    let roots = col.parents.clone();
+                                    for d in roots {
+                                        has.set(d as usize);
+                                        values[d as usize] = col.value(d)?;
+                                    }
+                                    Ok(SortColumn::Longs { values, has })
+                                })?
+                            }
+                            None => None,
+                        };
+                        match cached {
+                            Some(c) => Column::Cached(c),
+                            None => Column::Nested(Box::new(make(column)?)),
+                        }
+                    }
                 };
                 // A nested key does not skip: the caller runs one only where
                 // Lucene's would not either (see `NestedSort`).
@@ -3575,6 +3765,15 @@ fn open_leaf<'a>(
                     // A sum can pass every one of the values the points hold, so the
                     // points' range says nothing about it: such a key never skips.
                     _ if f.selector == Selector::Sum => None,
+                    // A converted key's average or median can lie between the values the points
+                    // hold, so only a least or a greatest value is found by them.
+                    _ if f.convert != ChildConvert::None
+                        && !matches!(f.selector, Selector::Min | Selector::Max) =>
+                    {
+                        None
+                    }
+                    // The skip index holds the stored values, not the keys they convert to.
+                    (_, None, Some(_)) if f.convert != ChildConvert::None => None,
                     (Pruning::None, _, _) | (_, _, None) => None,
                     // `buildCompetitiveDISIBuilder`: no points for the
                     // field, so its doc-values skip index, if it has one.
@@ -3588,6 +3787,7 @@ fn open_leaf<'a>(
                                         skipper: Some(index),
                                         field_number: info.number,
                                         bytes,
+                                        convert: f.convert.clone(),
                                         // `skipper.docCount()`.
                                         point_doc_count: index.doc_count,
                                         max_doc,
@@ -3633,6 +3833,7 @@ fn open_leaf<'a>(
                             skipper: None,
                             field_number: num,
                             bytes,
+                            convert: f.convert.clone(),
                             point_doc_count: pf.doc_count,
                             max_doc,
                             leaf_top_set: c.top_set,
@@ -5283,20 +5484,34 @@ fn count_rest(
 mod tests {
     #[test]
     fn child_values_are_converted_before_they_are_picked() {
-        let mut v = [-250i64, 0, 350];
+        let mut v = vec![-250i64, 0, 350];
+        assert_eq!(ChildConvert::HalfFloat.apply_one(0x3c00 ^ 0), {
+            let mut h = vec![0x3c00];
+            ChildConvert::HalfFloat.apply(&mut h);
+            h[0]
+        });
         ChildConvert::None.apply(&mut v);
         assert_eq!(v, [-250, 0, 350]);
         ChildConvert::ScaledFloat { inverse: 0.01 }.apply(&mut v);
         assert_eq!(
-            v.map(sortable_long_to_double),
+            v.iter()
+                .copied()
+                .map(sortable_long_to_double)
+                .collect::<Vec<_>>(),
             [-250.0 * 0.01, 0.0, 350.0 * 0.01]
         );
-        let mut h = [
+        let mut h = vec![
             i64::from(lucene_util::half_float::half_float_to_sortable_short(-1.5)),
             i64::from(lucene_util::half_float::half_float_to_sortable_short(2.25)),
         ];
         ChildConvert::HalfFloat.apply(&mut h);
-        assert_eq!(h.map(sortable_int_to_float), [-1.5, 2.25]);
+        assert_eq!(
+            h.iter()
+                .copied()
+                .map(sortable_int_to_float)
+                .collect::<Vec<_>>(),
+            [-1.5, 2.25]
+        );
     }
 
     #[test]
@@ -5869,6 +6084,7 @@ mod tests {
         let key = SortField {
             nested: Some(nested.clone()),
             rewritten: None,
+            convert: ChildConvert::None,
             ..SortField::numeric("l", SortType::Long, false)
         };
         assert_eq!(key, key.clone());
@@ -6098,8 +6314,11 @@ mod tests {
         );
         assert_eq!(sortable_bytes_to_long(&[0x80, 0, 0, 5]), 5);
         assert_eq!(sortable_bytes_to_long(&[0x7f, 0xff, 0xff, 0xff]), -1);
+        // A half-float point: two bytes, the sign bit flipped.
+        assert_eq!(sortable_bytes_to_long(&[0x80, 5]), 5);
+        assert_eq!(sortable_bytes_to_long(&[0x7f, 0xff]), -1);
         assert_eq!(
-            sortable_bytes_to_long(&[1, 2]),
+            sortable_bytes_to_long(&[1, 2, 3]),
             0,
             "no other width is a sortable number"
         );
@@ -6147,6 +6366,7 @@ mod tests {
             skipper: None,
             field_number: 0,
             bytes: 8,
+            convert: ChildConvert::None,
             point_doc_count: 0,
             max_doc: 10,
             leaf_top_set: false,
@@ -6195,6 +6415,7 @@ mod tests {
     #[test]
     fn the_visitor_moves_to_a_bit_set_past_the_upgrade_size() {
         let mut v = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 10,
             max: 20,
             max_doc_visited: 2,
@@ -6225,6 +6446,7 @@ mod tests {
         // In bulk: below the floor dropped, the list kept until a run would
         // pass the upgrade size, then set directly.
         let mut v = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 0,
             max: 0,
             max_doc_visited: 4,
@@ -6249,6 +6471,7 @@ mod tests {
         v.visit(64);
         assert_eq!(v.corrupt, Some(64));
         let mut w = CompetitiveVisitor {
+            convert: ChildConvert::None,
             min: 0,
             max: 0,
             max_doc_visited: -1,
@@ -6297,6 +6520,7 @@ mod tests {
             skipper: None,
             field_number,
             bytes: 8,
+            convert: ChildConvert::None,
             point_doc_count: max_doc,
             max_doc,
             leaf_top_set: false,

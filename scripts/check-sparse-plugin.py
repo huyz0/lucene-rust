@@ -113,7 +113,7 @@ def main():
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     start(OURS[0], OURS[1], image)
-    start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{VERSION}")
+    start(STOCK[0], STOCK[1], "stock")
     failures = []
     try:
         wait(OURS[1])
