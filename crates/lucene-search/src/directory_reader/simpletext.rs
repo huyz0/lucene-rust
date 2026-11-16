@@ -477,6 +477,7 @@ impl SegmentReader {
         let core = Arc::new(SimpleTextCore::open(dir, commit)?);
         let live_docs = read_live_docs(dir, commit, core.info.doc_count)?;
         Ok(Self {
+            stored_serial: super::next_stored_serial(),
             index_sort: (!core.info.index_sort.is_empty())
                 .then(|| Arc::new(core.info.index_sort.clone())),
             has_blocks: core.info.has_blocks,
@@ -520,6 +521,7 @@ impl SegmentReader {
             norms_meta: None,
             norms_data: None,
             hidden: None,
+            masked: None,
             term_vectors: None,
             term_vectors_meta: Arc::default(),
             vectors: Vec::new(),

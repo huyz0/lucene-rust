@@ -438,7 +438,7 @@ index/NumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::NumericRea
 index/NumericDocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::NumericFieldUpdates
 index/NumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_numeric_doc_values_output
 index/OneMergeWrappingMergePolicy	ported	crates/lucene-index/src/merge_policy/filter.rs::OneMergeWrappingMergePolicy
-index/OrdTermState	ported	crates/lucene-codecs/src/terms_dict.rs::seek_ord
+index/OrdTermState	ported	crates/lucene-codecs/src/terms_dict.rs::lookup_ord
 index/OrdinalMap	ported	crates/lucene-search/src/ordinal_map.rs::OrdinalMap
 index/ParallelCompositeReader	ported	crates/lucene-search/src/reader/parallel.rs::ParallelCompositeReader
 index/ParallelLeafReader	ported	crates/lucene-search/src/reader/parallel.rs::ParallelLeafReader

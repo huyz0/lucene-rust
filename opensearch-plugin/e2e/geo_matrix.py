@@ -228,9 +228,10 @@ def rows():
     add("geo sort origins", {"query": {"match": {"body": "theta"}}, "sort": [gsort([[0, 0], [100, -30], [-150, 60]])]})
     add("geo sort origins median desc", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([[0, 89], [179.9, 0]], mode="median", order="desc")]})
     add("geo sort origins search_after", {"query": {"match": {"body": "beta"}}, "sort": [gsort([[0, 0], [90, 0]], unit="km"), {"n": "asc"}], "search_after": [3000.0, 50]})
-    # PLANE goes through Math.cos's HotSpot intrinsic: OpenSearch's comparator keeps it. (A plain
-    # one-origin ascending sort is Lucene's whatever its distance_type: still native.)
-    add("geo sort plane", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], distance_type="plane", order="desc")]}, "sort_geo_plane")
+    # PLANE runs natively with StrictMath's cos; Math.cos's HotSpot intrinsic differs in the last
+    # bit for ~3% of arguments. (A plain one-origin ascending sort is Lucene's whatever its
+    # distance_type.)
+    add("geo sort plane", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], distance_type="plane", order="desc")]})
     add("geo sort plane as lucene", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], distance_type="plane")]})
     add("geo sort unmapped", {"query": {"match": {"body": "alpha"}}, "sort": [{"_geo_distance": {"nowhere": [0, 0], "ignore_unmapped": True}}, {"n": "asc"}]})
     add("geo sort shape filter", {"query": {"bool": {"filter": [gshape({"type": "envelope", "coordinates": [[-60, 50], [60, -50]]})]}}, "sort": [gsort([0, 0], order="desc", unit="km")]})

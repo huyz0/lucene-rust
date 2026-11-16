@@ -1133,6 +1133,26 @@ throughout a legacy benchmark that does not pass `--require-check`. Timings
 can still be noisy; the report describes that uncertainty rather than proving
 a speed difference. Fixture tests separately establish Java parity.
 
+## raw-term-choke-point
+
+A masked field (security plugin field masking) keeps its raw ordinals and
+bytes in the index; only a value that leaves the engine is masked. The mask
+rides on the doc-values entry, so `TermsDict::lookup_ord` and
+`BinaryReader::value_ref` return masked bytes and every other path reads raw
+bytes. `check-port-invariants.py` rule `raw-term-choke-point` fails when
+`raw_term_at(`, `.raw_term()`, `TermsCursor::open(`, `decode_all_terms(` or
+`SubstringIndex::new(` appears in production code of a file that is not in
+`RAW_TERM_ALLOWED`, where each entry carries the reason it cannot emit the
+bytes (raw comparison, ordinal map construction, or an explicit mask refusal).
+
+Seen to fail by: appending a function calling `raw_term_at(0)` to
+`lucene-search/src/rescorer.rs` (the gate named the file and line).
+
+Blind to: a new raw read added inside a file that is already allow-listed, and
+a raw read through a path that does not use these five names. Both are covered
+only by the masked-view tests in `lucene-aggs/tests/masked_view.rs` and the
+plugin's `SELFTEST_ONLY=security` run.
+
 ## Each of these has been seen to fail
 
 A gate nobody has watched fail is a gate nobody should trust -- this sweep

@@ -468,7 +468,7 @@ fn norms_line(
 }
 
 fn term_of(dict: &mut TermsDict<'_>, ord: i64) -> Result<Vec<u8>, String> {
-    Ok(dict.seek_ord(ord).map_err(err)?.to_vec())
+    Ok(dict.lookup_ord(ord).map_err(err)?.to_vec())
 }
 
 fn dv_line(

@@ -113,7 +113,6 @@ sort_  # SortEncoder.java
 sort_geo_field_data  # GeoEncoder.java
 sort_geo_nested  # GeoEncoder.java
 sort_geo_origins  # GeoEncoder.java
-sort_geo_plane  # GeoEncoder.java
 sort_geo_reflect  # GeoEncoder.java
 sort_keys  # SortEncoder.java
 sort_script  # ExtendedEncoder.java
