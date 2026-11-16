@@ -231,6 +231,11 @@ pub struct FlushedSegment {
 /// does `si.addFile(fileName)` before encoding and every consumer that walks
 /// `SegmentInfo.files` -- `IndexFileDeleter`, `CheckIndex`,
 /// `checksum_verify` -- reference-counts from exactly that set.
+///
+/// A non-compound call whose documents hold at least
+/// [`stored_fields::SPILL_BYTES`] of stored values streams the `.fdt` to its
+/// file as it compresses (the bytes are the same); a compound call packs it
+/// from memory.
 #[allow(clippy::too_many_arguments)]
 pub fn write_stored_only_segment_files(
     dir: &dyn Directory,
@@ -1171,6 +1176,56 @@ mod tests {
             reference.0,
             ".fdt on disk equals the buffered one"
         );
+    }
+
+    #[test]
+    fn a_spilling_flush_lists_and_writes_the_files_a_buffered_one_does() {
+        let docs: Vec<Document> = [40usize, 1_300_000, 1_900_000]
+            .iter()
+            .map(|&n| Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("abcdefghij".repeat(n / 10)),
+                }],
+            })
+            .collect();
+        let id = [9u8; ID_LENGTH];
+        let reference = build_native_stored_fields(&docs, &id, None).expect("native writer");
+        let flush = |name: &str, compound: bool| {
+            let root = TempDir::new(name);
+            let dir = FsDirectory::open(root.path());
+            let flushed = write_stored_only_segment_files(
+                &dir,
+                "_0",
+                id,
+                "Lucene104",
+                version(),
+                &[stored_only_field("f", 0)],
+                &docs,
+                compound,
+                false,
+            )
+            .unwrap();
+            (root, flushed.info.files)
+        };
+        let (root, files) = flush("flush-spill-files", false);
+        for ext in ["fdt", "fdx", "fdm", "fnm", "si"] {
+            assert!(
+                files.iter().any(|f| f.ends_with(&format!(".{ext}"))),
+                "{ext} is listed: {files:?}"
+            );
+        }
+        let fdt = files.iter().find(|f| f.ends_with(".fdt")).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(fdt)).unwrap(),
+            reference.0,
+            "the spilled .fdt is the buffered one"
+        );
+        // A compound flush packs the .fdt from memory: no standalone file.
+        let (root, files) = flush("flush-spill-compound", true);
+        assert!(files.iter().all(|f| !f.ends_with(".fdt")), "{files:?}");
+        assert!(!root.path().join("_0.fdt").exists());
+        assert!(root.path().join("_0.cfs").exists());
     }
 
     #[test]
