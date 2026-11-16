@@ -80,9 +80,9 @@ pub fn call(
     }))
 }
 
-/// `FloatingDecimal.readJavaFormatString(null)`: its `in.trim()`.
+/// `FloatingDecimal.readJavaFormatString(null)`: its `in.length()`.
 fn null_decimal() -> Throw {
-    Throw::npe("Cannot invoke \"String.trim()\" because \"in\" is null")
+    Throw::npe("Cannot invoke \"String.length()\" because \"in\" is null")
 }
 
 fn to_string_radix(v: i64, radix: u32) -> String {
