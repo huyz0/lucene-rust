@@ -1675,7 +1675,7 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
     let top_n = usize::try_from(c.i32()?).map_err(|_| bad("negative top_n".into()))?;
     let slices = decode_slices(&mut c, &bad)?;
     let flags = c.u8()?;
-    if flags & !(HYBRID_RETURN_DOCS | HYBRID_POST_FILTER | HYBRID_SORT) != 0 {
+    if flags & !(HYBRID_RETURN_DOCS | HYBRID_POST_FILTER | HYBRID_SORT | HYBRID_TERMINATE) != 0 {
         return Err(bad(format!("unknown flags {flags:#x}")));
     }
     let return_docs = flags & HYBRID_RETURN_DOCS != 0;
@@ -1698,6 +1698,12 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         let early = keys[0].ty == SortType::Doc && !keys[0].reverse
             || index_sorted.first() == Some(&Some(0));
         Some((keys, after, early, threshold))
+    } else {
+        None
+    };
+    let terminate = if flags & HYBRID_TERMINATE != 0 {
+        let limit = u64::try_from(c.i64()?).map_err(|_| bad("negative terminate_after".into()))?;
+        Some(HybridTerminate::new(limit))
     } else {
         None
     };
@@ -1821,13 +1827,14 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                 }
             };
             match sorted.as_mut() {
-                None => plain.segment(&scored, seg.doc_base, accepted.as_deref()),
+                None => plain.segment(&scored, seg.doc_base, accepted.as_deref(), terminate.as_ref()),
                 Some(sc) => sc
                     .segment(
                         &scored,
                         &h.reader.segment_readers()[s],
                         seg,
                         accepted.as_deref(),
+                        terminate.as_ref(),
                     )
                     .map_err(map_search_error)?,
             }
@@ -1882,6 +1889,9 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
             }
         }
     }
+    if let Some(t) = &terminate {
+        out.push(u8::from(t.terminated.get()));
+    }
     similarity_checked(sim.as_ref(), Ok(out))
 }
 
@@ -1896,6 +1906,9 @@ pub const HYBRID_POST_FILTER: u8 = 2;
 /// `doc: i32`, `score` (`f32` bits) and one `i64` per key; then `terms_len: i32` and
 /// the keyword keys' terms ([`encode_terms`]).
 pub const HYBRID_SORT: u8 = 4;
+/// A hybrid blob's flag: `terminate_after: i64` follows (after the sort's); the answer
+/// ends with `terminated: u8`.
+pub const HYBRID_TERMINATE: u8 = 8;
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
 pub const HYBRID_WINDOW: i32 = 1 << 12;
@@ -2026,6 +2039,45 @@ fn walk_hybrid_windows<E>(
     }
 }
 
+/// OpenSearch's `EarlyTerminatingCollector` around the top-docs collector, inside the post
+/// filter's: the `n + 1`th document the filter lets through, or a segment after `n` were let through, ends the search. Shared by every
+/// slice (a `terminate_after` search is never concurrent).
+pub struct HybridTerminate {
+    limit: u64,
+    seen: std::cell::Cell<u64>,
+    /// Whether the search ended early.
+    pub terminated: std::cell::Cell<bool>,
+}
+
+impl HybridTerminate {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            seen: std::cell::Cell::new(0),
+            terminated: std::cell::Cell::new(false),
+        }
+    }
+
+    /// A segment's start: `false` when the search has ended.
+    fn segment(&self) -> bool {
+        if self.seen.get() >= self.limit {
+            self.terminated.set(true);
+            return false;
+        }
+        true
+    }
+
+    /// One document: `false` when it is past the limit.
+    fn collect(&self) -> bool {
+        if self.seen.get() >= self.limit {
+            self.terminated.set(true);
+            return false;
+        }
+        self.seen.set(self.seen.get() + 1);
+        true
+    }
+}
+
 /// One slice's `HybridTopScoreDocCollector`, fed as `HybridBulkScorer` feeds
 /// it.
 pub struct HybridCollector {
@@ -2060,7 +2112,11 @@ impl HybridCollector {
         scored: &[Vec<lucene_search::collector::ScoreDoc>],
         doc_base: i32,
         accepted: Option<&[u64]>,
+        terminate: Option<&HybridTerminate>,
     ) {
+        if terminate.is_some_and(|t| !t.segment()) {
+            return;
+        }
         // The segment's own HybridSubQueryScorer: thresholds start at 0.
         let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
         let mut window = std::mem::take(&mut self.window);
@@ -2070,6 +2126,19 @@ impl HybridCollector {
             &mut min_scores,
             &mut |local, d, window, min_scores| {
                 let doc = doc_base.wrapping_add(local);
+                // The post filter's collector wraps the early terminator, which wraps the
+                // top docs: the terminator counts the documents the filter lets through,
+                // and ends the search at the one past the limit, before the aggregations
+                // see it.
+                let passes = accepted.is_none_or(|filter| {
+                    let at = usize::try_from(local).unwrap_or(0);
+                    filter
+                        .get(at / 64)
+                        .is_some_and(|w| w >> (at % 64) & 1 == 1)
+                });
+                if passes && terminate.is_some_and(|t| !t.collect()) {
+                    return Ok(false);
+                }
                 if let Some(docs) = self.docs.as_mut() {
                     // `HybridSubQueryScorer.score()`: the sub-queries' scores summed in order.
                     let mut sum = 0.0f32;
@@ -2078,14 +2147,8 @@ impl HybridCollector {
                     }
                     docs.push((doc, sum));
                 }
-                if let Some(filter) = accepted {
-                    let at = usize::try_from(local).unwrap_or(0);
-                    if filter
-                        .get(at / 64)
-                        .is_none_or(|w| w >> (at % 64) & 1 == 0)
-                    {
-                        return Ok(true);
-                    }
+                if !passes {
+                    return Ok(true);
                 }
                 self.total = self.total.saturating_add(1);
                 for (q, queue) in self.queues.iter_mut().enumerate() {
@@ -2186,8 +2249,12 @@ impl<'a> HybridSortCollector<'a> {
         reader: &lucene_search::directory_reader::SegmentReader,
         seg: &OpenSegment<'_>,
         accepted: Option<&[u64]>,
+        terminate: Option<&HybridTerminate>,
     ) -> Result<(), lucene_search::Error> {
         use lucene_search::top_field::HybridCollected;
+        if terminate.is_some_and(|t| !t.segment()) {
+            return Ok(());
+        }
         let doc_base = seg.doc_base;
         let mut leaves = self
             .queues
@@ -2204,6 +2271,15 @@ impl<'a> HybridSortCollector<'a> {
             &mut min_scores,
             &mut |local, d, window, _| -> Result<bool, lucene_search::Error> {
                 let doc = doc_base.wrapping_add(local);
+                let passes = accepted.is_none_or(|filter| {
+                    let at = usize::try_from(local).unwrap_or(0);
+                    filter
+                        .get(at / 64)
+                        .is_some_and(|w| w >> (at % 64) & 1 == 1)
+                });
+                if passes && terminate.is_some_and(|t| !t.collect()) {
+                    return Ok(false);
+                }
                 let mut sum = 0.0f32;
                 for w in window.iter() {
                     sum += w[d];
@@ -2211,14 +2287,8 @@ impl<'a> HybridSortCollector<'a> {
                 if let Some(docs) = self.docs.as_mut() {
                     docs.push((doc, sum));
                 }
-                if let Some(filter) = accepted {
-                    let at = usize::try_from(local).unwrap_or(0);
-                    if filter
-                        .get(at / 64)
-                        .is_none_or(|w| w >> (at % 64) & 1 == 0)
-                    {
-                        return Ok(true);
-                    }
+                if !passes {
+                    return Ok(true);
                 }
                 self.total = self.total.saturating_add(1);
                 self.hits.set(self.hits.get().saturating_add(1));

@@ -615,13 +615,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int rc;
         NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
-            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold), out);
+            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
-            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields);
+            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, NativeHybrid.terminates(ctx));
             InternalAggregations[] aggOut = new InternalAggregations[1];
             InternalAggregations aggResult = null;
             if (aggregating) {

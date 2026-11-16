@@ -42,8 +42,15 @@ final class NativeHybrid {
     static final int POST_FILTER = 2;
     /** {@code HYBRID_SORT} in {@code reader_search.rs}. */
     static final int SORT = 4;
+    /** {@code HYBRID_TERMINATE} in {@code reader_search.rs}. */
+    static final int TERMINATE = 8;
 
     private NativeHybrid() {}
+
+    /** Whether the request has a {@code terminate_after} (its collector is one of the chain's). */
+    static boolean terminates(SearchContext ctx) {
+        return ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
+    }
 
     /**
      * Why {@code query} cannot run natively, or null when it can: only a plain hybrid query (no
@@ -74,12 +81,11 @@ final class NativeHybrid {
             throw new IllegalArgumentException("Scroll operation is not supported in hybrid query");
         }
         if (ctx.collapse() != null) return "hybrid_collapse";
-        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "hybrid_terminate_after";
         if (ctx.getProfilers() != null) return "profile";
         boolean minScore = ctx.minimumScore() != null;
         boolean postFilter = ctx.parsedPostFilter() != null;
-        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0)
-            || hasFilterCollector != (postFilter || minScore)) return "collectors";
+        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0) + (terminates(ctx) ? 1 : 0)
+            || hasFilterCollector != (postFilter || minScore || terminates(ctx))) return "collectors";
         if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
         return null;
     }
@@ -95,7 +101,8 @@ final class NativeHybrid {
         boolean returnDocs,
         byte[] postFilter,
         byte[] sort,
-        long threshold
+        long threshold,
+        long terminateAfter
     ) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(subQueries.size());
@@ -105,7 +112,7 @@ final class NativeHybrid {
         }
         NativeAggregations.writeInt(out, topN);
         NativeAggregations.writeSlices(out, slices);
-        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0) | (sort != null ? SORT : 0));
+        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0) | (sort != null ? SORT : 0) | (terminateAfter >= 0 ? TERMINATE : 0));
         if (postFilter != null) {
             NativeAggregations.writeInt(out, postFilter.length);
             out.writeBytes(postFilter);
@@ -116,6 +123,10 @@ final class NativeHybrid {
             NativeAggregations.writeInt(out, sort.length);
             out.writeBytes(sort);
         }
+        if (terminateAfter >= 0) {
+            NativeAggregations.writeInt(out, (int) terminateAfter);
+            NativeAggregations.writeInt(out, (int) (terminateAfter >>> 32));
+        }
         return out.toByteArray();
     }
 
@@ -125,13 +136,13 @@ final class NativeHybrid {
     }
 
     /** The native answer read: each slice's collected results, and the documents they counted. */
-    record Answer(List<Collected> slices, ScoreDoc[] counted) {}
+    record Answer(List<Collected> slices, ScoreDoc[] counted, boolean terminated) {}
 
     /**
      * Reads the native answer. With {@code returnDocs}, the documents the slices counted come with
      * it, each with its sub-queries' scores summed (what an aggregation's scorer reads).
      */
-    static Answer read(byte[] answer, int subQueries, boolean returnDocs, SortField[] sort) {
+    static Answer read(byte[] answer, int subQueries, boolean returnDocs, SortField[] sort, boolean terminates) {
         ByteBuffer in = ByteBuffer.wrap(answer).order(ByteOrder.LITTLE_ENDIAN);
         List<Collected> collected = new ArrayList<>();
         List<ScoreDoc[]> counted = new ArrayList<>();
@@ -162,7 +173,7 @@ final class NativeHybrid {
                 counted.add(docs);
             }
         }
-        return new Answer(collected, counted.stream().flatMap(java.util.Arrays::stream).toArray(ScoreDoc[]::new));
+        return new Answer(collected, counted.stream().flatMap(java.util.Arrays::stream).toArray(ScoreDoc[]::new), terminates && in.get() != 0);
     }
 
     /**
@@ -242,6 +253,9 @@ final class NativeHybrid {
      * slice's results formatted, then merged into the query result in slice order.
      */
     static void store(SearchContext ctx, Answer answer, boolean rescored) throws java.io.IOException {
+        if (terminates(ctx)) {
+            ctx.queryResult().terminatedEarly(answer.terminated());
+        }
         HybridCollectorResultsUtilParams params = new HybridCollectorResultsUtilParams.Builder().searchContext(ctx).rescoredNatively(rescored).build();
         for (Collected collected : answer.slices()) {
             HybridSearchCollectorResultUtil util = new HybridSearchCollectorResultUtil(params, collected);

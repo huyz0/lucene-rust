@@ -1255,7 +1255,7 @@ pub(crate) mod tests {
             vec![sd(2, 0.0)],
         ];
         let mut c = HybridCollector::new(2, 1);
-        c.segment(&scored, 10, None);
+        c.segment(&scored, 10, None, None);
         // Window 0: docs 0 and 1 (threshold 0), 1 pushes 0 out (threshold
         // 1.0). Window 1: 4096 and 4097 beat 1.0, 4098 does not.
         assert_eq!(c.total, 4);
@@ -1270,8 +1270,8 @@ pub(crate) mod tests {
         assert!(c.queues[0].heap.is_empty());
         // The next segment starts from threshold 0 again, the queue kept.
         let mut c = HybridCollector::new(1, 1);
-        c.segment(&[vec![sd(0, 5.0)]], 0, None);
-        c.segment(&[vec![sd(0, 1.0)]], 1, None);
+        c.segment(&[vec![sd(0, 5.0)]], 0, None, None);
+        c.segment(&[vec![sd(0, 1.0)]], 1, None, None);
         assert_eq!(c.total, 2);
         let hits = c.queues.remove(0).into_sorted();
         assert_eq!((hits[0].doc, hits[0].score), (0, 5.0));
@@ -1466,6 +1466,45 @@ pub(crate) mod tests {
         // No room keeps no hits.
         let (_, none) = sorted(sort_blob(&[(SORT_DOC, 0, "", 0)], None), 0);
         assert!(none.iter().all(Vec::is_empty));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_hybrid_search_ends_after_terminate_after_documents() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let run = |limit: i64| {
+            let mut blob = hybrid_blob_flags(&subs, 100, &[], 8);
+            blob.extend_from_slice(&limit.to_le_bytes());
+            let out = search_hybrid_blobs(h, &blob).unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let mut hits = 0;
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                hits += n;
+                for _ in 0..n {
+                    c.i32().unwrap();
+                    c.i32().unwrap();
+                }
+            }
+            let flag = c.u8().unwrap();
+            assert_eq!(c.remaining(), 0);
+            (total, hits, flag)
+        };
+        let all = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        )[0]
+            .0;
+        let (total, hits, flag) = run(3);
+        assert_eq!((total, flag), (3, 1));
+        assert!(hits > 0);
+        // Exactly the matches there are, in one segment's reach: no document past the limit.
+        let (total, _, flag) = run(all + 5);
+        assert_eq!((total, flag), (all, 0));
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 

@@ -218,6 +218,19 @@ def searches():
                         "aggs": {"tags": {"terms": {"field": "tag"}}}}),
             ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "sort": [{"n": "asc"}], "from": 10, "size": 10}),
             ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "track_total_hits": 20}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 40, "size": 30}),
+            ("rrf", {"query": hybrid(MATCH, KNN), "terminate_after": 100000}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 7, "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 25, "post_filter": {"term": {"tag": "g1"}},
+                        "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 20, "sort": [{"n": "desc"}]}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 20, "sort": [{"_doc": "asc"}], "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 1}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 3, "post_filter": {"term": {"tag": "g1"}},
+                        "aggs": {"c": {"value_count": {"field": "n"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 10, "post_filter": {"term": {"tag": "g1"}}, "sort": [{"n": "asc"}],
+                        "aggs": {"c": {"value_count": {"field": "n"}}}}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
             ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10})]
     return out
@@ -234,6 +247,8 @@ def answer(port, pipeline, body, explain=False, index="h"):
            "hits": [(h["_id"], h.get("_score"), h.get("sort"), (h.get("fields") or {}).get("tag")) for h in hits["hits"]]}
     if "aggregations" in r:
         out["aggregations"] = r["aggregations"]
+    if "terminated_early" in r:
+        out["terminated_early"] = r["terminated_early"]
     if explain:
         out["explanations"] = {h["_id"]: h.get("_explanation") for h in hits["hits"]}
     return out
@@ -274,6 +289,8 @@ def compare(pipeline, body, failures, explain=False, ours="h", stock="h"):
         failures.append(f"{label}: total/max ours {o['total']} {o['max_score']}, stock {s['total']} {s['max_score']}")
     if not same_hits(o["hits"], s["hits"]):
         failures.append(f"{label}: hits\n  ours  {o['hits'][:12]}\n  stock {s['hits'][:12]}")
+    if o.get("terminated_early") != s.get("terminated_early"):
+        failures.append(f"{label}: terminated_early ours {o.get('terminated_early')}, stock {s.get('terminated_early')}")
     if not close(o.get("aggregations"), s.get("aggregations")):
         failures.append(f"{label}: aggregations ours {o.get('aggregations')}, stock {s.get('aggregations')}")
     if explain and not close(o["explanations"], s["explanations"]):
