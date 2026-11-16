@@ -15,6 +15,7 @@ rss while it ran, and the plugin's off-heap stats after it.
 """
 import concurrent.futures
 import json
+import nodectl
 import os
 import random
 import subprocess
@@ -45,16 +46,8 @@ def req(base, method, path, body=None, ndjson=False, timeout=600):
 
 
 def cgroup_rss(container):
-    """Anonymous memory of the container (cgroup v1 total_rss, v2 anon)."""
-    out = subprocess.run(
-        ["docker", "exec", container, "sh", "-c",
-         "cat /sys/fs/cgroup/memory/memory.stat 2>/dev/null || cat /sys/fs/cgroup/memory.stat"],
-        capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        k, _, v = line.partition(" ")
-        if k in ("total_rss", "anon"):
-            return int(v)
-    return -1
+    """Anonymous memory of the node's JVM (RssAnon)."""
+    return nodectl.cgroup_anon(container) or -1
 
 
 class Sampler:

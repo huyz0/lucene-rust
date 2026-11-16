@@ -523,15 +523,15 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(new ConstantScoreQuery(t), f -> true).blob() != null, "constant score encodes");
         Query wrappedWildcard = new ConstantScoreQuery(new WildcardQuery(new Term("body", "a*b")));
         check(
-            "clause_WildcardQuery".equals(QueryEncoder.encode(wrappedWildcard, f -> true).fallbackReason()),
-            "wrapped wildcard falls back"
+            QueryEncoder.encode(wrappedWildcard, f -> true).blob() != null,
+            "a wildcard under a constant score encodes"
         );
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
         check(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).blob() != null, "match_all encodes");
         Query phrase = new BooleanQuery.Builder().add(t, Occur.MUST).add(new PhraseQuery("body", "a", "b"), Occur.SHOULD).build();
         check(QueryEncoder.encode(phrase, f -> true).blob() != null, "a phrase clause encodes");
         Query gap = new PhraseQuery.Builder().add(new Term("body", "a"), 0).add(new Term("body", "b"), 2).build();
-        check("phrase_positions".equals(QueryEncoder.encode(gap, f -> true).fallbackReason()), "a phrase with a gap falls back");
+        check(QueryEncoder.encode(gap, f -> true).blob() != null, "a phrase with a gap encodes");
         Query negative = new BooleanQuery.Builder().add(t, Occur.MUST_NOT).build();
         check(QueryEncoder.encode(negative, f -> true).blob() != null, "pure negative encodes (and matches nothing)");
         Query t2 = new TermQuery(new Term("body", "b"));
@@ -547,10 +547,27 @@ public final class NativeSelfTest {
             "msm 2 is fast"
         );
         check(QueryEncoder.isFast(new DisjunctionMaxQuery(List.of(t, t2), 0.3f)), "dismax is fast");
-        check(QueryEncoder.isFast(wrappedWildcard) == false, "a wildcard is not encodable yet");
         check(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).blob() != null, "empty encodes (and matches nothing)");
         check(
-            "query_WildcardQuery".equals(QueryEncoder.encode(new WildcardQuery(new Term("body", "a*b")), f -> true).fallbackReason()),
+            "query_NativeSelfTest".equals(QueryEncoder.encode(new Query() {
+                @Override
+                public String toString(String field) {
+                    return "unknown";
+                }
+
+                @Override
+                public void visit(org.apache.lucene.search.QueryVisitor visitor) {}
+
+                @Override
+                public boolean equals(Object o) {
+                    return this == o;
+                }
+
+                @Override
+                public int hashCode() {
+                    return 1;
+                }
+            }, f -> true).fallbackReason()),
             "an unsupported root reports query_, not clause_"
         );
         check(
@@ -658,7 +675,26 @@ public final class NativeSelfTest {
                 case 3 -> r.nextInt(3) == 0 ? MatchAllDocsQuery.INSTANCE : t;
                 // Phrases need positions: `body` only (`tag` is a keyword).
                 case 4 -> new PhraseQuery(r.nextInt(3) == 0 ? r.nextInt(3) : 0, "body", word(r), word(r));
-                case 5 -> r.nextInt(2) == 0 ? new PhraseQuery("body", word(r), word(r), word(r)) : t;
+                case 5 -> switch (r.nextInt(4)) {
+                    case 0 -> new PhraseQuery("body", word(r), word(r), word(r));
+                    // A stopword removed between terms leaves a gap in the positions.
+                    case 1 -> {
+                        PhraseQuery.Builder b = new PhraseQuery.Builder().setSlop(r.nextInt(3) == 0 ? r.nextInt(3) : 0);
+                        int pos = r.nextInt(2);
+                        for (int i = 0, n = 2 + r.nextInt(3); i < n; i++) {
+                            b.add(new Term("body", word(r)), pos);
+                            pos += 1 + (r.nextInt(3) == 0 ? 1 + r.nextInt(2) : 0);
+                        }
+                        yield b.build();
+                    }
+                    case 2 -> {
+                        org.apache.lucene.search.MultiPhraseQuery.Builder b = new org.apache.lucene.search.MultiPhraseQuery.Builder().setSlop(r.nextInt(3));
+                        b.add(new Term[] { new Term("body", word(r)), new Term("body", word(r)) });
+                        b.add(new Term[] { new Term("body", word(r)) }, 1 + r.nextInt(2));
+                        yield b.build();
+                    }
+                    default -> t;
+                };
                 // The multi-term family, rewritten by the searcher to its constant-score wrapper.
                 case 8 -> {
                     long a = r.nextInt(400), b = a + r.nextInt(200);
@@ -888,7 +924,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31))
+                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];

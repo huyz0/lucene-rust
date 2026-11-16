@@ -6,8 +6,9 @@
 # every document with the dump of the fixture OpenSearch wrote. `--fixture` instead rewrites
 # fixtures/data/opensearch_zstd with the plugin's writer.
 #
-# Runs inside the opensearchproject/opensearch image (needs Docker), or against a local classpath
-# holding OpenSearch's lib/ jars and the custom-codecs plugin's jars: OPENSEARCH_CP="lib/*:cc/*".
+# Runs with the jars and JDK of the OpenSearch distribution (no Docker; nodectl.py downloads the
+# tarball once), or against a local classpath holding OpenSearch's lib/ jars and the
+# custom-codecs plugin's jars: OPENSEARCH_CP="lib/*:cc/*".
 set -euo pipefail
 
 VERSION="${OPENSEARCH_VERSION:-3.9.0}"
@@ -26,14 +27,13 @@ java_run() {
         local args=("${@//\/idx/$work/idx}")
         java -cp "$OPENSEARCH_CP:$classes" ZstdStoredFields "${args[@]}"
     else
-        docker run --rm --entrypoint bash -v "$work/check:/check" -v "$work/idx:/idx" \
-            "opensearchproject/opensearch:$VERSION" -c '
-set -e
-home=/usr/share/opensearch
-cp="$home/lib/*:$home/plugins/opensearch-custom-codecs/*"
-cd /tmp && cp /check/ZstdStoredFields.java . && "$home/jdk/bin/javac" -nowarn -cp "$cp" ZstdStoredFields.java
-"$home/jdk/bin/java" -cp "$cp:/tmp" ZstdStoredFields "$@"
-' bash "$@"
+        local home
+        home="$(python3 "$root/opensearch-plugin/e2e/nodectl.py" dist stock)"
+        local cp="$home/lib/*:$home/plugins/opensearch-custom-codecs/*"
+        local args=("${@//\/idx/$work/idx}")
+        local classes="$work/check/classes"
+        [[ -d "$classes" ]] || "$home/jdk/bin/javac" -nowarn -d "$classes" -cp "$cp" "$work/check/ZstdStoredFields.java"
+        "$home/jdk/bin/java" -cp "$cp:$classes" ZstdStoredFields "${args[@]}"
     fi 2> >(grep -v -e WARNING -e VectorizationProvider -e '^$' >&2)
 }
 

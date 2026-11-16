@@ -457,6 +457,24 @@ impl MemoryIndexReader {
         self.search_segment(&bq)
     }
 
+    /// Whether the index's one document matches `query` (`count(query) > 0`).
+    pub fn any_match(&self, query: &Clause) -> Result<bool> {
+        let Some(bq) = as_boolean(&query.clone().rewrite()) else {
+            return Ok(false);
+        };
+        if let Some(m) = self.memory()? {
+            match m.with_searcher(self.similarity.as_ref(), |s| s.search(&bq, 1))? {
+                Ok(top) => return Ok(!top.score_docs.is_empty()),
+                Err(Error::MissingSegmentReader(_) | Error::MissingPointsInput(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(!self
+            .with_segment_searcher(|s| s.search(&bq, 1))??
+            .score_docs
+            .is_empty())
+    }
+
     /// [`Self::search`] on the segment, whatever the in-memory form would
     /// say.
     pub fn search_segment(&self, bq: &BooleanQuery) -> Result<f32> {
