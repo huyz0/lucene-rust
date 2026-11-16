@@ -23,6 +23,28 @@ use crate::points_query::PointsInput;
 use crate::query::{BooleanQuery, BoostQuery, Clause, PhraseQuery, TermQuery};
 use crate::{similarity, sloppy_phrase, GlobalStats, Result};
 
+/// `field`'s norms cursor for scoring on this segment: the context's own, or
+/// -- where a search that takes no scores still scores the queries a
+/// function scores (a `min_score`'s) -- built from the segment's reader with
+/// the reader-wide average length.
+pub(crate) fn leaf_norms_cursor<'a>(
+    ctx: &LeafContext<'a>,
+    field: &str,
+) -> Result<Option<crate::field_norms::FieldNormsCursor<'a, 'a>>> {
+    if let Some(n) = ctx.norms.and_then(|m| m.get(field)) {
+        return Ok(Some(n.cursor()));
+    }
+    let (Some(reader), Some(global)) = (ctx.reader, ctx.global) else {
+        return Ok(None);
+    };
+    let Some(avg) = global.functions().avg_length(field) else {
+        return Ok(None);
+    };
+    Ok(reader
+        .field_norms_with_avg_field_length(field, avg)?
+        .map(FieldNorms::into_cursor))
+}
+
 /// One segment's readers, and the reader-wide statistics to score with.
 #[derive(Clone, Copy)]
 pub struct LeafContext<'a> {
@@ -470,13 +492,13 @@ fn phrase<'a>(
             cost: stats.doc_freq as i64,
         });
     }
-    let field_norms = ctx.norms.and_then(|m| m.get(&p.field));
+    let field_norms = leaf_norms_cursor(ctx, &p.field)?;
     Ok(PhraseForm::Scorer(Box::new(PhraseScorer::new(
         terms,
         boost * idf_sum as f32,
         p.slop,
         sloppy_phrase::PhraseRepeats::for_phrase(&p.terms),
-        field_norms.map(|n| n.cursor()),
+        field_norms,
         match_cost,
         mode == Mode::TopScores,
         mode.needs_scores(),
@@ -520,7 +542,7 @@ fn sim_phrase<'a>(
     let Some(pos_in) = ctx.pos_in else {
         return Err(crate::Error::MissingPosInput);
     };
-    let field_norms = ctx.norms.and_then(|m| m.get(&p.field));
+    let field_norms = leaf_norms_cursor(ctx, &p.field)?;
     let lazy = ctx.doc_in.filter(|_| found.iter().all(|s| s.doc_freq > 1));
     let Some(doc_in) = lazy else {
         let matched = crate::phrase_doc_freqs(
@@ -534,7 +556,7 @@ fn sim_phrase<'a>(
         if matched.is_empty() {
             return Ok(PhraseForm::Absent);
         }
-        let mut norms = field_norms.map(|n| n.cursor());
+        let mut norms = field_norms;
         let mut docs = Vec::with_capacity(matched.len());
         let mut scores = Vec::with_capacity(matched.len());
         for (doc, freq) in matched {
@@ -568,7 +590,7 @@ fn sim_phrase<'a>(
             0.0,
             p.slop,
             sloppy_phrase::PhraseRepeats::for_phrase(&p.terms),
-            field_norms.map(|n| n.cursor()),
+            field_norms,
             match_cost,
             mode == Mode::TopScores,
             mode.needs_scores(),
@@ -763,11 +785,11 @@ fn term<'a>(
         // `TermWeight`: `similarity.scorer(boost, collectionStats, termStats)`.
         let (collection, term_stats) = sim_stats(ctx, &t.field, &t.term, field_terms, stats);
         let scorer = sim.scorer(&t.field, boost, &collection, &[term_stats]);
-        let field_norms = ctx.norms.and_then(|m| m.get(&t.field));
+        let field_norms = leaf_norms_cursor(ctx, &t.field)?;
         return Ok(TermForm::Leg(Box::new(TermLeg::scoring_sim(
             cursor,
             scorer,
-            field_norms.map(|n| n.cursor()),
+            field_norms,
             cost,
         ))));
     }
@@ -775,11 +797,11 @@ fn term<'a>(
         Some(g) => (g.doc_freq, g.doc_count),
         None => (cost, field_terms.doc_count as i64),
     };
-    let field_norms = ctx.norms.and_then(|m| m.get(&t.field));
+    let field_norms = leaf_norms_cursor(ctx, &t.field)?;
     Ok(TermForm::Leg(Box::new(TermLeg::scoring(
         cursor,
         boost * similarity::idf(doc_freq, doc_count),
-        field_norms.map(|n| n.cursor()),
+        field_norms,
         cost,
         (stats.total_term_freq - cost + 1).max(1) as f32,
     ))))

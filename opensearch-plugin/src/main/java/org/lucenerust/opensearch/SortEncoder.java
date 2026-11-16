@@ -343,7 +343,7 @@ public final class SortEncoder {
         writeInt(out, name.length);
         out.writeBytes(name);
         writeLong(out, 0);
-        out.write(geo.lucene() ? 0 : 1);
+        out.write(geo.lucene() ? 0 : geo.plane() ? 2 : 1);
         writeInt(out, geo.lats().length);
         for (int i = 0; i < geo.lats().length; i++) {
             writeLong(out, Double.doubleToRawLongBits(geo.lats()[i]));

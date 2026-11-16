@@ -3612,6 +3612,44 @@ pub fn count_boolean_query_segment(
     count_boolean_query_segment_with(seg, query, None)
 }
 
+/// `query` as `IndexSearcher.rewrite(query, needsScores = false)` leaves it
+/// for a search that takes no scores (a count, a sort by field): wrapped in a
+/// `ConstantScoreQuery`, whose rewrite takes the boost off every clause of a
+/// boolean. Only a `min_score`d function score can see the difference (it
+/// scores its wrapped query whatever the search takes), so any other query
+/// is returned as it is.
+pub fn without_scores_rewrite(query: &BooleanQuery) -> std::borrow::Cow<'_, BooleanQuery> {
+    if function::holds_min_score(query) {
+        std::borrow::Cow::Owned(count_unboosted(query))
+    } else {
+        std::borrow::Cow::Borrowed(query)
+    }
+}
+
+/// The boosts off the clauses of every boolean of `query`, which it reaches
+/// through the clauses that are themselves booleans.
+fn count_unboosted(query: &BooleanQuery) -> BooleanQuery {
+    fn clause(c: &Clause) -> Clause {
+        match c {
+            Clause::Boost(b) => clause(&b.inner),
+            Clause::Boolean(inner) => Clause::Boolean(Box::new(count_unboosted(inner))),
+            other => other.clone(),
+        }
+    }
+    let mut out = query.clone();
+    for list in [
+        &mut out.must,
+        &mut out.should,
+        &mut out.filter,
+        &mut out.must_not,
+    ] {
+        for c in list.iter_mut() {
+            *c = clause(c);
+        }
+    }
+    out
+}
+
 /// The reader-wide preparation of `query`'s function queries over every
 /// segment of the reader (Java creates each weight over the whole
 /// searcher), for [`count_boolean_query_segment_with`]; `None` when it holds
@@ -3633,6 +3671,7 @@ pub fn count_boolean_query_segment_with(
     query: &BooleanQuery,
     global: Option<&GlobalStats>,
 ) -> Result<u64> {
+    let query = &*without_scores_rewrite(query);
     struct Count(u64);
     impl ScoringCollector for Count {
         fn collect(&mut self, _doc_id: i32, _score: f32) {
@@ -3651,6 +3690,16 @@ pub fn count_boolean_query_segment_with(
                 .saturating_add(u64::try_from(max.saturating_sub(min)).unwrap_or(0));
         }
     }
+    // A count scores nothing, but the queries a function scores (a
+    // `min_score`'s wrapped query) score with the reader's norms.
+    let mut norms = HashMap::new();
+    if let (Some(g), Some(reader)) = (global, seg.reader) {
+        for (field, avg) in g.functions().avg_lengths() {
+            if let Some(n) = reader.field_norms_with_avg_field_length(field, *avg)? {
+                norms.insert(field.clone(), n);
+            }
+        }
+    }
     let ctx = exec::LeafContext {
         fields: seg.fields,
         doc_in: seg.doc_in,
@@ -3658,7 +3707,7 @@ pub fn count_boolean_query_segment_with(
         pay_in: seg.pay_in,
         live_docs: seg.live_docs,
         points: seg.points,
-        norms: None,
+        norms: (!norms.is_empty()).then_some(&norms),
         global,
         max_doc: seg.max_doc,
         cache: seg.cache,

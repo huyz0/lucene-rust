@@ -399,6 +399,7 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// |---|---|---|
 /// | `0` | `LatLonPointSortField` (`LatLonDocValuesField.newDistanceSort`): one origin, metres, ascending, no mode | the haversine sort key (`haversin2` of it is the distance) |
 /// | `1` | OpenSearch's `GeoDistanceSortBuilder` comparator ([`OpenSearchGeoDistanceSort`](lucene_search::document::geo::OpenSearchGeoDistanceSort)): `ARC`, any origins, unit, mode (flags as a numeric key's) and order | the distance in the unit |
+/// | `2` | the same with `GeoDistance.PLANE` (`GeoUtils.planeDistance`, `StrictMath.cos`) | the distance in the unit |
 ///
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
@@ -522,7 +523,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     .map_err(|e| invalid(format!("sort blob: {e}")))?
                     .comparator_source()
             }
-            1 => {
+            1 | 2 => {
                 let mode = match flags & SORT_MODE_MASK {
                     0 if flags & SORT_MAX != 0 => DistanceMode::Max,
                     0 => DistanceMode::Min,
@@ -537,11 +538,12 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     origins,
                     unit_meters,
                     mode,
+                    plane: comparator == 2,
                 })
             }
             other => {
                 return Err(invalid(format!(
-                    "sort blob: geo-distance comparator {other} (want 0 or 1)"
+                    "sort blob: geo-distance comparator {other} (want 0, 1 or 2)"
                 )))
             }
         };
@@ -737,13 +739,18 @@ pub fn search_collapsed_blobs(
         JvmQuery::Boolean(b) => b,
     };
     let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -905,10 +912,7 @@ pub fn rescore_hits(
         },
         JvmQuery::Boolean(b) => b,
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)
@@ -1202,14 +1206,27 @@ pub fn aggregate_counting_blobs_seen(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
-    // min_score scores the query: its fields' norms.
-    let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if min_score.is_some() {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    // min_score scores the query: its fields' norms.
+    let q = if min_score.is_some() {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if min_score.is_some() {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1340,12 +1357,9 @@ pub fn count_terminates_blobs(
         slices
     };
     let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        crate::clauses::norm_field_names(&q)
     } else {
-        Vec::new()
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1453,13 +1467,18 @@ pub fn search_sorted(
     }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1612,10 +1631,7 @@ pub fn search(
                     .map_err(map_search_error)?
             }
             JvmQuery::Boolean(q) => {
-                let fields: Vec<String> = crate::clauses::clause_field_names(q)
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect();
+                let fields: Vec<String> = crate::clauses::norm_field_names(q);
                 let owned = h
                     .reader
                     .field_norms_by_field(&fields)
@@ -1773,10 +1789,7 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
             .collect(),
         ..Default::default()
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&union)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&union);
     let union_query = JvmQuery::Boolean(union);
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -2576,10 +2589,7 @@ pub fn search_min_score(
         })
         .collect();
     let q = boolean_of(query);
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)
