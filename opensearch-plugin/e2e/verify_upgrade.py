@@ -214,10 +214,12 @@ def _f32(x):
 def check_nested_oracle(index, name, body, label):
     """A nested sort whose reference is the answer computed from `_source`, not the stock node.
 
-    On an index created by 2.x and then rewritten (`_upgrade`, force merge), stock returns top
-    hits that are not the top (checked against the documents' own children; the same index read
-    by stock with the plugin's native search off gives the same wrong answer, a 3.9-created index
-    does not). The plugin's answer is the exact one (#392), so stock is not the reference.
+    On an index of several segments, stock's comparator for a nested sum, average or filtered key
+    skips documents with the children's points once its queue is full, and returns top hits that
+    are not the top: one document asked for by id sorts to the right value, the same query over
+    the whole index drops it, and the same data in one segment is right (checked against the
+    documents' own children). The plugin's answer is the exact one (#392), so stock is not the
+    reference.
     The answer is recomputed from each document's children:
         the first key's value per mode, filter and missing, then the keys after it; the plugin's hits
     and sort values must equal it exactly, ids included where the keys are unique."""
