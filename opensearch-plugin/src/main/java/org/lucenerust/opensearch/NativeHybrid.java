@@ -82,7 +82,7 @@ final class NativeHybrid {
             // HybridCollectorManager.createHybridCollectorManager's own refusal.
             throw new IllegalArgumentException("Scroll operation is not supported in hybrid query");
         }
-        if (ctx.getProfilers() != null) return "profile";
+        if (ctx.getProfilers() != null) return "hybrid_profile";
         boolean minScore = ctx.minimumScore() != null;
         boolean postFilter = ctx.parsedPostFilter() != null;
         if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0) + (terminates(ctx) ? 1 : 0)

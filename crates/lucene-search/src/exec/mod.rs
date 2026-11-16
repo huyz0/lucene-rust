@@ -49,6 +49,7 @@ pub(crate) mod join;
 pub(crate) mod leaf;
 pub(crate) mod multi_term;
 mod phrase;
+pub mod profile;
 pub(crate) mod query_join;
 pub(crate) mod ranges;
 mod req;
