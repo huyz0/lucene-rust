@@ -431,6 +431,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle HIGHLIGHT_SET_THAI_UPCALL = bind("ffi_jvm_highlight_set_thai_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle MEMORY_SET_UPCALL = bind("ffi_memory_set_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle MEMORY_SCOPE_BEGIN = bind(
             "ffi_memory_scope_begin",
@@ -3391,6 +3392,18 @@ public final class NativeBridge {
     public static int writerSetMergedSegmentWarmer(long handle, boolean on) {
         try {
             return (int) H.WRITER_SET_MERGED_SEGMENT_WARMER.invokeExact(handle, (byte) (on ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Registers the JDK's Thai word iterator ({@code ThaiWordsUpcall} in {@code jvm_highlight.rs}),
+     * which the highlighters ask for the boundaries of a text in the Thai locale.
+     */
+    public static int highlightSetThaiUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.HIGHLIGHT_SET_THAI_UPCALL.invokeExact(upcall);
         } catch (Throwable t) {
             throw rethrow(t);
         }

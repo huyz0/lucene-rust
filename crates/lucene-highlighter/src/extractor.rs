@@ -1266,6 +1266,11 @@ impl Scorer for QueryScorer {
         weight
     }
 
+    fn token_score_unmatched(&mut self, token: &AttributeSource) -> f32 {
+        self.position += token.position_increment();
+        0.0
+    }
+
     fn fragment_score(&self) -> f32 {
         self.total_score
     }

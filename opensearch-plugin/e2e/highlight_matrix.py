@@ -19,6 +19,8 @@ import concurrent.futures
 import json, os, random, sys, threading
 import requests
 
+sys.stdout.reconfigure(errors="backslashreplace")
+
 PLUGIN = os.environ.get("PLUGIN", "http://localhost:9200")
 STOCK = os.environ.get("STOCK", "http://localhost:9201")
 S = requests.Session()

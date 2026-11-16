@@ -28,6 +28,9 @@ public final class LiveView implements AutoCloseable {
     /** Per buffer: its deleted documents, ascending. */
     private final int[][] deleted;
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** {@link #fullReader}'s handle, and whether it was tried. */
+    private long full;
+    private boolean fullTried;
     /** By buffer and field: {@link #pointBounds}, once read. */
     private final Map<Long, byte[]> bounds = new ConcurrentHashMap<>();
 
@@ -103,6 +106,26 @@ public final class LiveView implements AutoCloseable {
             bounds.put(key, got);
         }
         return got;
+    }
+
+    /**
+     * A reader handle over the reader at {@code handle} and every buffer as the segments after it
+     * ({@link NativeBridge#liveViewReader}, holding every term), built once per view: what the
+     * highlighters read, which cannot name the terms they will need up front. The view closes it;
+     * 0 when the buffers cannot be written as segments.
+     */
+    public synchronized long fullReader(long handle) {
+        if (full == 0 && fullTried == false) {
+            fullTried = true;
+            long[] out = new long[1];
+            int rc = NativeBridge.liveViewReader(handle, id, null, null, null, out);
+            if (rc == NativeBridge.OK) {
+                full = out[0];
+            } else {
+                NativeMemory.check(rc);
+            }
+        }
+        return full;
     }
 
     /** The native handle. */

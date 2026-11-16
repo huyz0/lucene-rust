@@ -588,6 +588,12 @@ public final class QueryEncoder {
             String reason = node(fs.getWrappedQuery(), out, fieldOk, depth + 1, nodes);
             return reason == null ? "" : reason;
         }
+        if (PLAIN.get() == false && q instanceof ApproximateScoreQuery) {
+            // Its visit reaches the approximation query too, a leaf the highlighter does not
+            // recognize (which keeps a field from the no-op strategy and moves postings
+            // offsets to analysis): what that visit does is sent, not the query it wraps.
+            return visited(q, out, fieldOk, depth, nodes);
+        }
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
             if (PLAIN.get() == false && extractorKnows(q) == false) {
                 // The unified highlighter reads a query its phrase helper does not support only
@@ -825,7 +831,28 @@ public final class QueryEncoder {
                 return "boolean_msm_negative";
             }
             if (PLAIN.get() && inExtractorOrder(bq) == false) {
-                return "highlight_clause_order";
+                // The plain highlighter's extractor reads a bool query's clauses in the order they
+                // were added, whatever their occurrence, and skips the prohibited ones: the native
+                // reader walks musts, then shoulds, then filters, so the clauses go as musts in
+                // that order (the highlighter only reads the query's terms, it never runs it).
+                int kept = 0;
+                for (BooleanClause c : bq.clauses()) {
+                    kept += c.occur() == BooleanClause.Occur.MUST_NOT ? 0 : 1;
+                }
+                out.write(NODE_BOOLEAN);
+                writeInt(out, 0);
+                writeInt(out, kept);
+                for (BooleanClause c : bq.clauses()) {
+                    if (c.occur() == BooleanClause.Occur.MUST_NOT) {
+                        continue;
+                    }
+                    out.write((byte) BooleanClause.Occur.MUST.ordinal());
+                    String reason = node(c.query(), out, fieldOk, depth + 1, nodes);
+                    if (reason != null) {
+                        return reason;
+                    }
+                }
+                return null;
             }
             out.write(NODE_BOOLEAN);
             writeInt(out, bq.getMinimumNumberShouldMatch());

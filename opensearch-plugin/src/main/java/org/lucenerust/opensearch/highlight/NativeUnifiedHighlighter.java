@@ -17,6 +17,7 @@ import org.lucenerust.opensearch.SearchStats;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.text.Text;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.mapper.DerivedFieldType;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.lucene.search.uhighlight.Snippet;
 import org.opensearch.search.fetch.FetchSubPhase;
@@ -62,6 +63,8 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
 
     /** {@code jvm_highlight.rs}'s statuses and request version. */
     private static final byte REQUEST_VERSION = 1;
+    /** Added to the break iterator kind when the locale is Thai ({@code BREAKS_THAI} in {@code jvm_highlight.rs}). */
+    private static final int THAI = 0x80;
     private static final int STATUS_SNIPPETS = 0;
     private static final int STATUS_NOOP = 1;
     private static final int STATUS_OFFSET_LIMIT = 2;
@@ -226,18 +229,20 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
 
     /** {@code UnifiedHighlighter.buildHighlighter}'s inputs as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
-        // A realtime view adds the writer's buffers as leaves the native reader does not hold.
-        if (LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
-            return new Prepared(null, 0, "highlight_live_view");
-        }
         // Opened here when the query phase did not (a query it ran on Lucene): the hits were
         // searched on this reader, so later searches of it read through the same handle.
         long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
             return new Prepared(null, 0, "highlight_reader");
         }
-        if (fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
-            return new Prepared(null, 0, "highlight_derived_field");
+        // A realtime view adds the writer's buffers as leaves after the reader's: the handle that
+        // reads them as segments numbers the hits' documents as the view does.
+        LiveDirectoryReader liveReader = LiveDirectoryReader.find(fieldContext.hitContext.topLevelReader());
+        if (liveReader != null) {
+            handle = liveReader.view().fullReader(handle);
+            if (handle == 0) {
+                return new Prepared(null, 0, "highlight_live_view");
+            }
         }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
         MappedFieldType fieldType = fieldContext.fieldType;
@@ -250,8 +255,9 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         Locale locale = options.boundaryScannerLocale() != null ? options.boundaryScannerLocale() : Locale.ROOT;
         // The JDK's break rules are the same for every locale but Thai (a dictionary); the
         // no-match summary cuts at a word boundary of that locale on every path.
-        if ("th".equals(locale.getLanguage())) {
-            return new Prepared(null, 0, "highlight_locale");
+        boolean thai = "th".equals(locale.getLanguage());
+        if (thai) {
+            ThaiWords.install();
         }
         if (numberOfFragments == 0 || fieldType.getTextSearchInfo().isTokenized() == false) {
             breaks = 0;
@@ -269,8 +275,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
                     breaks = 3;
                     break;
                 default:
-                    // OpenSearch refuses it; its highlighter says so.
-                    return new Prepared(null, 0, "highlight_boundary_scanner");
+                    throw new IllegalArgumentException("Invalid boundary scanner type: " + type);
             }
             maxPassages = numberOfFragments;
         }
@@ -281,6 +286,11 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         // described goes with the request, and a needed one that is not is answered with
         // STATUS_NEEDS_ANALYZER.
         Analyzer analyzer = getAnalyzer(fieldContext.context.mapperService().documentMapper());
+        MappedFieldType derived = fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName);
+        if (derived != null) {
+            // a derived field is analyzed by its own index analyzer, whatever the mapping says
+            analyzer = ((DerivedFieldType) derived).getIndexAnalyzer();
+        }
         List<String> analyzed = new ArrayList<>();
         analyzed.add(fieldContext.fieldName);
         if (masked) {
@@ -327,7 +337,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         }
         Integer limit = options.maxAnalyzerOffset();
         writeInt(out, limit == null ? -1 : limit);
-        out.write(breaks);
+        out.write(thai ? breaks | THAI : breaks);
         writeInt(out, maxLen);
         writeInt(out, maxPassages);
         writeInt(out, options.noMatchSize());

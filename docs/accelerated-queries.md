@@ -291,8 +291,19 @@ as stock's phrase helper rewrites it.
 A field falls back to OpenSearch's highlighter (counted in the stats'
 `fallbacks`) when its query's visit matches terms by an automaton the
 encoder does not send (`highlight_<Class>`), a needed analyzer cannot be described
-(the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
+(the analyzer's reason), or the highlighter is switched off
 (`index.highlight.accelerated: false`).
+
+A search that reads a realtime view highlights through a native reader over
+the view's buffers written as segments (`LiveView.fullReader`, built once
+per view), which numbers the hits' documents as the view does; the field
+falls back (`highlight_live_view`) only when a buffer was taken for a flush
+since the view opened. A derived field is analyzed by its own index analyzer,
+as stock does. The Thai word iterator segments by a dictionary the library
+does not carry (`docs/licences.md`), so a request whose
+`boundary_scanner_locale` is Thai asks the JVM for each text's word
+boundaries (`highlight/ThaiWords.java`, an upcall to the JDK's own
+`BreakIterator`), and cuts at what stock cuts at.
 
 ### The `plain` highlighter
 
@@ -318,24 +329,26 @@ A query the extractor does not know whose rewrite keeps it (a script, geo,
 `intervals`, `distance_feature`, `terms_set`, `combined_fields`,
 `script_score`) is sent as its recorded visit, whose terms the extractor
 reads when it has none yet; one whose rewrite reads the index
-(`more_like_this`) falls back (`highlight_<Class>`).
+(`more_like_this`) falls back (`highlight_<Class>`): stock rewrites it against
+a one-document index of the hit's text, with Java's `HashMap` order deciding
+which terms past `max_query_terms` are kept.
 
 `e2e/highlight_matrix.py` runs every option set above as `type: plain`
 and seven of plain's own (fragmenters, sizes, score order, `html`), all
 identical to stock. Falls back: the reasons above but the realtime view
-(the plain highlighter reads no index), a boolean query whose clauses are
-not musts, then shoulds, then filters (`highlight_clause_order`: the
-extractor's kept weights and an unknown query's terms depend on the order),
-a join or points-or-doc-values query directly inside a `function_score` or
+(the plain highlighter reads no index), a join or points-or-doc-values query directly inside a `function_score` or
 `nested` query, or such a wrapper there whose rewrite changes it
 (`highlight_nested_<Class>`: Lucene's extractor, which stock hands that
 query to, rewrites it against the document), an unknown
 `fragmenter` or a `max_analyzer_offset` over the index limit (stock's
 errors), and per hit a value past `index.highlight.max_analyzed_offset`
-(stock's error), a multi-term query expanding past the clause count over
-it (`highlight_plain_hit`: stock throws), or holding a lone surrogate (`highlight_lone_surrogate`:
-Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
-ways the native text cannot hold).
+(stock's error) or a multi-term query expanding past the clause count over
+it (stock throws): the native call names the exception stock throws (its
+class and message) and the plugin throws it, so the request fails as it does
+on stock. A text holding an unpaired surrogate (often left by a
+`max_analyzer_offset` cut) is read as UTF-16 units, so the analysis, the
+offsets and the fragments are Java's: the standard tokenizer yields nothing
+for a text that ends in a high surrogate, as Java's does.
 
 ### The `fvh` highlighter
 
@@ -365,13 +378,15 @@ start back to its first match when the analyzer has a filter that
 thirteen of fvh's own (`matched_fields`, `fragment_offset`,
 `phrase_limit`, `boundary_chars`, `force_source`, multi-valued fields,
 locales, `highlight_filter`) on six term-vector indices (stored or not,
-`edge_ngram`, synonyms, `english`), all identical to stock. Falls back: a
-field without term vectors (stock's error, `highlight_fvh_term_vectors`),
-a `fragment_size` under the fragment list's minimum or a negative
-`fragment_offset` (stock's errors), the realtime view, the reasons of the
-unified highlighter's reader and derived fields, Thai boundaries; per hit
-a value with a lone surrogate, and a hit stock's highlighter throws on or
-whose fragment would cut a surrogate pair (`highlight_fvh_hit`).
+`edge_ngram`, synonyms, `english`), all identical to stock; the options
+stock refuses (a field without term vectors, a `fragment_size` under the
+fragment list's minimum, a negative `fragment_offset`, an unknown boundary
+scanner) fail with stock's own exception, thrown from what the native call
+names, and a fragment that cuts a surrogate pair keeps the half pair.
+`e2e/highlight_extra.py` adds the requests stock refuses, text with
+unpaired surrogates, the analyzed-offset limit, derived fields, a realtime
+view and the Thai iterator (629 rows). Falls back only by the reasons the
+unified highlighter's reader has.
 
 ### What runs native around the others
 

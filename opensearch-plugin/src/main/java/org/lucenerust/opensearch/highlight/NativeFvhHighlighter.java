@@ -60,8 +60,10 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
 
     /** {@code jvm_highlight_fvh.rs}'s request version and statuses. */
     private static final byte REQUEST_VERSION = 1;
+    /** Added to the scanner kind when the locale is Thai ({@code BREAKS_THAI} in {@code jvm_highlight.rs}). */
+    private static final int THAI = 0x80;
     private static final int STATUS_FRAGMENTS = 0;
-    private static final int STATUS_STOCK = 1;
+    private static final int STATUS_THROWS = 1;
 
     /** {@code FieldQuery}'s and {@code QueryPhraseMap}'s fields, or null when they cannot be read. */
     private static final Field FIELD_MATCH;
@@ -73,7 +75,10 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
     private static final Field NUMBER;
     private static final Field SUB_MAP;
 
+    private static final String FIELD_ACCESS_ERROR;
+
     static {
+        String accessError = null;
         Field[] f = new Field[8];
         try {
             Class<?> map = Class.forName("org.apache.lucene.search.vectorhighlight.FieldQuery$QueryPhraseMap");
@@ -89,9 +94,11 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
                 x.setAccessible(true);
             }
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.warn("lucene-rust: fvh highlighting stays on OpenSearch's highlighter: {}", e.toString());
+            logger.error("lucene-rust: the fast vector highlighter's field query cannot be read: {}", e.toString());
+            accessError = e.toString();
             f = new Field[8];
         }
+        FIELD_ACCESS_ERROR = accessError;
         FIELD_MATCH = f[0];
         ROOT_MAPS = f[1];
         TERM_SET_MAP = f[2];
@@ -155,12 +162,6 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         }
         FetchSubPhase.HitContext hitContext = fieldContext.hitContext;
         List<String> values = prepared.fromSource ? sourceValues(fieldContext) : storedValues(fieldContext);
-        for (String v : values) {
-            if (NativePlainHighlighter.hasLoneSurrogate(v)) {
-                stats.fallback("highlight_lone_surrogate");
-                return super.highlight(fieldContext);
-            }
-        }
         byte[][] out = new byte[1][];
         int rc = NativeBridge.highlightFvh(
             prepared.handle,
@@ -180,15 +181,9 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         }
         ByteBuffer b = ByteBuffer.wrap(out[0]).order(ByteOrder.LITTLE_ENDIAN);
         int status = b.get();
-        if (status == STATUS_STOCK) {
-            // OpenSearch's highlighter throws for this hit, or cuts a surrogate pair in two.
-            if (logger.isDebugEnabled()) {
-                byte[] why = new byte[b.remaining()];
-                b.get(why);
-                logger.debug("lucene-rust: fvh highlighting of [{}] runs on OpenSearch's highlighter: {}", fieldContext.fieldName, new String(why, StandardCharsets.UTF_8));
-            }
-            stats.fallback("highlight_fvh_hit");
-            return super.highlight(fieldContext);
+        if (status == STATUS_THROWS) {
+            // OpenSearch's highlighter throws on this hit: so does the request.
+            throw HighlightErrors.thrown(b, false);
         }
         if (status != STATUS_FRAGMENTS) {
             throw new IllegalStateException("lucene-rust: fvh highlight status " + status);
@@ -238,17 +233,17 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
 
     /** {@code FastVectorHighlighter.highlight}'s builders as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) throws IOException {
-        if (FIELD_MATCH == null) {
-            return Prepared.fallback("highlight_fvh_reflection");
-        }
         MappedFieldType fieldType = fieldContext.fieldType;
         if (canHighlight(fieldType) == false) {
-            // OpenSearch's highlighter refuses it, and says so.
-            return Prepared.fallback("highlight_fvh_term_vectors");
+            throw new IllegalArgumentException(
+                "the field ["
+                    + fieldContext.fieldName
+                    + "] should be indexed with term vector with position offsets to be used with fast vector highlighter"
+            );
         }
-        // A realtime view adds the writer's buffers as leaves the native reader does not hold.
-        if (LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
-            return Prepared.fallback("highlight_live_view");
+        if (FIELD_MATCH == null) {
+            // Lucene's FieldQuery changed under this build: a broken install, not a request to hand over.
+            throw new IllegalStateException("lucene-rust: the fast vector highlighter's field query cannot be read: " + FIELD_ACCESS_ERROR);
         }
         // Opened here when the query phase did not (a query it ran on Lucene): the hits were
         // searched on this reader, so later searches of it read through the same handle.
@@ -256,22 +251,19 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         if (handle == 0) {
             return Prepared.fallback("highlight_reader");
         }
-        if (fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
-            return Prepared.fallback("highlight_derived_field");
+        // A realtime view adds the writer's buffers as leaves after the reader's: the handle that
+        // reads them as segments numbers the hits' documents as the view does.
+        LiveDirectoryReader liveReader = LiveDirectoryReader.find(fieldContext.hitContext.topLevelReader());
+        if (liveReader != null) {
+            handle = liveReader.view().fullReader(handle);
+            if (handle == 0) {
+                return Prepared.fallback("highlight_live_view");
+            }
         }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
         int numberOfFragments = options.numberOfFragments();
-        if (numberOfFragments != 0 && options.fragmentOffset() < -1) {
-            // OpenSearch's highlighter refuses it, and says so.
-            return Prepared.fallback("highlight_fragment_offset");
-        }
-        if (numberOfFragments != 0) {
-            // BaseFragListBuilder.createFieldFragList refuses a size under its minimum on every hit.
-            int margin = options.fragmentOffset() == -1 ? 6 : options.fragmentOffset();
-            if (options.fragmentCharSize() < Math.max(1, margin * 3)) {
-                return Prepared.fallback("highlight_fragment_size");
-            }
-        }
+        // A margin or fragment size OpenSearch's highlighter refuses is refused by the native
+        // fragment list builder, which throws what it throws, on the first hit.
         Locale locale = options.boundaryScannerLocale() != null ? options.boundaryScannerLocale() : Locale.ROOT;
         HighlightBuilder.BoundaryScannerType scannerType = options.boundaryScannerType() != null
             ? options.boundaryScannerType()
@@ -288,11 +280,12 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
                 scanner = 2;
                 break;
             default:
-                return Prepared.fallback("highlight_boundary_scanner");
+                throw new IllegalArgumentException("Invalid boundary scanner type: " + scannerType);
         }
         // The JDK's break rules are the same for every locale but Thai (a dictionary).
         if (scanner != 0 && "th".equals(locale.getLanguage())) {
-            return Prepared.fallback("highlight_locale");
+            ThaiWords.install();
+            scanner |= (byte) THAI;
         }
         boolean stored = fieldContext.forceSource == false && fieldType.isStored();
         boolean scoreOrder = numberOfFragments != 0 && options.scoreOrdered();
@@ -320,7 +313,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         try {
             writeFieldQuery(out, fieldQuery);
         } catch (IllegalAccessException e) {
-            return Prepared.fallback("highlight_fvh_reflection");
+            throw new IllegalStateException("lucene-rust: the fast vector highlighter's field query cannot be read", e);
         }
         if (numberOfFragments == 0) {
             out.write(0);

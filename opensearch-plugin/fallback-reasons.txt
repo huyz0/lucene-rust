@@ -55,20 +55,12 @@ function_score_script  # ExtendedEncoder.java
 fuzzy_automaton  # QueryEncoder.java
 geo_geometry  # GeoEncoder.java
 geo_reflect  # GeoEncoder.java
-highlight_  # QueryEncoder.java
-highlight_boundary_scanner  # NativeFvhHighlighter.java
-highlight_clause_order  # QueryEncoder.java
-highlight_derived_field  # NativeFvhHighlighter.java
-highlight_fragment_offset  # NativeFvhHighlighter.java
-highlight_fragment_size  # NativeFvhHighlighter.java
-highlight_fvh_hit  # NativeFvhHighlighter.java
-highlight_fvh_reflection  # NativeFvhHighlighter.java
-highlight_fvh_term_vectors  # NativeFvhHighlighter.java
-highlight_live_view  # NativeFvhHighlighter.java
-highlight_locale  # NativeFvhHighlighter.java
-highlight_lone_surrogate  # NativeFvhHighlighter.java
+highlight_  # NativePlainHighlighter.java, NativeUnifiedHighlighter.java, QueryEncoder.java
+highlight_analyzer  # NativeUnifiedHighlighter.java
+highlight_live_view  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
+highlight_native_error  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_nested_  # QueryEncoder.java
-highlight_reader  # NativeFvhHighlighter.java
+highlight_reader  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
 hybrid_aggregations  # NativeHybrid.java
 hybrid_collapse  # NativeHybrid.java
 hybrid_no_hits  # RustQueryPhaseSearcher.java
