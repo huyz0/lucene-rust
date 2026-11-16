@@ -127,6 +127,8 @@ def shapes():
         ("span_near over span_or", {"query": {"span_near": {"clauses": [{"span_or": {"clauses": [{"span_term": {"body": "t0"}}, {"span_term": {"body": "t2"}}]}}, {"span_term": {"body": "t1"}}], "slop": 2, "in_order": False}}}),
         ("intervals, ordered match with gaps", {"query": {"intervals": {"body": {"all_of": {"ordered": True, "intervals": [{"match": {"query": "t0 t1", "max_gaps": 3, "ordered": True}}, {"match": {"query": "t2"}}]}}}}}),
         ("intervals, any_of", {"query": {"intervals": {"body": {"any_of": {"intervals": [{"match": {"query": "t3 t4", "ordered": True}}, {"match": {"query": "t5"}}]}}}}}),
+        ("match_phrase_prefix, wide expansion", {"query": {"match_phrase_prefix": {"body": "t0 t1"}}}),
+        ("match_phrase_prefix, rare lead", {"query": {"match_phrase_prefix": {"body": "t2s t1"}}}),
         ("multi_match body+title", {"query": {"multi_match": {"query": "t3 t7", "fields": ["body", "title^2"]}}}),
         ("bool match + range filter", {"query": {"bool": {"must": {"match": {"body": "t4"}}, "filter": {"range": {"num": {"gte": 100000, "lt": 300000}}}}}}),
         ("range on long", {"query": {"range": {"num": {"gte": 400000, "lt": 410000}}}}),

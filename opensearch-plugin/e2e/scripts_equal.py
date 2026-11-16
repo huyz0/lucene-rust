@@ -186,10 +186,83 @@ def shapes():
     s["expr histogram agg"] = {"size": 0, "aggs": {"a": {"histogram": {"script": ex("doc['l'].value"), "interval": 500}}}}
     s["expr terms_set"] = {"size": 30, "query": {"terms_set": {"tag": {"terms": ["t1", "t2", "t3"], "minimum_should_match_script": ex("1 + doc['l'].empty")}}}}
     s["expr min_score fs"] = {"size": 30, "query": {"function_score": {"query": body, "functions": [{"script_score": {"script": ex("doc['l'].value / 100")}}], "min_score": 20, "boost_mode": "replace"}}}
+    for name, src in [("score", "_score * 2 + doc['l'].value"), ("alone", "_score")]:
+        s["expr sort _score " + name] = {"size": 30, "query": body, "sort": [{"_script": {"type": "number", "script": ex(src), "order": "desc"}}, "_doc"]}
+    s["painless sort _score"] = {"size": 30, "query": body, "sort": [{"_script": {"type": "number", "script": {"source": "_score * 3 + (doc['l'].size() == 0 ? 0 : doc['l'].value)"}, "order": "asc"}}, "_doc"]}
+    for qn, qq in [("match_all", ma), ("term", {"term": {"tag": "t1"}}), ("fs", {"function_score": {"query": body, "functions": [{"weight": 5}]}}),
+                   ("bool", {"bool": {"must": [body], "should": [{"term": {"tag": "t1"}}]}}), ("const", {"constant_score": {"filter": {"term": {"tag": "t1"}}, "boost": 7}})]:
+        s["painless sort _score q " + qn] = {"size": 30, "query": qq, "sort": [{"_script": {"type": "number", "script": {"source": "_score * 10 + (doc['l'].size() == 0 ? 0 : doc['l'].value)"}, "order": "desc"}}, "_doc"]}
+        s["expr sort _score q " + qn] = {"size": 30, "query": qq, "sort": [{"_script": {"type": "number", "script": ex("_score * 10 + doc['l'].value"), "order": "desc"}}, "_doc"]}
+    s["painless sort _score hits"] = {"size": 30, "track_total_hits": True, "query": body, "sort": [{"_script": {"type": "number", "script": {"source": "_score"}, "order": "desc"}}], "track_scores": True}
     s["expr date year"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.year")}}}
     s["expr date method"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.getHourOfDay() + doc['dt'].date.dayOfWeek")}}}
     s["expr date short"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].getYear() + doc['dt'].getMonth()")}}}
     s["expr geo"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("abs(doc['gp'].lat) + abs(doc['gp'].lon) + doc['gp'].empty")}}}
+    # java.time: a date field's values are UTC ZonedDateTimes
+    ref = "ZonedDateTime.ofInstant(Instant.ofEpochMilli(1700000000000L), ZoneOffset.UTC)"
+    tm = {
+        "year": "doc['dt'].value.year + doc['dt'].value.monthValue * 0.01 + doc['dt'].value.dayOfMonth * 0.0001",
+        "getters": "doc['dt'].value.getHour() * 3 + doc['dt'].value.getMinute() + doc['dt'].value.getSecond() * 0.5 + doc['dt'].value.getDayOfYear() * 0.001 + doc['dt'].value.getDayOfWeek().getValue()",
+        "enums": "(doc['dt'].value.dayOfWeek == DayOfWeek.MONDAY ? 2 : 1) + (doc['dt'].value.month == Month.MARCH ? 4 : 0) + doc['dt'].value.month.getValue() + doc['dt'].value.dayOfWeekEnum.ordinal()",
+        "epoch": "doc['dt'].value.toInstant().toEpochMilli() / 1000000000.0 + doc['dt'].value.toEpochSecond() / 1000000000.0",
+        "plus": "doc['dt'].value.plusDays(3).dayOfMonth + doc['dt'].value.plusMonths(5).monthValue + doc['dt'].value.plusYears(1).year / 1000.0 + doc['dt'].value.plusHours(30).hour + doc['dt'].value.minusMinutes(70).minute + doc['dt'].value.minusWeeks(2).dayOfYear + doc['dt'].value.plusSeconds(3600).hour + doc['dt'].value.minusYears(3).dayOfMonth",
+        "plus unit": "doc['dt'].value.plus(3, ChronoUnit.MONTHS).monthValue + doc['dt'].value.minus(2, ChronoUnit.HOURS).hour + doc['dt'].value.plus(1, ChronoUnit.DECADES).year / 1000.0 + doc['dt'].value.plus(5, ChronoUnit.WEEKS).dayOfYear",
+        "truncate": "doc['dt'].value.truncatedTo(ChronoUnit.DAYS).hour + doc['dt'].value.truncatedTo(ChronoUnit.HOURS).minute + doc['dt'].value.truncatedTo(ChronoUnit.MINUTES).second + doc['dt'].value.toInstant().truncatedTo(ChronoUnit.HOURS).toEpochMilli() / 1000000000.0",
+        "until": "ChronoUnit.DAYS.between(doc['dt'].value, " + ref + ") + ChronoUnit.MONTHS.between(doc['dt'].value, " + ref + ") * 0.5 + doc['dt'].value.until(" + ref + ", ChronoUnit.HOURS) * 0.001 + ChronoUnit.YEARS.between(doc['dt'].value, " + ref + ") + ChronoUnit.MILLIS.between(doc['dt'].value, " + ref + ") / 1000000000.0",
+        "duration": "Duration.between(doc['dt'].value.toInstant(), Instant.ofEpochMilli(1700000000000L)).toHours() + Duration.between(doc['dt'].value, " + ref + ").getSeconds() * 0.00001 + Duration.ofHours(5).plus(Duration.ofMinutes(7)).toMinutes() + Duration.ofSeconds(90, 500).toMillis() + Duration.ofDays(2).toHours()",
+        "compare": "(doc['dt'].value.isAfter(" + ref + ") ? 2 : 1) + (doc['dt'].value.isBefore(" + ref + ") ? 4 : 0) + doc['dt'].value.compareTo(" + ref + ") * 0.00000001 + (doc['dt'].value.toInstant().isAfter(Instant.EPOCH) ? 8 : 0)",
+        "string": "doc['dt'].value.toString().length() + doc['dt'].value.toInstant().toString().length() + doc['dt'].value.toString().hashCode() * 0.000000001 + doc['dt'].value.toInstant().toString().hashCode() * 0.000000001",
+        "with": "doc['dt'].value.withHour(3).hour + doc['dt'].value.withMinute(7).minute + doc['dt'].value.withSecond(9).second + doc['dt'].value.withDayOfMonth(2).dayOfMonth + doc['dt'].value.withMonth(2).monthValue + doc['dt'].value.withYear(2020).year / 1000.0 + doc['dt'].value.withDayOfYear(100).dayOfYear + doc['dt'].value.withNano(5).nano",
+        "with bad day": "doc['dt'].value.withDayOfMonth(31).dayOfMonth",
+        "with bad hour": "doc['dt'].value.withHour(25).hour",
+        "of": "ZonedDateTime.of(2024, 2, 29, 1, 2, 3, 4, ZoneOffset.UTC).plusYears(1).dayOfMonth + ZonedDateTime.of(2023, 12, 31, 23, 0, 0, 0, ZoneOffset.ofHours(5)).plusHours(2).year + Instant.ofEpochSecond(86400 * 3, 5).getNano() + Instant.ofEpochSecond(100).plusMillis(1500).getNano() / 1000000.0",
+        "of bad": "ZonedDateTime.of(2023, 2, 30, 1, 2, 3, 4, ZoneOffset.UTC).year",
+        "offset": "doc['dt'].value.withZoneSameInstant(ZoneOffset.ofHours(5)).hour + doc['dt'].value.withZoneSameInstant(ZoneOffset.ofHoursMinutes(-3, -30)).minute + doc['dt'].value.offset.totalSeconds + doc['dt'].value.withZoneSameLocal(ZoneOffset.ofHours(2)).toEpochSecond() / 1000000000.0 + doc['dt'].value.withZoneSameInstant(ZoneOffset.ofHours(-7)).toString().length()",
+        "nanos": "doc['dn'].value.nano / 1000000.0 + doc['dn'].value.toInstant().getNano() / 1000000.0 + doc['dn'].value.second + doc['dn'].value.toString().length()",
+        "list": "doc['dt'].size() + (doc['dt'].empty ? 5 : 0) + doc['dt'].length + doc['dt'].get(0).hour + doc['dt'].values.size()",
+        "get past": "doc['dt'].get(1).hour",
+        "def": "def z = doc['dt'].value; def u = ChronoUnit.DAYS; return u.between(z, z.plusDays(2)) + z.year + (z.dayOfWeek == DayOfWeek.of(3) ? 1 : 0) + Month.of(5).plus(10).getValue() + DayOfWeek.MONDAY.minus(3).getValue()",
+        "enum statics": "DayOfWeek.valueOf('FRIDAY').getValue() + DayOfWeek.values().length + Month.values()[2].getValue() + Month.FEBRUARY.length(true) + Month.FEBRUARY.maxLength() + Month.AUGUST.firstDayOfYear(false) + Month.NOVEMBER.firstMonthOfQuarter().getValue() + ChronoUnit.valueOf('HOURS').getDuration().getSeconds() + ChronoUnit.values().length",
+        "enum compare": "DayOfWeek.FRIDAY.compareTo(DayOfWeek.MONDAY) + Month.MAY.compareTo(Month.JULY) * 10 + ChronoUnit.DAYS.compareTo(ChronoUnit.HOURS)",
+        "unit info": "(ChronoUnit.DAYS.isDateBased() ? 1 : 0) + (ChronoUnit.HOURS.isTimeBased() ? 2 : 0) + (ChronoUnit.WEEKS.isDurationEstimated() ? 4 : 0)",
+        "duration math": "Duration.ofMillis(1500).multipliedBy(3).toMillis() + Duration.ofSeconds(100).dividedBy(7).toMillis() + Duration.ofMinutes(5).negated().getSeconds() + Duration.ofSeconds(-3, 500).abs().getNano() + Duration.ofHours(2).minus(Duration.ofMinutes(30)).toMinutes() + Duration.ofSeconds(5).compareTo(Duration.ofSeconds(7)) + Duration.ofSeconds(61).toString().length() + Duration.ZERO.toString().length() + Duration.ofMillis(-1500).toString().length()",
+        "duration bad": "Duration.ofSeconds(5).plus(1, ChronoUnit.MONTHS).getSeconds()",
+        "unit bad": "doc['dt'].value.plus(1, ChronoUnit.FOREVER).year",
+        "truncate bad": "doc['dt'].value.truncatedTo(ChronoUnit.WEEKS).year",
+        "equals": "(doc['dt'].value.equals(doc['dt'].value.plusDays(0)) ? 1 : 0) + (doc['dt'].value.equals(" + ref + ") ? 2 : 0) + (doc['dt'].value.toInstant().equals(Instant.ofEpochMilli(1700000000000L)) ? 4 : 0) + doc['dt'].value.hashCode() * 0.0000000001 + doc['dt'].value.toInstant().hashCode() * 0.0000000001",
+        "instant at": "doc['dt'].value.toInstant().atZone(ZoneOffset.UTC).hour + Instant.ofEpochMilli(-1500).getEpochSecond() + Instant.ofEpochMilli(-1500).getNano() / 1000000.0 + Instant.MAX.getEpochSecond() / 1.0e18",
+        "fields": "doc['dt'].value.get(ChronoField.HOUR_OF_DAY) * 2 + doc['dt'].value.getLong(ChronoField.EPOCH_DAY) / 1000.0 + doc['dt'].value.get(ChronoField.ALIGNED_WEEK_OF_YEAR) + doc['dt'].value.get(ChronoField.CLOCK_HOUR_OF_AMPM) + doc['dt'].value.get(ChronoField.DAY_OF_WEEK) + doc['dt'].value.getLong(ChronoField.PROLEPTIC_MONTH) / 10000.0 + doc['dt'].value.get(ChronoField.MILLI_OF_SECOND) / 1000.0 + doc['dt'].value.getLong(ChronoField.INSTANT_SECONDS) / 1.0e10 + doc['dt'].value.get(ChronoField.OFFSET_SECONDS) + doc['dt'].value.get(ChronoField.YEAR_OF_ERA) + doc['dt'].value.get(ChronoField.ERA)",
+        "field int error": "doc['dt'].value.get(ChronoField.INSTANT_SECONDS)",
+        "field epoch error": "doc['dt'].value.get(ChronoField.EPOCH_DAY)",
+        "field supported": "(doc['dt'].value.isSupported(ChronoField.YEAR) ? 1 : 0) + (doc['dt'].value.toInstant().isSupported(ChronoField.YEAR) ? 2 : 0) + (doc['dt'].value.toInstant().isSupported(ChronoField.NANO_OF_SECOND) ? 4 : 0) + (ChronoField.YEAR.isDateBased() ? 8 : 0) + (ChronoField.HOUR_OF_DAY.isTimeBased() ? 16 : 0)",
+        "field instant": "doc['dt'].value.toInstant().get(ChronoField.MILLI_OF_SECOND) + doc['dt'].value.toInstant().getLong(ChronoField.INSTANT_SECONDS) / 1.0e10",
+        "field instant bad": "doc['dt'].value.toInstant().get(ChronoField.YEAR)",
+        "field enum": "DayOfWeek.MONDAY.get(ChronoField.DAY_OF_WEEK) + Month.MAY.getLong(ChronoField.MONTH_OF_YEAR) + doc['dt'].value.offset.get(ChronoField.OFFSET_SECONDS) + ChronoField.valueOf('YEAR').ordinal() + ChronoField.values().length",
+        "field enum bad": "DayOfWeek.MONDAY.get(ChronoField.YEAR)",
+        "field check": "ChronoField.HOUR_OF_DAY.checkValidValue(30)",
+        "field check ok": "ChronoField.DAY_OF_MONTH.checkValidIntValue(30) + ChronoField.valueOf('NANO_OF_SECOND').compareTo(ChronoField.YEAR)",
+        "duration get": "Duration.ofSeconds(5, 7).get(ChronoUnit.SECONDS) + Duration.ofSeconds(5, 7).get(ChronoUnit.NANOS)",
+        "def get": "def l = [3, 4, 5]; def m = ['a': 7]; return l.get(1) + m.get('a') + (doc['dt'].value.year > 0 ? 0 : 1)",
+        "instant until": "doc['dt'].value.toInstant().until(Instant.ofEpochMilli(1700000000000L), ChronoUnit.HOURS) + Instant.EPOCH.until(Instant.ofEpochSecond(90061), ChronoUnit.DAYS)",
+    }
+    pure = ("of", "of bad", "enum statics", "enum compare", "unit info", "duration math", "duration bad", "field check", "field check ok", "duration get")
+    for name, src in tm.items():
+        body_src = src if src.startswith("def ") else "return " + src
+        field = "dn" if name == "nanos" else "dt"
+        def guard(ret, name=name, field=field):
+            return "" if name in pure else "if (doc['%s'].size() == 0) { return %s } " % (field, ret)
+
+        head, _, last = body_src.rpartition("return ")
+        score_src = guard("0.5") + head + "return Math.abs(" + last + ")"
+        s["time score " + name] = {"size": 30, "query": {"script_score": {"query": body, "script": {"source": score_src}}}}
+        filter_src = guard("false") + head + "return (" + last + ") > 3"
+        s["time filter " + name] = {"size": 30, "query": {"bool": {"filter": [{"script": {"script": {"source": filter_src}}}]}}, "sort": ["_doc"]}
+    for name in ("year", "getters", "plus", "truncate", "until", "offset"):
+        src = tm[name]
+        s["time sort " + name] = {"size": 30, "query": ma, "sort": [{"_script": {"type": "number", "script": {"source": "if (doc['dt'].size() == 0) { return 0 } return " + src}, "order": "desc"}}, "_doc"]}
+        s["time agg " + name] = {"size": 0, "aggs": {"a": {"avg": {"script": {"source": "if (doc['dt'].size() == 0) { return 0 } return " + src}}}}}
+    s["time terms agg"] = {"size": 0, "aggs": {"a": {"terms": {"script": {"source": "if (doc['dt'].size() == 0) { return 0 } return doc['dt'].value.getDayOfWeek().getValue()"}, "size": 10, "order": {"_key": "asc"}}}}}
+    s["time unsupported member"] = {"size": 30, "query": {"script_score": {"query": body, "script": {"source": "if (doc['dt'].size() == 0) { return 0.5 } return doc['dt'].value.toLocalDate().getYear()"}}}}
     s["expr geo method"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("abs(doc['gp'].getLat()) + abs(doc['gp'].getLon()) + doc['gp'].isEmpty()")}}}
     s["expr haversin"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("1000 / (1 + haversin(10, 20, doc['gp'].lat, doc['gp'].lon))")}}}
     s["expr sf"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['sf'].value")}}}

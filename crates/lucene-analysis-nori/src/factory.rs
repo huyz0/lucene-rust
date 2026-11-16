@@ -141,6 +141,9 @@ impl FactoryClass for KoreanPartOfSpeechStopFilterFactory {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
         let stop_tags = match args::get_set(args, "tags") {
             None => default_stop_tags(),
+            // Ours: `-` is an explicitly empty set (Lucene's factory reads an
+            // empty argument as the defaults, its constructor as no tags).
+            Some(names) if names.iter().all(|n| n == "-") => Arc::new(HashSet::new()),
             Some(names) => Arc::new(
                 names
                     .iter()

@@ -180,7 +180,16 @@ public final class PainlessIr {
         "org.opensearch.index.fielddata.ScriptDocValues$Longs",
         "org.opensearch.index.fielddata.ScriptDocValues$Doubles",
         "org.opensearch.index.fielddata.ScriptDocValues$Booleans",
-        "org.opensearch.index.fielddata.ScriptDocValues$Strings"
+        "org.opensearch.index.fielddata.ScriptDocValues$Strings",
+        "org.opensearch.index.fielddata.ScriptDocValues$Dates",
+        "java.time.ZonedDateTime",
+        "java.time.Instant",
+        "java.time.Duration",
+        "java.time.DayOfWeek",
+        "java.time.Month",
+        "java.time.ZoneOffset",
+        "java.time.temporal.ChronoUnit",
+        "java.time.temporal.ChronoField"
     );
 
     /** {@link #NATIVE_CLASSES} loaded; null for a class this JVM does not have. */

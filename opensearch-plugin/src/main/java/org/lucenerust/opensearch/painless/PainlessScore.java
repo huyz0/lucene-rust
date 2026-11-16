@@ -35,6 +35,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.query.IntervalFilterScript;
 import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -65,7 +66,7 @@ import org.opensearch.index.similarity.ScriptedSimilarity;
 public final class PainlessScore {
 
     /** What a field reads as in a script's {@code doc}, in the native node's numbering. */
-    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, UNSUPPORTED = (byte) 254,
+    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, DATE = 6, DATE_NANOS = 7, UNSUPPORTED = (byte) 254,
         UNMAPPED = (byte) 255;
 
     /** Scripts kept compiled; past this many the cache starts over. */
@@ -101,10 +102,10 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script, an aggregation script, a {@code terms_set} minimum, an
+     * a number sort script (and one reading {@code _score}), an aggregation script, a {@code terms_set} minimum, an
      * {@code intervals} filter script, a scripted similarity's script and its weight script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, SORT_WITH_SCORE = 4, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
         SIMILARITY = 8, SIMILARITY_WEIGHT = 9;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
@@ -159,6 +160,12 @@ public final class PainlessScore {
         @Override
         public ScriptException rethrown(Object s, int doc, float score) {
             NumberSortScript script = (NumberSortScript) s;
+            script.setScorer(new org.apache.lucene.search.Scorable() {
+                @Override
+                public float score() {
+                    return score;
+                }
+            });
             script.setDocument(doc);
             try {
                 script.execute();
@@ -922,7 +929,7 @@ public final class PainlessScore {
 
     /**
      * How a field reads in {@code doc}: as {@code ScriptDocValues.Longs}, {@code Doubles}, {@code
-     * Booleans} or {@code Strings} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
+     * Booleans}, {@code Strings} or {@code Dates} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
      * Java) or {@link #UNMAPPED}.
      */
     public static byte fieldKind(MappedFieldType ft) {
@@ -940,6 +947,9 @@ public final class PainlessScore {
                 case HALF_FLOAT -> HALF_FLOAT;
                 default -> UNSUPPORTED;
             };
+        }
+        if (ft.getClass() == DateFieldMapper.DateFieldType.class) {
+            return ((DateFieldMapper.DateFieldType) ft).resolution() == DateFieldMapper.Resolution.NANOSECONDS ? DATE_NANOS : DATE;
         }
         if (ft.getClass() == BooleanFieldMapper.BooleanFieldType.class) {
             return BOOLEAN;

@@ -206,6 +206,13 @@ pub trait FieldComparator: Send + Sync {
     fn needs_scores(&self) -> bool {
         false
     }
+    /// Whether [`LeafFieldComparator::value`] reads the score of a scorer
+    /// that was made without scoring, as a script does through
+    /// `Scorable.score()` (constant scorers answer their constant, the
+    /// others `0`), though the search itself needs no scores.
+    fn reads_unscored_scorer(&self) -> bool {
+        false
+    }
 }
 
 /// `FieldComparatorSource`: makes the comparator of a `CUSTOM` key.
@@ -407,10 +414,21 @@ pub(crate) fn custom_comparator(
 
 /// Whether a key reads the score: the score itself, or a custom comparator
 /// that says so.
-fn key_needs_scores(f: &SortField) -> bool {
+pub fn key_needs_scores(f: &SortField) -> bool {
     match f.ty {
         SortType::Score => true,
         SortType::Custom(id) => custom_comparator(id, f, 1).is_ok_and(|c| c.needs_scores()),
+        _ => false,
+    }
+}
+
+/// Whether a key reads the score of a scorer made without scoring
+/// ([`FieldComparator::reads_unscored_scorer`]).
+pub fn key_reads_unscored_scorer(f: &SortField) -> bool {
+    match f.ty {
+        SortType::Custom(id) => {
+            custom_comparator(id, f, 1).is_ok_and(|c| c.reads_unscored_scorer())
+        }
         _ => false,
     }
 }
@@ -4441,7 +4459,7 @@ impl<'a> Leaf<'a> {
         to: i32,
         live_docs: Option<&FixedBitSet>,
     ) -> i32 {
-        if !tf.queue_full || tf.can_set_min_score || self.early {
+        if tf.can_set_min_score || self.early {
             return from;
         }
         // Counting may go on while it changes no state (see `quick_reject`).
@@ -4451,6 +4469,9 @@ impl<'a> Leaf<'a> {
             tf.threshold
         };
         let single = tf.comps.len() == 1;
+        if !tf.queue_full {
+            return self.reject_before_top(tf, from, to, live_docs, limit);
+        }
         let (mul, bottom) = (tf.comps[0].mul, tf.comps[0].bottom);
         let mut d = from;
         macro_rules! run {
@@ -4477,6 +4498,48 @@ impl<'a> Leaf<'a> {
             Some(LeafKey::Str(k)) => run!(|d| k.quick_compare_bottom(d)),
             Some(LeafKey::Numeric(n)) => run!(|d| n.quick_value(d).map(|v| cmp(bottom, v))),
             _ => {}
+        }
+        d
+    }
+
+    /// Before the queue is full, a `search_after` page drops each document
+    /// that sorts before the last page's final hit (`compareTop` > 0 in the
+    /// paging collector) after counting it, whatever the queue holds. A run of
+    /// them (a time-ordered index paged from the middle) is counted here, one
+    /// column read each, until the first document that is not before it, the
+    /// hits threshold or the end of the run.
+    fn reject_before_top(
+        &mut self,
+        tf: &mut TopField,
+        from: i32,
+        to: i32,
+        live_docs: Option<&FixedBitSet>,
+        limit: u64,
+    ) -> i32 {
+        let c = &tf.comps[0];
+        if tf.comps.len() != 1 || !c.top_set || c.custom.is_some() || c.vals.is_some() {
+            return from;
+        }
+        let (mul, top) = (c.mul, c.top);
+        let Some(LeafKey::Numeric(n)) = self.keys.first_mut() else {
+            return from;
+        };
+        let mut d = from;
+        while d < to {
+            if live_docs.is_some_and(|l| !l.get_doc(d)) {
+                d += 1;
+                continue;
+            }
+            if tf.total_hits >= limit {
+                break;
+            }
+            match n.quick_value(d).map(|v| cmp(top, v)) {
+                Some(r) if mul * r > 0 => {
+                    tf.total_hits += 1;
+                    d += 1;
+                }
+                _ => break,
+            }
         }
         d
     }
@@ -5262,6 +5325,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track || min_score.is_some();
+    let reads_unscored = sort.iter().any(key_reads_unscored_scorer);
     let mut max_score = f32::NEG_INFINITY;
     let clause = rewritten_clause(query);
     let mode = match tf.score_mode() {
@@ -5343,14 +5407,15 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         if end != NO_MORE_DOCS {
             scorer = Box::new(exec::Below::new(scorer, end));
         }
-        let mut scores = if want_scores && !self_scores {
+        let mut scores = if (want_scores || reads_unscored) && !self_scores {
             // The same query, so the same segment answer: a tree here and
             // none there would be a bug, reported rather than scored as 0.
-            let Some(c) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
+            let score_mode = if want_scores { mode } else { Mode::NoScores };
+            let Some(c) = exec::build::child(&ctx, &clause, 1.0, score_mode, true)? else {
                 return Err(SortError::ScoringTree(-1).into());
             };
             Some(ScoreAt {
-                inner: c.into_scorer(mode),
+                inner: c.into_scorer(score_mode),
                 doc: -1,
             })
         } else {

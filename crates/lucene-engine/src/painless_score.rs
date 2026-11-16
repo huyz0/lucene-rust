@@ -107,6 +107,10 @@ pub enum FieldKind {
     Boolean,
     /// `5`: a keyword's sorted set, as `Strings`.
     Keyword,
+    /// `6`: a millisecond date's epoch millis, as `Dates` in UTC.
+    Date,
+    /// `7`: a nanosecond date's epoch nanos, as `Dates` in UTC.
+    DateNanos,
     /// `254`: a mapped field the native runtime cannot read.
     Unsupported,
     /// `255`: no field of that name is mapped.
@@ -121,6 +125,7 @@ impl FieldKind {
             FieldKind::Double | FieldKind::Float | FieldKind::HalfFloat => Some(DocKind::Doubles),
             FieldKind::Boolean => Some(DocKind::Booleans),
             FieldKind::Keyword => Some(DocKind::Strings),
+            FieldKind::Date | FieldKind::DateNanos => Some(DocKind::Dates),
             FieldKind::Unsupported | FieldKind::Unmapped => None,
         }
     }
@@ -356,6 +361,8 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
             3 => FieldKind::HalfFloat,
             4 => FieldKind::Boolean,
             5 => FieldKind::Keyword,
+            6 => FieldKind::Date,
+            7 => FieldKind::DateNanos,
             254 => FieldKind::Unsupported,
             255 => FieldKind::Unmapped,
             other => {
@@ -628,10 +635,13 @@ impl Spec {
             "_getShardId",
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
+        const AGGREGATION: &[&str] = &["getParams", "getDoc", "get_value"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
         if self.interval || self.similarity || self.similarity_weight {
             &[]
-        } else if self.filter || self.agg || self.terms_set || (self.sort && !self.needs_score) {
+        } else if self.agg {
+            AGGREGATION
+        } else if self.filter || self.terms_set || (self.sort && !self.needs_score) {
             FILTER
         } else if self.sort {
             SORT_WITH_SCORE
@@ -815,6 +825,8 @@ pub struct ScoreEnv<'c> {
     pub direct: Vec<Option<Option<NumericReader<'c>>>>,
     pub doc: i32,
     pub score: f64,
+    /// An aggregation script's `_value`: the field value it maps, else null.
+    pub agg_value: Value,
     pub params: Value,
     pub doc_lookup: Value,
     pub index: Value,
@@ -832,7 +844,7 @@ pub struct Column {
 /// A numeric field's stored longs as its `ScriptDocValues` values' bits.
 pub fn decode_column(kind: FieldKind, vs: &mut [u64]) {
     match kind {
-        FieldKind::Long | FieldKind::Boolean => {}
+        FieldKind::Long | FieldKind::Boolean | FieldKind::Date | FieldKind::DateNanos => {}
         FieldKind::Double => {
             for v in vs {
                 *v = sortable_long_to_double(*v as i64).to_bits();
@@ -900,7 +912,7 @@ impl ScoreEnv<'_> {
                     }
                     cur.count = n;
                     let decode: fn(i64) -> i64 = match kind {
-                        FieldKind::Long => |v| v,
+                        FieldKind::Long | FieldKind::Date | FieldKind::DateNanos => |v| v,
                         FieldKind::Double => |v| sortable_long_to_double(v).to_bits() as i64,
                         FieldKind::Float => {
                             |v| f64::from(sortable_int_to_float(v as i32)).to_bits() as i64
@@ -911,7 +923,10 @@ impl ScoreEnv<'_> {
                         // `ScriptDocValues.Booleans`: `nextValue() == 1`.
                         _ => |v| i64::from(v == 1),
                     };
-                    if kind != FieldKind::Long {
+                    if !matches!(
+                        kind,
+                        FieldKind::Long | FieldKind::Date | FieldKind::DateNanos
+                    ) {
                         for v in &mut cur.items[..n] {
                             *v = decode(*v);
                         }
@@ -984,11 +999,32 @@ impl ScoreEnv<'_> {
     /// Value `index` of field `i` as a script value.
     pub fn boxed_item(&mut self, i: usize, index: i32) -> std::result::Result<Value, Throw> {
         let kind = self.kind(i)?;
+        if matches!(kind, FieldKind::Date | FieldKind::DateNanos) {
+            // `Dates.get` checks the document's count, not its array.
+            let n = self.load(i)?.count;
+            if n == 0 {
+                return Err(no_value());
+            }
+            match usize::try_from(index) {
+                Err(_) => return Err(out_of_bounds(index, n)),
+                Ok(x) if x >= n => {
+                    return Err(Throw::new(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!(
+                            "attempted to fetch the [{index}] date when there are only [{n}] dates."
+                        ),
+                    ))
+                }
+                Ok(_) => {}
+            }
+        }
         let v = self.item(i, index)?;
         Ok(match kind {
             FieldKind::Long => Value::Long(v),
             FieldKind::Boolean => Value::Bool(v != 0),
             FieldKind::Keyword => return self.term(i, v),
+            FieldKind::Date => lucene_painless::api::time::utc_from_millis(v)?,
+            FieldKind::DateNanos => lucene_painless::api::time::utc_from_nanos(v)?,
             _ => Value::Double(f64::from_bits(v as u64)),
         })
     }
@@ -1003,6 +1039,9 @@ impl ScoreEnv<'_> {
         // With no values Java throws before reading its array: no stale slots.
         let len = if n == 0 {
             0
+        } else if matches!(kind, FieldKind::Date | FieldKind::DateNanos) {
+            // `Dates` never reads past its count.
+            n
         } else {
             self.current[i].items.len()
         };
@@ -1020,6 +1059,7 @@ impl ScoreEnv<'_> {
             FieldKind::Long => DocKind::Longs,
             FieldKind::Boolean => DocKind::Booleans,
             FieldKind::Keyword => DocKind::Strings,
+            FieldKind::Date | FieldKind::DateNanos => DocKind::Dates,
             _ => DocKind::Doubles,
         };
         let v = DocValues::with_stale(doc_kind, items, stale);
@@ -1150,6 +1190,7 @@ impl Env for ScoreEnv<'_> {
             "getParams" => Ok(self.params.clone()),
             "getDoc" => Ok(self.doc_lookup.clone()),
             "get_score" if self.source.needs_score => Ok(Value::Double(self.score)),
+            "get_value" if self.source.agg => Ok(self.agg_value.clone()),
             "_getDocId" => Ok(Value::Int(self.doc)),
             "_getDocBaseId" => Ok(Value::Int(self.reader.doc_base.wrapping_add(self.doc))),
             "_getIndex" => Ok(self.index.clone()),
@@ -1617,6 +1658,7 @@ fn score_env<'c>(
         source,
         doc: -1,
         score: 0.0,
+        agg_value: Value::Null,
         params,
         doc_lookup,
     }
@@ -1744,7 +1786,10 @@ impl FieldComparator for SortComparator {
         }
     }
 
-    fn needs_scores(&self) -> bool {
+    // Lucene's `SortField.needsScores` is false for a custom comparator: a
+    // script reading `_score` sees what the search's scorers return without
+    // scoring, as OpenSearch's does.
+    fn reads_unscored_scorer(&self) -> bool {
         self.0.needs_score
     }
 }
@@ -1770,13 +1815,22 @@ impl LeafFieldComparator for SortLeaf<'_> {
 /// number, a boolean as `1` or `0`, each element of an array or collection
 /// -- sorted as `Double.compare` orders them, as sortable longs.
 #[derive(Debug)]
-pub struct PainlessAggValues(pub Arc<Spec>, pub bool);
+pub struct PainlessAggValues(
+    pub Arc<Spec>,
+    pub bool,
+    pub Option<lucene_aggs::metric_aggs::ValueKind>,
+);
 
 impl PainlessAggValues {
     /// The node's script ([`decode_spec`]'s layout), checked. `long`: the
     /// values read as longs (`ScriptLongValues`, a `value_type` of `long`),
-    /// not as doubles.
-    pub fn decode(c: &mut Cursor<'_>, long: bool) -> std::result::Result<Self, Status> {
+    /// not as doubles. `input`: the field kind whose values the script maps
+    /// through `_value` (`ValuesSource.Numeric.WithScript`).
+    pub fn decode(
+        c: &mut Cursor<'_>,
+        long: bool,
+        input: Option<lucene_aggs::metric_aggs::ValueKind>,
+    ) -> std::result::Result<Self, Status> {
         let spec = decode_spec(c)?;
         if !spec.agg {
             return Err(invalid(
@@ -1788,11 +1842,15 @@ impl PainlessAggValues {
                 "aggregation tree: painless script not checked: {r}"
             ))
         })?;
-        Ok(PainlessAggValues(Arc::new(spec), long))
+        Ok(PainlessAggValues(Arc::new(spec), long, input))
     }
 }
 
 impl lucene_aggs::bucket_aggs::ScriptValuesSource for PainlessAggValues {
+    fn input_kind(&self) -> Option<lucene_aggs::metric_aggs::ValueKind> {
+        self.2
+    }
+
     fn open<'a>(
         &self,
         reader: &'a lucene_search::directory_reader::SegmentReader,
@@ -1843,12 +1901,11 @@ pub fn agg_double(v: &Value) -> Result<f64> {
     })
 }
 
-impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
-    fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
-        let s = &mut self.0;
-        s.env.doc = doc;
-        let v = s.run_object()?;
-        let from = out.len();
+impl AggLeaf<'_> {
+    /// The script's result in the current state, as the node's encoding
+    /// of each value (`ScriptDoubleValues`, or `ScriptLongValues`).
+    fn push(&mut self, out: &mut Vec<i64>) -> Result<()> {
+        let v = self.0.run_object()?;
         let items: Vec<Value> = match &v {
             Value::Null => return Ok(()),
             Value::List(l) => l.borrow().items.clone(),
@@ -1866,6 +1923,40 @@ impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
             } else {
                 lucene_util::numeric_utils::double_to_sortable_long(agg_double(item)?)
             });
+        }
+        Ok(())
+    }
+}
+
+impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
+    fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
+        self.0.env.doc = doc;
+        self.0.env.agg_value = Value::Null;
+        let from = out.len();
+        self.push(out)?;
+        out[from..].sort_unstable();
+        Ok(())
+    }
+
+    fn mapped(&mut self, doc: i32, inputs: &[f64], out: &mut Vec<i64>) -> Result<()> {
+        self.0.env.doc = doc;
+        let count = inputs.len();
+        let from = out.len();
+        // An expression's per-document values are computed once, with the
+        // first `_value` (`ExpressionAggregationScript`): a document's every
+        // value maps to the same number.
+        let inputs = if self.0.expr.is_some() {
+            &inputs[..1.min(inputs.len())]
+        } else {
+            inputs
+        };
+        let repeat = if self.0.expr.is_some() { count } else { 1 };
+        for &x in inputs {
+            self.0.env.agg_value = Value::Double(x);
+            let v = self.0.run_object()?;
+            // `runAsDouble`: one number per value.
+            let one = lucene_util::numeric_utils::double_to_sortable_long(agg_double(&v)?);
+            out.extend(std::iter::repeat_n(one, repeat));
         }
         out[from..].sort_unstable();
         Ok(())
