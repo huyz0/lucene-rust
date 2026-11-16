@@ -83,7 +83,7 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
             return true;
         }
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.liveViewLucene(nativeHandle, view.id(), waitMillis, out);
+        int rc = NativeLive.liveViewLucene(nativeHandle, view.id(), waitMillis, out);
         if (rc != NativeBridge.OK) {
             return false;
         }

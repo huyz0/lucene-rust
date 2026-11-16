@@ -43,7 +43,7 @@ final class ThaiBreak {
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
-            int rc = NativeBridge.thaiSetBreakUpcall(stub);
+            int rc = NativeAnalysis.thaiSetBreakUpcall(stub);
             if (rc != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the Thai break upcall failed: " + NativeBridge.lastError());
             }

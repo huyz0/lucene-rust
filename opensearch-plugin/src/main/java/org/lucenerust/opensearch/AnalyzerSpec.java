@@ -264,7 +264,7 @@ public final class AnalyzerSpec {
     /** The Rust copy's tokens for {@code text}, or null when it failed (the reason is logged natively). */
     public static Tokens rust(byte[] spec, String field, String text) {
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.analyze(
+        int rc = NativeAnalysis.analyze(
             spec,
             field.getBytes(StandardCharsets.UTF_8),
             text.getBytes(StandardCharsets.UTF_8),

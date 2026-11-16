@@ -266,7 +266,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             this.fieldInfos = in.getFieldInfos();
             this.docValues = new NativeDocValues.Batch((doc, fields) -> {
                 byte[][] out = new byte[1][];
-                int rc = NativeBridge.docValues(shared.handle(), ord, doc, fields, out);
+                int rc = NativeSearch.docValues(shared.handle(), ord, doc, fields, out);
                 if (rc != NativeBridge.OK) {
                     // As for stored fields: the segment's own iterator answers instead.
                     shared.stats.nativeError();
@@ -425,7 +425,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             if (h == 0) {
                 return;
             }
-            int rc = NativeBridge.prefetchDocuments(h, ord, docs);
+            int rc = NativeSearch.prefetchDocuments(h, ord, docs);
             if (rc != NativeBridge.OK) {
                 // Only a hint: the reads that follow fetch what they need and report their own errors.
                 logger.debug("lucene-rust: native stored-fields prefetch failed ({}): {}", rc, NativeBridge.lastError());
@@ -444,7 +444,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 return false;
             }
             boolean derived = shared.derivedSource;
-            int rc = NativeBridge.document(h, ord, docID, bytes -> {
+            int rc = NativeSearch.document(h, ord, docID, bytes -> {
                 // The replay copies the document onto the heap, and the response copies it again.
                 NativeMemory.chargeHeap(2 * bytes.byteSize());
                 SourceLoader source = (fi, v) -> derivedSource(h, docID, fi, v, lucene);
@@ -496,7 +496,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         ) throws IOException {
             NativeMemory.chargeHeap(2L * len);
             boolean[] read = new boolean[1];
-            int rc = NativeBridge.storedValue(h, ord, docID, ordinal, bytes -> {
+            int rc = NativeStore.storedValue(h, ord, docID, ordinal, bytes -> {
                 if (bytes.byteSize() != len) {
                     return;
                 }
@@ -553,7 +553,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 }
             };
             boolean masked = vectorsDropped();
-            int rc = masked ? NativeBridge.storedSource(h, ord, docID, take) : NativeBridge.derivedSource(h, ord, docID, take);
+            int rc = masked ? NativeStore.storedSource(h, ord, docID, take) : NativeSearch.derivedSource(h, ord, docID, take);
             if (rc == NativeBridge.OK && read[0]) {
                 if (masked) {
                     shared.stats.sourceWithoutVectors();

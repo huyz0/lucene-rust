@@ -405,7 +405,7 @@ final class NativeSelfTestLeaves {
         int[] docs = new int[10];
         float[] scores = new float[10];
         long[] counts = new long[3];
-        int rc = NativeBridge.search(a.handle(), none.blob(), 10, Long.MAX_VALUE, docs, scores, counts);
+        int rc = NativeSearch.search(a.handle(), none.blob(), 10, Long.MAX_VALUE, docs, scores, counts);
         // Counted exactly, as the native call with no limit counts.
         var want = searcher.search(emptyTerm, new org.apache.lucene.search.TopScoreDocCollectorManager(10, null, Integer.MAX_VALUE));
         boolean same = rc == NativeBridge.OK && counts[1] == want.totalHits.value() && counts[0] == want.scoreDocs.length;

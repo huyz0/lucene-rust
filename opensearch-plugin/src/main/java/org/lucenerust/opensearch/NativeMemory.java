@@ -97,7 +97,7 @@ public final class NativeMemory {
                     .findStatic(NativeMemory.class, "grant", MethodType.methodType(int.class, long.class, long.class));
                 MemorySegment stub = Linker.nativeLinker()
                     .upcallStub(target, FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG), Arena.global());
-                if (NativeBridge.memorySetUpcall(stub) != NativeBridge.OK) {
+                if (NativeLimits.memorySetUpcall(stub) != NativeBridge.OK) {
                     throw new IllegalStateException("lucene-rust: registering the memory upcall failed: " + NativeBridge.lastError());
                 }
             } catch (ReflectiveOperationException e) {
@@ -112,7 +112,7 @@ public final class NativeMemory {
         // The native query caches take OpenSearch's own query cache budget: the sets they hold are
         // the ones IndicesQueryCache would hold on the heap for the same searches.
         long queryCache = org.opensearch.indices.IndicesQueryCache.INDICES_CACHE_QUERY_SIZE_SETTING.get(settings).getBytes();
-        if (NativeBridge.queryCacheSetBudget(queryCache) != NativeBridge.OK) {
+        if (NativeLimits.queryCacheSetBudget(queryCache) != NativeBridge.OK) {
             throw new IllegalStateException("lucene-rust: cannot set the query cache budget: " + NativeBridge.lastError());
         }
     }
@@ -123,7 +123,7 @@ public final class NativeMemory {
         long heap = Runtime.getRuntime().maxMemory();
         long bytes = parseLimit(value, total, heap, pageCacheBudget);
         limit = bytes;
-        int rc = NativeBridge.memorySetProcessLimit(bytes);
+        int rc = NativeLimits.memorySetProcessLimit(bytes);
         if (rc != NativeBridge.OK) {
             throw new IllegalStateException("lucene-rust: cannot set the off-heap limit (status " + rc + ")");
         }
@@ -173,7 +173,7 @@ public final class NativeMemory {
      */
     public static long[] stats() {
         long[] out = new long[12];
-        return NativeBridge.memoryStats(out) == NativeBridge.OK ? out : null;
+        return NativeLimits.memoryStats(out) == NativeBridge.OK ? out : null;
     }
 
     /**
@@ -192,7 +192,7 @@ public final class NativeMemory {
         s.outer = CURRENT.get();
         CURRENT.set(s);
         OPEN.put(token, s);
-        int rc = NativeBridge.memoryScopeBegin(token, 0, label.getBytes(StandardCharsets.UTF_8));
+        int rc = NativeLimits.memoryScopeBegin(token, 0, label.getBytes(StandardCharsets.UTF_8));
         if (rc != NativeBridge.OK) {
             OPEN.remove(token);
             logger.warn("lucene-rust: cannot open a memory scope ({}): {}", rc, NativeBridge.lastError());
@@ -200,7 +200,7 @@ public final class NativeMemory {
         } else {
             long deadline = DEADLINE.get()[0];
             if (deadline != 0) {
-                NativeBridge.memoryScopeSetDeadline(token, deadline - System.nanoTime());
+                NativeLimits.memoryScopeSetDeadline(token, deadline - System.nanoTime());
             }
         }
         return s;
@@ -281,7 +281,7 @@ public final class NativeMemory {
                 for (Scope s : OPEN.values()) {
                     if (s.cancelSent == false && s.ctx.isCancelled()) {
                         s.cancelSent = true;
-                        NativeBridge.memoryScopeCancel(s.token);
+                        NativeLimits.memoryScopeCancel(s.token);
                     }
                 }
             } catch (InterruptedException e) {
@@ -382,7 +382,7 @@ public final class NativeMemory {
             }
             if (opened) {
                 long[] out = new long[4];
-                if (NativeBridge.memoryScopeEnd(out) == NativeBridge.OK) {
+                if (NativeLimits.memoryScopeEnd(out) == NativeBridge.OK) {
                     peak = out[1];
                     timedOut = out[3] != 0;
                 }

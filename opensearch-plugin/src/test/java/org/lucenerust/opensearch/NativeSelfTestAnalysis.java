@@ -571,7 +571,7 @@ final class NativeSelfTestAnalysis {
         }
         check.accept(!RustAnalysis.tokenizers().containsKey("japanese"), "japanese is not registered without its data pack");
         check.accept(RustAnalysis.tokenizers().containsKey("thai_dictionary"), "thai_dictionary is registered without any data pack");
-        check.accept(NativeBridge.addDataPackDir(dir) == 0, "the data pack directory is added");
+        check.accept(NativeStore.addDataPackDir(dir) == 0, "the data pack directory is added");
         check.accept(RustAnalysis.tokenizers().keySet().containsAll(List.of("japanese", "korean", "chinese")), "the data-pack tokenizers are registered once their packs are there");
         // The tokenizers alone (no part-of-speech stop filter), as Lucene's split these texts.
         Map<RustAnalysis.Entry, Map.Entry<String, List<String>>> want = new LinkedHashMap<>();

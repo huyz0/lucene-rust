@@ -331,13 +331,13 @@ public class RustSearchPlugin extends Plugin implements
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
-        NativeMemory.install(settings, NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(settings).getBytes() : 0);
+        NativeMemory.install(settings, NativeStore.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(settings).getBytes() : 0);
         configureAggSegmentCache(settings);
         configureReadAdvice(settings);
     }
 
     private static void configureAggSegmentCache(Settings settings) {
-        int rc = NativeBridge.aggCacheSetBudget(NODE_AGG_SEGMENT_CACHE_SIZE.get(settings).getBytes());
+        int rc = NativeStore.aggCacheSetBudget(NODE_AGG_SEGMENT_CACHE_SIZE.get(settings).getBytes());
         if (rc != 0) {
             throw new IllegalStateException("lucene-rust: cannot configure the aggregation segment cache (status " + rc + ")");
         }
@@ -345,7 +345,7 @@ public class RustSearchPlugin extends Plugin implements
 
     private static void configureReadAdvice(Settings settings) {
         String spec = String.join(",", NODE_READ_ADVICE.get(settings));
-        int rc = NativeBridge.storeSetReadAdvice(spec, NODE_WARM_RANDOM.get(settings));
+        int rc = NativeStore.storeSetReadAdvice(spec, NODE_WARM_RANDOM.get(settings));
         if (rc != 0) {
             throw new IllegalArgumentException(
                 "lucene-rust: invalid [" + NODE_READ_ADVICE.getKey() + "] " + spec + ": " + NativeBridge.lastError()
@@ -354,17 +354,17 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     private static void configurePageCache(Settings settings) {
-        int rc = NativeBridge.storeSetPageCacheBudget(NODE_PAGE_CACHE_SIZE.get(settings).getBytes());
+        int rc = NativeStore.storeSetPageCacheBudget(NODE_PAGE_CACHE_SIZE.get(settings).getBytes());
         if (rc != 0) {
             throw new IllegalStateException("lucene-rust: cannot configure the page cache (status " + rc + ")");
         }
-        if (NativeBridge.storePageCacheAvailable() == false) {
+        if (NativeStore.storePageCacheAvailable() == false) {
             logger.info("lucene-rust: userfaultfd is unavailable here; indices with index.store.read_mode [page_cache] stay mapped");
         }
     }
 
     private static void configureLazyDecrypt(Settings settings) {
-        if (NativeBridge.storeLazyDecryptActive() == false) {
+        if (NativeStore.storeLazyDecryptActive() == false) {
             logger.info(
                 "lucene-rust: userfaultfd is unavailable here; encrypted shard files are decrypted whole when opened"
             );
@@ -675,7 +675,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         dirs.add(pluginDir().resolve("packs"));
         for (Path dir : dirs) {
-            if (NativeBridge.addDataPackDir(dir.toAbsolutePath().toString()) != 0) {
+            if (NativeStore.addDataPackDir(dir.toAbsolutePath().toString()) != 0) {
                 logger.warn("lucene-rust: cannot add data pack directory [{}]: {}", dir, NativeBridge.lastError());
             }
         }
@@ -1007,7 +1007,7 @@ public class RustSearchPlugin extends Plugin implements
                 NativeMemory.OFF_HEAP_LIMIT,
                 v -> NativeMemory.applyLimit(
                     v,
-                    NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(environment.settings()).getBytes() : 0
+                    NativeStore.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(environment.settings()).getBytes() : 0
                 )
             );
         HybridSearch.initialize(threadPool);

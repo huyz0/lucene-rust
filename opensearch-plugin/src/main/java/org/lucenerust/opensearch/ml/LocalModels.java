@@ -6,6 +6,7 @@ package org.lucenerust.opensearch.ml;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeMl;
 import org.opensearch.action.get.GetRequest;
 import org.opensearch.action.get.GetResponse;
 import org.opensearch.OpenSearchStatusException;
@@ -105,7 +106,7 @@ public final class LocalModels {
     }
 
     private void initRuntime() {
-        if (NativeBridge.mlRuntimeInit(runtimeLibrary.toString(), 0) != NativeBridge.OK) {
+        if (NativeMl.mlRuntimeInit(runtimeLibrary.toString(), 0) != NativeBridge.OK) {
             throw new IllegalStateException("cannot load the ONNX Runtime library: " + NativeBridge.lastError());
         }
         runtimeLoaded = true;
@@ -134,7 +135,7 @@ public final class LocalModels {
                 runtimeLibrary.resolveSibling("liblucene_torch_precxx11.so").toString()
             )
         );
-        if (NativeBridge.mlTorchInit(dir.toString(), shims, 0) != NativeBridge.OK) {
+        if (NativeMl.mlTorchInit(dir.toString(), shims, 0) != NativeBridge.OK) {
             throw new IllegalStateException("cannot load libtorch from " + dir + ": " + NativeBridge.lastError());
         }
         torchLoaded = true;
@@ -306,7 +307,7 @@ public final class LocalModels {
                 throw new IllegalArgumentException("found no tokenizer.json in the model zip");
             }
             long[] handle = new long[1];
-            int rc = NativeBridge.mlSparseTokenizeOpen(Files.readAllBytes(tokenizer), idf == null ? null : Files.readAllBytes(idf), handle);
+            int rc = NativeMl.mlSparseTokenizeOpen(Files.readAllBytes(tokenizer), idf == null ? null : Files.readAllBytes(idf), handle);
             if (rc != NativeBridge.OK) {
                 throw new IllegalArgumentException(NativeBridge.lastError());
             }
@@ -330,7 +331,7 @@ public final class LocalModels {
         if ("SPARSE_ENCODING".equals(function) || "TEXT_SIMILARITY".equals(function)) {
             loadRuntime();
             long[] handle = new long[1];
-            int rc = NativeBridge.mlOnnxModelOpen("SPARSE_ENCODING".equals(function), onnx.toString(), Files.readAllBytes(tokenizer), handle);
+            int rc = NativeMl.mlOnnxModelOpen("SPARSE_ENCODING".equals(function), onnx.toString(), Files.readAllBytes(tokenizer), handle);
             if (rc != NativeBridge.OK) {
                 throw new IllegalArgumentException(NativeBridge.lastError());
             }
@@ -343,7 +344,7 @@ public final class LocalModels {
         boolean normalize = Boolean.TRUE.equals(config.get("normalize_result"));
         loadRuntime();
         long[] handle = new long[1];
-        int rc = NativeBridge.mlTextEmbeddingOpen(onnx.toString(), Files.readAllBytes(tokenizer), modelType, pooling, normalize, handle);
+        int rc = NativeMl.mlTextEmbeddingOpen(onnx.toString(), Files.readAllBytes(tokenizer), modelType, pooling, normalize, handle);
         if (rc != NativeBridge.OK) {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
@@ -365,15 +366,15 @@ public final class LocalModels {
             return;
         }
         int kind = switch (function) {
-            case "SPARSE_ENCODING" -> NativeBridge.TORCH_SPARSE_ENCODING;
-            case "TEXT_SIMILARITY" -> NativeBridge.TORCH_TEXT_SIMILARITY;
+            case "SPARSE_ENCODING" -> NativeMl.TORCH_SPARSE_ENCODING;
+            case "TEXT_SIMILARITY" -> NativeMl.TORCH_TEXT_SIMILARITY;
             default -> "sentence_transformers".equalsIgnoreCase(String.valueOf(config.get("framework_type")))
-                ? NativeBridge.TORCH_SENTENCE_TRANSFORMERS
-                : NativeBridge.TORCH_HUGGING_FACE;
+                ? NativeMl.TORCH_SENTENCE_TRANSFORMERS
+                : NativeMl.TORCH_HUGGING_FACE;
         };
         loadTorch();
         long[] handle = new long[1];
-        int rc = NativeBridge.mlTorchOpen(kind, file.toString(), Files.readAllBytes(tokenizer), pooling, normalize, handle);
+        int rc = NativeMl.mlTorchOpen(kind, file.toString(), Files.readAllBytes(tokenizer), pooling, normalize, handle);
         if (rc != NativeBridge.OK) {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
@@ -398,11 +399,11 @@ public final class LocalModels {
         if (maxLength < 1 || stride < 0) {
             throw new IllegalArgumentException("token_max_length must be positive and token_overlap_stride not negative");
         }
-        int flags = (configFlag(config, extra, "with_overflowing_tokens", true) ? NativeBridge.HIGHLIGHT_OVERFLOWING : 0)
-            | (configFlag(config, extra, "padding", false) ? NativeBridge.HIGHLIGHT_PADDING : 0);
+        int flags = (configFlag(config, extra, "with_overflowing_tokens", true) ? NativeMl.HIGHLIGHT_OVERFLOWING : 0)
+            | (configFlag(config, extra, "padding", false) ? NativeMl.HIGHLIGHT_PADDING : 0);
         loadTorch();
         long[] handle = new long[1];
-        int rc = NativeBridge.mlHighlighterOpen(file.toString(), Files.readAllBytes(tokenizer), maxLength, stride, flags, handle);
+        int rc = NativeMl.mlHighlighterOpen(file.toString(), Files.readAllBytes(tokenizer), maxLength, stride, flags, handle);
         if (rc != NativeBridge.OK) {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
@@ -428,7 +429,7 @@ public final class LocalModels {
     /** The sentences of {@code context} that answer {@code question}, by highlighting model {@code modelId}. */
     public List<Highlight> highlight(String modelId, String question, String context) {
         Deployed d = deployed(modelId);
-        ByteBuffer r = result(NativeBridge.mlHighlight(d.handle(), question, context));
+        ByteBuffer r = result(NativeMl.mlHighlight(d.handle(), question, context));
         int n = r.getInt();
         List<Highlight> hits = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
@@ -544,7 +545,7 @@ public final class LocalModels {
     }
 
     private void close(Deployed d) {
-        NativeBridge.mlModelClose(d.handle());
+        NativeMl.mlModelClose(d.handle());
         if ("REMOTE".equals(d.functionName())) {
             remote.closed(d.handle());
         }
@@ -568,7 +569,7 @@ public final class LocalModels {
     /** The sparse vectors of {@code texts} from sparse tokenize model {@code modelId}, deployed on this node. */
     public List<List<TokenWeight>> sparseTokenize(String modelId, List<String> texts) {
         Deployed d = deployed(modelId);
-        ByteBuffer r = result(NativeBridge.mlSparseTokenize(d.handle(), encodeTexts(texts)));
+        ByteBuffer r = result(NativeMl.mlSparseTokenize(d.handle(), encodeTexts(texts)));
         List<List<TokenWeight>> result = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
             result.add(readWeights(r));
@@ -585,7 +586,7 @@ public final class LocalModels {
      */
     public List<List<SparseOutput>> sparseEncode(String modelId, List<String> texts, boolean byId) {
         Deployed d = deployed(modelId);
-        ByteBuffer r = result(NativeBridge.mlSparseEncode(d.handle(), encodeTexts(texts), byId));
+        ByteBuffer r = result(NativeMl.mlSparseEncode(d.handle(), encodeTexts(texts), byId));
         List<List<SparseOutput>> result = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
             int n = r.getInt();
@@ -603,7 +604,7 @@ public final class LocalModels {
     /** Per document of {@code texts}, the output tensors of cross-encoder {@code modelId} for it against {@code query}. */
     public List<List<Tensor>> similarity(String modelId, String query, List<String> texts) {
         Deployed d = deployed(modelId);
-        ByteBuffer r = result(NativeBridge.mlTextSimilarity(d.handle(), query, encodeTexts(texts)));
+        ByteBuffer r = result(NativeMl.mlTextSimilarity(d.handle(), query, encodeTexts(texts)));
         List<List<Tensor>> result = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
             int n = r.getInt();
@@ -701,7 +702,7 @@ public final class LocalModels {
         Deployed d = deployed(modelId);
         Map<String, Object> config = (Map<String, Object>) d.model().getOrDefault("model_config", Map.of());
         boolean bytes = "sentence_transformers".equalsIgnoreCase(String.valueOf(config.get("framework_type")));
-        ByteBuffer r = result(NativeBridge.mlTorchEmbed(d.handle(), encodeTexts(texts)));
+        ByteBuffer r = result(NativeMl.mlTorchEmbed(d.handle(), encodeTexts(texts)));
         List<List<TypedOutput>> result = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
             int n = r.getInt();
@@ -761,7 +762,7 @@ public final class LocalModels {
     /** The embeddings of {@code texts} from model {@code modelId}, deployed on this node. */
     public List<Tensor> embed(String modelId, List<String> texts) {
         Deployed d = deployed(modelId);
-        ByteBuffer r = result(NativeBridge.mlTextEmbeddingEmbed(d.handle(), encodeTexts(texts)));
+        ByteBuffer r = result(NativeMl.mlTextEmbeddingEmbed(d.handle(), encodeTexts(texts)));
         List<Tensor> tensors = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
             tensors.add(readTensor(r));

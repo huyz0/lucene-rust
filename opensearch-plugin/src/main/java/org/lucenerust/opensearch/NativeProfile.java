@@ -167,7 +167,7 @@ final class NativeProfile {
     static Report run(long handle, byte[] blob, boolean topScores, long topN, long countLimit, long[] javaClock) {
         byte[][] out = new byte[1][];
         javaClock[0] = System.nanoTime();
-        int rc = NativeBridge.profile(handle, blob, topScores, topN, countLimit, out);
+        int rc = NativeSearch.profile(handle, blob, topScores, topN, countLimit, out);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             logger.warn("lucene-rust: the native profile failed ({}): {}", rc, NativeBridge.lastError());

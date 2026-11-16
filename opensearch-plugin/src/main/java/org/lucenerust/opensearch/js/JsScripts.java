@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.IndexSearcher;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -284,7 +285,7 @@ public final class JsScripts {
             ByteArrayOutputStream spec = new ByteArrayOutputStream();
             writeSpec(spec, context, source, new byte[] { 12, 0, 0, 0, 0 }, List.of(), List.of(), new byte[0], "", 0, 0);
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.painlessCheck(spec.toByteArray(), out);
+            int rc = NativeAnalysis.painlessCheck(spec.toByteArray(), out);
             hit = rc != NativeBridge.OK ? "check failed: " + NativeBridge.lastError()
                 : out[0] == null ? "" : new String(out[0], StandardCharsets.UTF_8);
             if (hit.startsWith("check failed") || hit.contains("past its heap limit")) {

@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One searcher's view of the documents still in the Rust writer's buffers ({@link
- * NativeBridge#liveViewOpen}): how many documents each buffer held when the view opened. Its
+ * NativeLive#liveViewOpen}): how many documents each buffer held when the view opened. Its
  * documents are numbered buffer after buffer; each buffer is one or more chunks of consecutive
  * documents, as the native reader of the view holds it as segments, and a {@link LiveLeafReader} per
  * chunk gives them to the searcher after the reader's own. Closing it lets its buffers go.
@@ -84,21 +84,21 @@ public final class LiveView implements AutoCloseable {
             }
             return new LiveView(id, starts, buffers.toArray(), chunkStarts.toArray(), docs.toArray(), deleted);
         } catch (RuntimeException e) {
-            NativeBridge.liveViewClose(id);
+            NativeLive.liveViewClose(id);
             throw e;
         }
     }
 
     /**
      * Field number {@code field}'s points' bounds in buffer {@code buffer} ({@link
-     * NativeBridge#livePointBounds}), read once per view: empty when it holds none.
+     * NativeLive#livePointBounds}), read once per view: empty when it holds none.
      */
     public byte[] pointBounds(int buffer, int field) throws IOException {
         long key = ((long) buffer << 32) | (field & 0xFFFFFFFFL);
         byte[] got = bounds.get(key);
         if (got == null) {
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.livePointBounds(id, buffer, field, out);
+            int rc = NativeLive.livePointBounds(id, buffer, field, out);
             if (rc != NativeBridge.OK) {
                 throw new IOException("buffered points of field " + field + ": " + NativeBridge.lastError());
             }
@@ -110,7 +110,7 @@ public final class LiveView implements AutoCloseable {
 
     /**
      * A reader handle over the reader at {@code handle} and every buffer as the segments after it
-     * ({@link NativeBridge#liveViewReader}, holding every term), built once per view: what the
+     * ({@link NativeLive#liveViewReader}, holding every term), built once per view: what the
      * highlighters read, which cannot name the terms they will need up front. The view closes it;
      * 0 when the buffers cannot be written as segments.
      */
@@ -118,7 +118,7 @@ public final class LiveView implements AutoCloseable {
         if (full == 0 && fullTried == false && closed.get() == false) {
             fullTried = true;
             long[] out = new long[1];
-            int rc = NativeBridge.liveViewReader(handle, id, null, null, null, out);
+            int rc = NativeLive.liveViewReader(handle, id, null, null, null, out);
             if (rc == NativeBridge.OK) {
                 full = out[0];
             } else {
@@ -205,7 +205,7 @@ public final class LiveView implements AutoCloseable {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            NativeBridge.liveViewClose(id);
+            NativeLive.liveViewClose(id);
         }
     }
 }
