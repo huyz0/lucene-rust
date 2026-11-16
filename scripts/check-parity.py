@@ -360,6 +360,9 @@ def main():
                     continue  # module facade / error enum: no Java counterpart
                 if relpath in EXEMPT:
                     continue
+                with open(os.path.join(dirpath, name), encoding="utf-8") as fh:
+                    if fh.readline().strip() == "#![cfg(test)]":
+                        continue  # a test module moved out of its parent
                 if relpath not in mentioned:
                     errors.append(
                         f"docs/parity: no row describes {relpath} -- add one, "
