@@ -112,7 +112,7 @@ lto = "thin"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/tuonghuy/lucene-rust"
+repository = "https://github.com/huyz0/lucene-rust"
 
 [workspace.dependencies]
 thiserror = "1"

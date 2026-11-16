@@ -1,5 +1,5 @@
 //! `NearSpansOrdered` and `NearSpansUnordered`
-//! (`/home/tuong/work/lucene-10.5.0/lucene/queries/src/java/org/apache/lucene/queries/spans/NearSpans{Ordered,Unordered}.java`),
+//! (`lucene/queries/src/java/org/apache/lucene/queries/spans/NearSpans{Ordered,Unordered}.java`),
 //! over already-decoded spans.
 //!
 //! ## Why this is not `sloppy_phrase`
