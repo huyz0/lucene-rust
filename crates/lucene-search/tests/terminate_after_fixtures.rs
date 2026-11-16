@@ -78,6 +78,7 @@ fn sort(spec: &str) -> Vec<SortField> {
                 nested: None,
                 rewritten: None,
                 convert: lucene_search::top_field::ChildConvert::None,
+                uninverted: false,
                 field: p[0].to_string(),
                 ty: match p[1] {
                     "score" => SortType::Score,

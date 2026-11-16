@@ -275,6 +275,14 @@ fn evict_node(node: &Node) {
 pub(crate) enum SortColumn {
     /// Ordinals, `-1` for a document without one.
     Ords(Vec<i32>),
+    /// A field's terms read back from its postings (the `_id` field sorts as OpenSearch's
+    /// uninverted fielddata does): each document's term ordinal (`-1` for none), and the
+    /// terms in order, `bytes[offsets[o]..offsets[o + 1]]` being term `o`.
+    Terms {
+        ords: Vec<i32>,
+        offsets: Vec<u32>,
+        bytes: Vec<u8>,
+    },
     /// Values, and which documents have one.
     Longs { values: Vec<i64>, has: FixedBitSet },
     /// Every document's values (a multi-valued `SORTED_NUMERIC` column, the
@@ -305,6 +313,11 @@ impl SortColumn {
     fn ram_bytes(&self) -> usize {
         match self {
             SortColumn::Ords(o) => o.len() * 4,
+            SortColumn::Terms {
+                ords,
+                offsets,
+                bytes,
+            } => ords.len() * 4 + offsets.len() * 4 + bytes.len(),
             SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
             SortColumn::Multi { starts, values } => starts.len() * 8 + values.len() * 8,
             SortColumn::Groups {
@@ -329,6 +342,8 @@ impl SortColumn {
 #[derive(Default)]
 struct Columns {
     uses: HashMap<String, u32>,
+    /// Terms columns that did not fit the budget ([`SegmentQueryCache::terms_column`]).
+    too_big: std::collections::HashSet<String>,
     built: HashMap<String, Arc<SortColumn>>,
     bytes: usize,
 }
@@ -342,6 +357,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 const COLUMN_MIN_USES: u32 = 2;
 /// Decoded sort columns per segment.
 pub(crate) const MAX_COLUMN_BYTES: usize = 32 << 20;
+/// A terms column per segment ([`SegmentQueryCache::terms_column`]).
+pub(crate) const MAX_TERMS_COLUMN_BYTES: usize = 256 << 20;
 /// Decoded sort columns across every segment of the process: the host (a
 /// JVM) cannot see this memory, so it is bounded here.
 pub(crate) const MAX_TOTAL_COLUMN_BYTES: usize = 512 << 20;
@@ -588,6 +605,48 @@ impl SegmentQueryCache {
         );
         if reserved.is_err() {
             return Ok(Some(col));
+        }
+        c.bytes += bytes;
+        c.built.insert(key.to_string(), Arc::clone(&col));
+        Ok(Some(col))
+    }
+
+    /// A field's terms column ([`SortColumn::Terms`]), which a search cannot read per document
+    /// (it takes the whole terms dictionary and its postings to build): built on first use and
+    /// kept, as OpenSearch keeps the fielddata it loads. `None` when it does not fit the
+    /// budget (and the same for every later call, without building it again).
+    pub(crate) fn terms_column(
+        &self,
+        key: &str,
+        build: &mut dyn FnMut() -> Result<SortColumn>,
+    ) -> Result<Option<Arc<SortColumn>>> {
+        {
+            let c = lock(&self.columns);
+            if let Some(col) = c.built.get(key) {
+                return Ok(Some(Arc::clone(col)));
+            }
+            if c.too_big.contains(key) {
+                return Ok(None);
+            }
+        }
+        let col = Arc::new(build()?);
+        let bytes = col.ram_bytes();
+        let mut c = lock(&self.columns);
+        if let Some(col) = c.built.get(key) {
+            // Built by another search meanwhile.
+            return Ok(Some(Arc::clone(col)));
+        }
+        let reserved = bytes <= MAX_TERMS_COLUMN_BYTES
+            && TOTAL_COLUMN_BYTES
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |t| t.checked_add(bytes).filter(|&n| n <= total_column_budget()),
+                )
+                .is_ok();
+        if !reserved {
+            c.too_big.insert(key.to_string());
+            return Ok(None);
         }
         c.bytes += bytes;
         c.built.insert(key.to_string(), Arc::clone(&col));

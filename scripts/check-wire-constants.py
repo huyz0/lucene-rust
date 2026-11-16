@@ -93,6 +93,7 @@ RENAMES = {
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("reader_search.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("reader_search.rs", "SORT_NESTED"),
+    ("SortEncoder.java", "UNINVERTED_KEY"): ("reader_search.rs", "SORT_UNINVERTED"),
     ("NativeDocValues.java", "NONE"): ("fetch.rs", "DV_NONE"),
     ("NativeDocValues.java", "SORTED_NUMERIC"): ("fetch.rs", "DV_SORTED_NUMERIC"),
     ("NativeDocValues.java", "SORTED_SET"): ("fetch.rs", "DV_SORTED_SET"),

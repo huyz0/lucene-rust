@@ -83,6 +83,8 @@ public final class SortEncoder {
      * max_children} follow its missing value.
      */
     static final byte NESTED_KEY = 16;
+    /** Key flag on a keyword key: the field's terms are read back from its postings (the {@code _id} field). */
+    static final byte UNINVERTED_KEY = 32;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
@@ -208,6 +210,9 @@ public final class SortEncoder {
             }
             if (f instanceof SortedSetSortField ss && ss.getSelector() == SortedSetSelector.Type.MAX) {
                 flags |= MAX;
+            }
+            if (type == STRING && idSort(f)) {
+                flags |= UNINVERTED_KEY;
             }
             out.write(type);
             out.write(flags);
@@ -377,6 +382,26 @@ public final class SortEncoder {
         return null;
     }
 
+    /**
+     * Whether {@code f} sorts the {@code _id} field the way OpenSearch does, with the terms of its
+     * uninverted fielddata ({@code BytesRefFieldComparatorSource}, no nested path): every document
+     * has one id, so a mode and a missing value pick nothing.
+     */
+    static boolean idSort(SortField f) {
+        if (f.getClass() != SortField.class || f.getType() != SortField.Type.CUSTOM || !"_id".equals(f.getField())) {
+            return false;
+        }
+        Object src = f.getComparatorSource();
+        if (src == null || !src.getClass().getName().equals(SOURCES + "BytesRefFieldComparatorSource")) {
+            return false;
+        }
+        try {
+            return NESTED != null && NESTED.get(src) == null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
+    }
+
     /** The blob type of {@code f}, or -1 when it has none. */
     static byte type(SortField f) {
         f = unwrap(f);
@@ -390,6 +415,9 @@ public final class SortEncoder {
                 case CUSTOM -> {
                     if (shardKeyPrefix(f) != null) {
                         yield SHARD_DOC;
+                    }
+                    if (idSort(f)) {
+                        yield STRING;
                     }
                     if (numberSortScript(f) != null) {
                         yield SCRIPT;
