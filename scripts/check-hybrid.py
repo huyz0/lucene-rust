@@ -108,6 +108,17 @@ def big_searches():
         {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 5, "post_filter": {"range": {"n": {"lt": 300}}}},
         {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 0, "aggs": {"c": {"value_count": {"field": "n"}}, "top": {"top_hits": {"size": 2, "_source": False}}}},
         {"query": hybrid(m, k, pagination_depth=0)},
+        # Sorted: past the first window, with the hit count the sorted collectors stop counting at.
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "sort": [{"n": "asc"}], "size": 10},
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "sort": [{"n": "desc"}], "size": 25, "track_total_hits": True},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "track_total_hits": True},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "track_total_hits": 50},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"n": "asc"}, {"_doc": "asc"}], "size": 10, "search_after": [500, 3000]},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "search_after": [3000]},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"tag": "asc"}, {"n": "desc"}], "size": 10, "track_total_hits": 500},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"n": "asc"}], "size": 5, "post_filter": {"range": {"n": {"lt": 300}}},
+         "aggs": {"c": {"value_count": {"field": "n"}}}},
     )]
 
 
@@ -191,8 +202,22 @@ def searches():
         out += [(p, b) for b in two]
     three = hybrid({"match": {"t": "w2"}}, {"term": {"tag": "g4"}}, {"range": {"n": {"gte": 100, "lte": 400}}})
     out += [(p, {"query": three, "size": 15}) for p in ("minmax", "l2_geo", "z_arith", "rrf")]
-    out += [("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "desc"}], "size": 15}),
-            ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 15}),
+    sorted_hybrid = hybrid(MATCH, KNN)
+    out += [("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "size": 15}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 15}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"tag": "asc"}, {"n": "desc"}], "size": 40}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"_score": "asc"}], "size": 12}),
+            ("rrf", {"query": sorted_hybrid, "sort": [{"_doc": "asc"}], "size": 12}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 10,
+                        "search_after": [500, "300"]}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"tag": "desc"}, {"_id": "asc"}], "size": 10,
+                        "search_after": ["g4", "100"]}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "post_filter": {"term": {"tag": "g1"}}}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}],
+                        "aggs": {"tags": {"terms": {"field": "tag"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "sort": [{"n": "asc"}], "from": 10, "size": 10}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "track_total_hits": 20}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
             ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10})]
     return out
@@ -264,6 +289,10 @@ ERRORS = [
     ("minmax", {"query": {"hybrid": {"queries": [MATCH], "boost": 2}}}),
     ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=0)}),
     ("minmax", {"query": hybrid(MATCH, KNN), "from": 5, "size": 10}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "track_scores": True}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"_score": "asc"}, {"n": "asc"}]}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "min_score": 0.3}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "search_after": [1]}),
     ("minmax", {"query": hybrid(MATCH, KNN), "rescore": {"query": {"rescore_query": {"match": {"t": "w1"}}}}}),
 ]
 BAD_PIPELINES = [
@@ -400,7 +429,7 @@ def main():
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
-        java = {"hybrid_collapse", "hybrid_sort"}
+        java = {"hybrid_collapse"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")

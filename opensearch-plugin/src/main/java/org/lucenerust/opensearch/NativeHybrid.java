@@ -3,7 +3,10 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TopDocs;
@@ -37,6 +40,8 @@ final class NativeHybrid {
     static final int RETURN_DOCS = 1;
     /** {@code HYBRID_POST_FILTER} in {@code reader_search.rs}. */
     static final int POST_FILTER = 2;
+    /** {@code HYBRID_SORT} in {@code reader_search.rs}. */
+    static final int SORT = 4;
 
     private NativeHybrid() {}
 
@@ -64,9 +69,11 @@ final class NativeHybrid {
                     .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) {
             return NativeAggregationTree.unsupportedReason(ctx);
         }
-        if (ctx.sort() != null) return "hybrid_sort";
+        if (ctx.scrollContext() != null) {
+            // HybridCollectorManager.createHybridCollectorManager's own refusal.
+            throw new IllegalArgumentException("Scroll operation is not supported in hybrid query");
+        }
         if (ctx.collapse() != null) return "hybrid_collapse";
-        if (ctx.searchAfter() != null || ctx.scrollContext() != null) return "hybrid_search_after";
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "hybrid_terminate_after";
         if (ctx.getProfilers() != null) return "profile";
         boolean minScore = ctx.minimumScore() != null;
@@ -81,7 +88,15 @@ final class NativeHybrid {
      * The request blob: the sub-query count, each sub-query's blob (length first) behind the
      * similarities, the hits each sub-query keeps, and the slices.
      */
-    static byte[] blob(List<byte[]> subQueries, int topN, int[][] slices, boolean returnDocs, byte[] postFilter) {
+    static byte[] blob(
+        List<byte[]> subQueries,
+        int topN,
+        int[][] slices,
+        boolean returnDocs,
+        byte[] postFilter,
+        byte[] sort,
+        long threshold
+    ) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(subQueries.size());
         for (byte[] sub : subQueries) {
@@ -90,10 +105,16 @@ final class NativeHybrid {
         }
         NativeAggregations.writeInt(out, topN);
         NativeAggregations.writeSlices(out, slices);
-        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0));
+        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0) | (sort != null ? SORT : 0));
         if (postFilter != null) {
             NativeAggregations.writeInt(out, postFilter.length);
             out.writeBytes(postFilter);
+        }
+        if (sort != null) {
+            NativeAggregations.writeInt(out, (int) threshold);
+            NativeAggregations.writeInt(out, (int) (threshold >>> 32));
+            NativeAggregations.writeInt(out, sort.length);
+            out.writeBytes(sort);
         }
         return out.toByteArray();
     }
@@ -110,7 +131,7 @@ final class NativeHybrid {
      * Reads the native answer. With {@code returnDocs}, the documents the slices counted come with
      * it, each with its sub-queries' scores summed (what an aggregation's scorer reads).
      */
-    static Answer read(byte[] answer, int subQueries, boolean returnDocs) {
+    static Answer read(byte[] answer, int subQueries, boolean returnDocs, SortField[] sort) {
         ByteBuffer in = ByteBuffer.wrap(answer).order(ByteOrder.LITTLE_ENDIAN);
         List<Collected> collected = new ArrayList<>();
         List<ScoreDoc[]> counted = new ArrayList<>();
@@ -121,6 +142,10 @@ final class NativeHybrid {
             List<TopDocs> perQuery = new ArrayList<>(subQueries);
             for (int q = 0; q < subQueries; q++) {
                 int n = in.getInt();
+                if (sort != null) {
+                    perQuery.add(readSorted(in, n, sort));
+                    continue;
+                }
                 ScoreDoc[] hits = new ScoreDoc[n];
                 for (int i = 0; i < n; i++) {
                     hits[i] = new ScoreDoc(in.getInt(), Float.intBitsToFloat(in.getInt()));
@@ -138,6 +163,34 @@ final class NativeHybrid {
             }
         }
         return new Answer(collected, counted.stream().flatMap(java.util.Arrays::stream).toArray(ScoreDoc[]::new));
+    }
+
+    /**
+     * One sub-query's sorted hits: each {@code FieldDoc} carries the score its slot stored and the
+     * sort's values, as {@code HybridTopFieldDocSortCollector.populateResults} builds them; none
+     * is that collector's shared empty result.
+     */
+    private static TopFieldDocs readSorted(ByteBuffer in, int n, SortField[] sort) {
+        int[] docs = new int[n];
+        float[] scores = new float[n];
+        long[] values = new long[n * sort.length];
+        for (int i = 0; i < n; i++) {
+            docs[i] = in.getInt();
+            scores[i] = Float.intBitsToFloat(in.getInt());
+            for (int k = 0; k < sort.length; k++) {
+                values[i * sort.length + k] = in.getLong();
+            }
+        }
+        byte[] terms = new byte[in.getInt()];
+        in.get(terms);
+        if (n == 0) {
+            return new TopFieldDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), new ScoreDoc[0], new SortField[0]);
+        }
+        FieldDoc[] hits = SortEncoder.hits(sort, n, docs, values, terms);
+        for (int i = 0; i < n; i++) {
+            hits[i].score = scores[i];
+        }
+        return new TopFieldDocs(new TotalHits(n, TotalHits.Relation.EQUAL_TO), hits, sort);
     }
 
     /**
@@ -197,7 +250,7 @@ final class NativeHybrid {
     }
 
     /** One slice's collected results, standing in for its {@code HybridTopScoreDocCollector}. */
-    record Collected(List<TopDocs> topDocs, int getTotalHits, float getMaxScore) implements HybridSearchCollector {
+    record Collected(List<? extends TopDocs> topDocs, int getTotalHits, float getMaxScore) implements HybridSearchCollector {
         @Override
         public org.apache.lucene.search.LeafCollector getLeafCollector(org.apache.lucene.index.LeafReaderContext context) {
             throw new UnsupportedOperationException();

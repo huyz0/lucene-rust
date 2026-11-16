@@ -584,18 +584,44 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (hasTimeout && deadlinePassed(ctx)) return "timeout";
         // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
         int topN = NativeHybrid.numHits(ctx, hybrid);
+        // The hits sorted: by the request's sort, after the search_after document when there is one.
+        SortField[] sortFields = null;
+        byte[] sortBlob = null;
+        if (ctx.sort() != null) {
+            FieldDoc after = ctx.searchAfter();
+            sortFields = ctx.sort().sort.getSort();
+            if (after != null) {
+                if (after.fields == null) {
+                    throw new IllegalArgumentException("after.fields wasn't set; you must pass fillFields=true for the previous search");
+                }
+                if (after.fields.length != sortFields.length) {
+                    throw new IllegalArgumentException(
+                        "after.fields has " + after.fields.length + " values but sort has " + sortFields.length
+                    );
+                }
+            }
+            Sort keys = ctx.sort().sort;
+            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), keys);
+            SortEncoder.Encoded sorted = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> SortEncoder.encode(keys, after, false, new int[0][], 0, false, indexSorted)
+            );
+            if (sorted.fallbackReason() != null) return sorted.fallbackReason();
+            sortBlob = sorted.blob();
+        }
+        long threshold = Math.max(topN, ctx.trackTotalHitsUpTo());
         boolean aggregating = aggs != null || tree != null;
         byte[][] out = new byte[1][];
         int rc;
         NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
-            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob), out);
+            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold), out);
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
-            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating);
+            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields);
             InternalAggregations[] aggOut = new InternalAggregations[1];
             InternalAggregations aggResult = null;
             if (aggregating) {
@@ -603,11 +629,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 if (failed != null) return failed;
                 aggResult = aggOut[0];
             }
-            if (rescores != null) {
+            // A sorted result is never rescored (the result util's sorted branch).
+            if (rescores != null && sortFields == null) {
                 reason = NativeHybrid.rescore(answer, acquired.handle(), rescores);
                 if (reason != null) return reason;
             }
-            NativeHybrid.store(ctx, answer, rescores != null);
+            NativeHybrid.store(ctx, answer, rescores != null && sortFields == null);
             if (aggResult != null) {
                 ctx.queryResult().aggregations(aggResult);
                 if (tree != null && tree.global().isEmpty() == false) {
