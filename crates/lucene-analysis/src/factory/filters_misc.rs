@@ -876,8 +876,10 @@ impl<const EDGE: bool> TokenFilterFactory for GramFilterFactory<EDGE> {
 factory_struct! {
     /// `org.apache.lucene.analysis.pattern.PatternCaptureGroupFilterFactory`
     /// (`patternCaptureGroup`). As in Java, `preserve_original` is read but
-    /// not consumed, and unknown arguments are not checked.
-    PatternCaptureGroupFilterFactory { pattern: JavaPattern, preserve_original: bool }
+    /// not consumed, and unknown arguments are not checked. Beyond Java's one
+    /// `pattern`, `pattern1`, `pattern2`, ... name further patterns for the
+    /// filter's several matchers (OpenSearch's `pattern_capture` takes a list).
+    PatternCaptureGroupFilterFactory { pattern: JavaPattern, more: Vec<JavaPattern>, preserve_original: bool }
 }
 analysis_factory!(PatternCaptureGroupFilterFactory);
 
@@ -888,12 +890,18 @@ impl FactoryClass for PatternCaptureGroupFilterFactory {
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
         let pattern = args::get_pattern(args, "pattern", "PatternCaptureGroupFilterFactory")?;
+        let mut more = Vec::new();
+        while args.get(&format!("pattern{}", more.len() + 1)).is_some() {
+            let key = format!("pattern{}", more.len() + 1);
+            more.push(args::get_pattern(args, &key, "PatternCaptureGroupFilterFactory")?);
+        }
         let preserve_original = args
             .get("preserve_original")
             .is_none_or(args::parse_java_boolean);
         Ok(PatternCaptureGroupFilterFactory {
             base,
             pattern,
+            more,
             preserve_original,
         })
     }
@@ -901,11 +909,14 @@ impl FactoryClass for PatternCaptureGroupFilterFactory {
 
 impl TokenFilterFactory for PatternCaptureGroupFilterFactory {
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>, AnalysisError> {
+        let patterns: Vec<JavaPattern> = std::iter::once(self.pattern.clone())
+            .chain(self.more.iter().cloned())
+            .collect();
         Ok(Box::new(
             crate::pattern::PatternCaptureGroupTokenFilter::new(
                 input,
                 self.preserve_original,
-                std::slice::from_ref(&self.pattern),
+                &patterns,
             ),
         ))
     }
