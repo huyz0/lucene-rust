@@ -1317,9 +1317,6 @@ final class ExtendedEncoder {
             Object bindings = Reflect.inHierarchy(factory.getClass(), "bindings") != null ? field(factory, "bindings") : null;
             DoubleValuesSource[] bound = bindings == null ? (DoubleValuesSource[]) field(field(factory, "source"), "variables") : null;
             java.lang.reflect.Method get = bindings == null ? null : bindings.getClass().getMethod("getDoubleValuesSource", String.class);
-            if (isExpression(factory) && Reflect.inHierarchy(factory.getClass(), "specialValue") != null && field(factory, "specialValue") != null) {
-                return reason;
-            }
             java.util.LinkedHashMap<String, Integer> fields = new java.util.LinkedHashMap<>();
             ByteArrayOutputStream vars = new ByteArrayOutputStream();
             for (int v = 0; v < variables.length; v++) {
@@ -1329,6 +1326,9 @@ final class ExtendedEncoder {
                 writeString(vars, variable);
                 if (src == DoubleValuesSource.SCORES) {
                     vars.write(0);
+                } else if (cn.endsWith("PerThreadReplaceableConstDoubleValueSource") && context == PainlessScore.AGGREGATION) {
+                    // `_value`: the field value the aggregator maps.
+                    vars.write(10);
                 } else if (cn.endsWith("ConstantValuesSource")) {
                     vars.write(1);
                     writeLong(vars, Double.doubleToRawLongBits(((DoubleValuesSource) src).getValues(null, null).doubleValue()));
