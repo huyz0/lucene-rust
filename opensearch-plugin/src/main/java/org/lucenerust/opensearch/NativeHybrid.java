@@ -87,7 +87,7 @@ final class NativeHybrid {
         boolean postFilter = ctx.parsedPostFilter() != null;
         if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0) + (terminates(ctx) ? 1 : 0)
             || hasFilterCollector != (postFilter || minScore || terminates(ctx))) return "collectors";
-        if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
+        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminates(ctx)) return "time_series_order";
         return null;
     }
 
