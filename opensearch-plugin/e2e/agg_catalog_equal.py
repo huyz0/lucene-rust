@@ -59,6 +59,11 @@ def aggs():
         out["median_absolute_deviation " + fld] = {"a": {"median_absolute_deviation": {"field": fld}}}
     out["mad compression"] = {"a": {"median_absolute_deviation": {"field": "d", "compression": 200}}}
     out["mad under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"median_absolute_deviation": {"field": "n"}}}}}
+    flt = {"a": {"term": {"g": "g1"}}, "b": {"range": {"n": {"lt": 1000}}}, "c": {"term": {"t": "w3"}}, "d": {"exists": {"field": "k"}}}
+    out["adjacency_matrix"] = {"a": {"adjacency_matrix": {"filters": flt}}}
+    out["adjacency_matrix sep"] = {"a": {"adjacency_matrix": {"filters": flt, "separator": "|"}, "aggs": {"s": {"sum": {"field": "d"}}, "x": {"extended_stats": {"field": "f"}}}}}
+    out["adjacency_matrix only"] = {"a": {"adjacency_matrix": {"filters": flt, "show_only_intersecting": True}}}
+    out["adjacency under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"adjacency_matrix": {"filters": {"x": {"term": {"t": "w1"}}, "y": {"exists": {"field": "n"}}}}}}}}
     return out
 
 
