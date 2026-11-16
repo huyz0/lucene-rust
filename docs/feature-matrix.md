@@ -83,7 +83,7 @@ it; a plugin's similarity or a refused script falls back (`field_similarity`), a
 | `min_score` | ✅ | behind a scroll's later pages or `terminate_after`, falls back |
 | `terminate_after` | ✅ | an unscored sort, a constant-score or filter-only query's hits, or with aggregations, falls back |
 | `timeout`, `allow_partial_search_results` | ✅ | checked before and after the native call; see limits |
-| `collapse`, `rescore`, `profile`, `suggest`, `highlight` | ↩ | `collapse`, `rescore`, `profile`; highlighting and suggesters run in OpenSearch's fetch phase as usual |
+| `collapse`, `rescore`, `profile`, `suggest`, `highlight` | ✅ | `collapse`, `rescore` and `profile` run natively (`profile` replays the query with per-clause timers); highlighting and suggesters run in OpenSearch's fetch phase as usual |
 | fetch: `_source`, `stored_fields`, `_id`, get / mget | ✅ | the stored-field reads (`index.fetch.accelerated`) |
 | fetch: `docvalue_fields`, `fields`, `script_fields`, `inner_hits` | ↩ | OpenSearch's fetch sub-phases, unchanged |
 
@@ -144,7 +144,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `sort_*`, `sort_nested` | sorts by something the native side does not encode |
 | `search_after`, `scroll_after` | pages in a way the native side cannot resume |
 | `min_score`, `terminate_after` | combines them with something above |
-| `collapse`, `rescore`, `profile` | uses them |
+| `collapse`, `rescore`, `profile` | ✅ native |
 | `time_series_order` | is on a time-series shard that visits segments out of order |
 | `timeout`, `cancelled` | had already timed out, or was cancelled, before the native call |
 | `collector_spec` | runs where another plugin replaces the top-docs collector |
