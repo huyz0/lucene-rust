@@ -16,6 +16,7 @@ fn options(breaks: Breaks, max_passages: i32) -> Options {
         breaks,
         max_passages,
         no_match_size: 0,
+        thai: false,
         pre_tag: "<em>".into(),
         post_tag: "</em>".into(),
         html: false,
@@ -213,7 +214,7 @@ fn snippets_carry_scores_and_whether_they_are_highlighted() {
 
 #[test]
 fn the_bounded_scanner_moves_like_its_sentence_iterator() {
-    let mut b = BoundedBreakIteratorScanner::sentence(20);
+    let mut b = BoundedBreakIteratorScanner::sentence(20, false);
     let text: Vec<u16> = "One two. Three four five six seven."
         .encode_utf16()
         .collect();
@@ -356,4 +357,27 @@ fn a_span_past_the_clause_count_is_refused() {
     let few = format!("start {}", words[..10].join(" "));
     let content: Vec<u16> = few.encode_utf16().collect();
     assert!(h.highlight(None, &content).is_ok());
+}
+
+#[test]
+fn a_host_word_iterator_is_a_cursor_over_its_boundaries() {
+    use crate::unified::break_iterators::{BreakIterator, ListBreakIterator, DONE};
+    let mut b = ListBreakIterator::with_boundaries(10, vec![]);
+    assert_eq!((b.first(), b.next(), b.next(), b.last()), (0, 10, DONE, 10));
+    // boundaries the host gave: unsorted, repeated, the ends missing
+    let mut b = ListBreakIterator::with_boundaries(10, vec![7, 3, 3, 5]);
+    assert_eq!(
+        (b.first(), b.next(), b.next(), b.next(), b.next(), b.next()),
+        (0, 3, 5, 7, 10, DONE)
+    );
+    assert_eq!((b.current(), b.previous(), b.previous()), (10, 7, 5));
+    assert_eq!(
+        (b.following(3), b.following(4), b.following(10)),
+        (5, 5, DONE)
+    );
+    assert_eq!(
+        (b.preceding(10), b.preceding(5), b.preceding(0)),
+        (7, 3, DONE)
+    );
+    assert_eq!(b.text_end(), 10);
 }

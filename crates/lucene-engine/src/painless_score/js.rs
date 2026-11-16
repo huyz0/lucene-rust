@@ -24,7 +24,10 @@ pub(super) fn script(source: &str, timeout_ms: i32, heap_mb: i32, fields: &[Fiel
                 }
                 FieldKind::Boolean => Kind::Boolean,
                 FieldKind::Keyword => Kind::Keyword,
-                FieldKind::Unsupported | FieldKind::Unmapped => Kind::Unreadable,
+                FieldKind::Date
+                | FieldKind::DateNanos
+                | FieldKind::Unsupported
+                | FieldKind::Unmapped => Kind::Unreadable,
             };
             (f.name.clone(), kind)
         })

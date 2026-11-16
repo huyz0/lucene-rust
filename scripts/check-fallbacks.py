@@ -21,7 +21,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "opensearch-plugin/src/main/java"
 LIST = ROOT / "opensearch-plugin/fallback-reasons.txt"
 
-# `return "x"`, `reason = "x"`, `fallback("x")`, `Encoded(null, "x")`, `Encoded.fallback("x")`
+# `return "x"`, `reason = "x"`, `fallback("x")`, `Encoded(null, "x")`, `Encoded.fallback("x")`,
+# `x.fallback = "x"`, `Prepared(null, 0, "x")`
 PATTERNS = [
     re.compile(r'\breturn\s+"([a-z][a-z0-9_]*)"\s*;'),
     re.compile(r'\breturn\s+"([a-z][a-z0-9_]*_)"\s*\+'),
@@ -30,6 +31,10 @@ PATTERNS = [
     re.compile(r'\bfallback\(\s*"([a-z][a-z0-9_]*)"'),
     re.compile(r'Encoded\(\s*null\s*,\s*"([a-z][a-z0-9_]*)"'),
     re.compile(r'Acquired\(\s*0L?\s*,\s*"([a-z][a-z0-9_]*)"'),
+    # the highlighters: `prepared.fallback = "x"`, `String undescribed = "x"`, `Prepared(null, 0, "x")`
+    re.compile(r'\.fallback\s*=\s*"([a-z][a-z0-9_]*)"'),
+    re.compile(r'\bundescribed\s*=\s*"([a-z][a-z0-9_]*)"'),
+    re.compile(r'\bPrepared\(\s*null\s*,\s*(?:0L?\s*,\s*)?"([a-z][a-z0-9_]*)"'),
 ]
 # Files whose `return "..."` literals are not fallback reasons (names, formatting, REST).
 SKIP = {

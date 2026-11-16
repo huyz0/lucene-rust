@@ -19,7 +19,7 @@
 //! | `html: u8` | the `html` encoder |
 //!
 //! Result layout: `status: u8` ([`STATUS_FRAGMENTS`], or [`STATUS_STOCK`]
-//! alone), `count: i32` and per
+//! then the exception's class and message), `count: i32` and per
 //! fragment `score: f32`, `len: i32` and `len` UTF-16 units, every value's
 //! fragments in value order; then `summary_end: i32`, the end of the
 //! summary when there is no fragment and a summary was asked for, else -1;
@@ -45,9 +45,10 @@ pub(crate) const REQUEST_VERSION: u8 = 1;
 
 /// The fragments follow.
 pub(crate) const STATUS_FRAGMENTS: u8 = 0;
-/// The hit is one stock's highlighter throws on (a multi-term query expanding
-/// past the clause count): nothing follows.
-pub(crate) const STATUS_STOCK: u8 = 1;
+/// Java's highlighter throws on the hit (a multi-term query expanding past
+/// the clause count, a token reaching past the text): the exception's class
+/// and message follow, each as `len: i32` and UTF-8 `bytes`.
+pub(crate) const STATUS_THROWS: u8 = 1;
 
 /// At most this many highlighters are kept per thread.
 const CACHED_PER_THREAD: usize = 16;
@@ -147,28 +148,30 @@ pub(crate) fn highlight(
     let h = prepared(request)?;
     let mut fragments: Vec<PlainFragment> = Vec::new();
     for v in values {
-        let text = String::from_utf16_lossy(v);
-        match h.fragments_carrying(&text, &mut wait_for_pos) {
+        match h.fragments_carrying(v, &mut wait_for_pos) {
             Ok(f) => fragments.extend(f),
-            // stock throws on the hit: it is stock's to answer
-            Err(lucene_highlighter::Error::TooManyClauses(_)) => return Ok(vec![STATUS_STOCK]),
+            // what stock throws on the hit, the plugin throws
+            Err(e @ lucene_highlighter::Error::TooManyClauses(_))
+            | Err(e @ lucene_highlighter::Error::InvalidTokenOffsets(_)) => {
+                return Ok(crate::jvm_highlight::throws(
+                    STATUS_THROWS,
+                    e.class(),
+                    &e.message(),
+                ))
+            }
             Err(e) => return Err(failed(&e)),
         }
     }
     let mut summary_end = -1;
     if fragments.is_empty() && no_match_size > 0 {
         if let Some(s) = summary {
-            let text = String::from_utf16_lossy(s);
             summary_end = h
-                .no_match_end(no_match_size, &text)
+                .no_match_end_units(no_match_size, s)
                 .map_err(|e| failed(&e))?;
         }
     }
-    let encoded: Vec<Vec<u16>> = fragments
-        .iter()
-        .map(|f| f.text.encode_utf16().collect())
-        .collect();
-    let units: usize = encoded.iter().map(Vec::len).sum();
+    let encoded: Vec<&[u16]> = fragments.iter().map(|f| f.text.as_slice()).collect();
+    let units: usize = encoded.iter().map(|t| t.len()).sum();
     let mut out = crate::raw::try_with_capacity::<u8>(
         fragments
             .len()
@@ -183,7 +186,7 @@ pub(crate) fn highlight(
         let len = i32::try_from(text.len())
             .map_err(|_| invalid("highlight: a fragment longer than 2^31 units"))?;
         put_i32(&mut out, len);
-        for u in text {
+        for u in *text {
             out.extend_from_slice(&u.to_le_bytes());
         }
     }
