@@ -93,7 +93,7 @@ impl FieldComparatorSource for HalfFloatSort {
 /// is the unsigned long's bits, compared unsigned (`BigInteger.compareTo`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnsignedLongSort {
-    /// `Min`, `Max`, `Sum` or `Avg`.
+    /// `Min`, `Max`, `Sum`, `Avg` or `Median`.
     pub selector: Selector,
     /// `missingObject(missingValue, reversed).longValue()`.
     pub missing: i64,
@@ -150,6 +150,25 @@ enum Pick {
 }
 
 impl Pick {
+    /// [`Self::value`] for a document with at most one value.
+    fn single(self, value: Option<i64>) -> i64 {
+        match (self, value) {
+            (Pick::HalfFloat(s), None) => i64::from(float_to_sortable_int(s.missing)),
+            (Pick::HalfFloat(_), Some(v)) => {
+                let f = lucene_util::half_float::sortable_short_to_half_float(v as i16);
+                i64::from(float_to_sortable_int(f))
+            }
+            (Pick::Scaled(s), None) => {
+                lucene_util::numeric_utils::double_to_sortable_long(s.missing)
+            }
+            (Pick::Scaled(s), Some(v)) => {
+                lucene_util::numeric_utils::double_to_sortable_long(v as f64 * s.inverse)
+            }
+            (Pick::Unsigned(s), None) => s.missing,
+            (Pick::Unsigned(_), Some(v)) => v,
+        }
+    }
+
     /// The value a document with `values` (ascending as signed longs,
     /// possibly none) sorts by.
     fn value(self, values: &[i64], scratch: &mut Vec<i64>) -> i64 {
@@ -193,7 +212,7 @@ impl Pick {
 /// `MultiValueMode.pick(SortedNumericUnsignedLongValues)` over a document's
 /// values, ascending as signed longs, at least one -- `MIN`'s quirk
 /// included: a first value of 0 among several gives the second.
-fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
+pub(crate) fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
     let n = values.len();
     match selector {
         Selector::Max => {
@@ -215,6 +234,27 @@ fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
                 total
             }
         }
+        Selector::Median => {
+            // `MultiValueMode.MEDIAN`'s unsigned pick: the values in signed order, the
+            // ones past `i64::MAX` (negative) first; the middle of them counted from
+            // the first non-negative one, wrapping round. Two middles are averaged
+            // as `(sum >>> 1) + (sum & 1)` of their wrapping sum.
+            let first = if values[0] >= 0 {
+                0
+            } else {
+                values[1..]
+                    .iter()
+                    .position(|&v| v >= 0)
+                    .map_or(0, |i| i + 1)
+            };
+            let at = ((n - 1) / 2 + first) % n;
+            if n.is_multiple_of(2) {
+                let sum = values[at].wrapping_add(values[(at + 1) % n]);
+                (((sum as u64) >> 1) as i64).wrapping_add(sum & 1)
+            } else {
+                values[at]
+            }
+        }
         _ => {
             let min = values[0];
             if n == 1 || min > 0 {
@@ -226,7 +266,7 @@ fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
 }
 
 /// `MultiValueMode.divideUnsignedAndRoundUp`.
-fn divide_unsigned_and_round_up(dividend: i64, divisor: i64) -> i64 {
+pub(crate) fn divide_unsigned_and_round_up(dividend: i64, divisor: i64) -> i64 {
     let q = (((dividend as u64) >> 1) as i64 / divisor) << 1;
     let r = dividend.wrapping_sub(q.wrapping_mul(divisor));
     let quotient = q + ((r | !(r.wrapping_sub(divisor))) as u64 >> 63) as i64;
@@ -274,6 +314,13 @@ struct Leaf<'a> {
 
 impl LeafFieldComparator for Leaf<'_> {
     fn value(&mut self, doc: i32, _: f32) -> Result<SortValue> {
+        // A document with one value picks that value whatever the mode (a sum or an
+        // average over one value is the value), so a `NUMERIC` column skips the
+        // buffer and the selection.
+        if let Values::Single(r) = &mut self.values {
+            let v = r.value(doc).map_err(crate::Error::from)?;
+            return Ok(SortValue::Long(self.pick.single(v)));
+        }
         self.values.read(doc, &mut self.buf)?;
         Ok(SortValue::Long(
             self.pick.value(&self.buf, &mut self.scratch),
@@ -419,6 +466,46 @@ mod tests {
     }
 
     #[test]
+    fn one_value_takes_the_short_path_with_the_same_answer() {
+        let mut scratch = Vec::new();
+        for selector in [
+            Selector::Min,
+            Selector::Max,
+            Selector::Sum,
+            Selector::Avg,
+            Selector::Median,
+        ] {
+            let picks = [
+                Pick::Scaled(ScaledFloatSort {
+                    selector,
+                    missing: f64::INFINITY,
+                    inverse: 0.01,
+                }),
+                Pick::Unsigned(UnsignedLongSort {
+                    selector,
+                    missing: -1,
+                }),
+                Pick::HalfFloat(HalfFloatSort {
+                    selector,
+                    missing: f32::INFINITY,
+                }),
+            ];
+            for pick in picks {
+                for v in [
+                    None,
+                    Some(0),
+                    Some(1234),
+                    Some(-77),
+                    Some(i64::from(i16::MIN) + 5),
+                ] {
+                    let long = v.as_slice();
+                    assert_eq!(pick.single(v), pick.value(long, &mut scratch));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn unsigned_picks_are_opensearchs() {
         let big = |v: u64| v as i64;
         // Ascending as signed: the values past i64::MAX come first.
@@ -438,6 +525,19 @@ mod tests {
         assert_eq!(unsigned_pick(Selector::Min, &[0, 4, 6]), 4);
         assert_eq!(unsigned_pick(Selector::Min, &[0]), 0);
         assert_eq!(unsigned_pick(Selector::Sum, &[big(u64::MAX), 2]), 1);
+        // The unsigned median: [3, 9, MAX-1, MAX] in unsigned order, signed order has the big ones first.
+        assert_eq!(unsigned_pick(Selector::Median, &[3]), 3);
+        assert_eq!(unsigned_pick(Selector::Median, &[1, 4, 6]), 4);
+        assert_eq!(unsigned_pick(Selector::Median, &[2, 4]), 3);
+        assert_eq!(
+            unsigned_pick(Selector::Median, &[big(u64::MAX - 1), big(u64::MAX), 3, 9]),
+            // 9 + (MAX - 1) wraps to 7: Java's overflow, kept.
+            4
+        );
+        assert_eq!(
+            unsigned_pick(Selector::Median, &[big(u64::MAX - 1), big(u64::MAX), 3]),
+            big(u64::MAX - 1)
+        );
         assert_eq!(unsigned_pick(Selector::Avg, &[5]), 5);
         assert_eq!(unsigned_pick(Selector::Avg, &[1, 2]), 2);
         for (total, n) in [
