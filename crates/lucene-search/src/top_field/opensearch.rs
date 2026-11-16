@@ -760,4 +760,36 @@ mod tests {
             .iter()
             .all(|h| h.values[0] == i64::from(float_to_sortable_int(2.0))));
     }
+
+    #[test]
+    fn an_uninverted_keyword_key_sorts_by_the_terms_read_back() {
+        let reader = fixture();
+        let mut key = SortField::numeric("body", super::super::SortType::String, false);
+        key.uninverted = true;
+        let hits = sorted(&reader, &query(None), &[key.clone()], 5, None);
+        let mut rev = key;
+        rev.reverse = true;
+        let back = sorted(&reader, &query(None), &[rev], 5, None);
+        assert_eq!(hits.len(), 5);
+        let first: Vec<_> = hits.iter().map(|h| h.terms[0].clone()).collect();
+        let last: Vec<_> = back.iter().map(|h| h.terms[0].clone()).collect();
+        assert!(first.iter().all(Option::is_some), "{first:?}");
+        assert!(
+            first[0] <= first[4] && last[0] >= last[4],
+            "{first:?} {last:?}"
+        );
+        assert!(first[0] < last[0]);
+    }
+
+    #[test]
+    fn an_id_term_decodes_to_the_id_string() {
+        use super::super::decode_id;
+        assert_eq!(decode_id(&[0xff, b'a', b'1']), b"a1");
+        assert_eq!(decode_id(&[0xfe, 0x0f]), b"0");
+        assert_eq!(decode_id(&[0xfe, 0x10, 0x4f]), b"104");
+        assert_eq!(decode_id(&[0xfe, 0x12, 0x34]), b"1234");
+        assert_eq!(decode_id(&[0x0f]), b"Dw");
+        assert_eq!(decode_id(&[0xfd, 0xff, 0xfe]), b"__4");
+        assert_eq!(decode_id(&[]), b"");
+    }
 }

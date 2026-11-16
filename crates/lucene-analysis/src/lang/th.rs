@@ -30,7 +30,7 @@
 //! change the analyzer's output and wait for the 10.6.0 release, so
 //! [`ThaiAnalyzer`] stays 10.5.2's.
 
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::attributes::StateSlot;
 use crate::charfilter::OffsetCorrections;
@@ -57,19 +57,38 @@ pub trait ThaiWordBreaker: Send {
 /// `BreakIterator.DONE`.
 pub const DONE: i32 = -1;
 
-static WORD_BREAKER: OnceLock<fn() -> Box<dyn ThaiWordBreaker>> = OnceLock::new();
+type NewBreaker = fn() -> Box<dyn ThaiWordBreaker>;
+
+static WORD_BREAKER: RwLock<Option<NewBreaker>> = RwLock::new(None);
+
+static JVM_WORD_BREAKER: RwLock<Option<NewBreaker>> = RwLock::new(None);
+
+/// Installs the host JVM's own Thai word iterator (the one Lucene's
+/// `ThaiTokenizer` runs on), which [`thai_tokenizer_jvm`] clones instead of
+/// the dictionary installed by [`install_word_breaker`].
+pub fn install_jvm_word_breaker(new_breaker: fn() -> Box<dyn ThaiWordBreaker>) {
+    *JVM_WORD_BREAKER.write().unwrap_or_else(|e| e.into_inner()) = Some(new_breaker);
+}
 
 /// Installs the Thai word iterator `ThaiTokenizer` clones per tokenizer
 /// (`proto`). The first installation wins; `false` when one was installed
 /// already.
 pub fn install_word_breaker(new_breaker: fn() -> Box<dyn ThaiWordBreaker>) -> bool {
-    WORD_BREAKER.set(new_breaker).is_ok()
+    let mut slot = WORD_BREAKER.write().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(new_breaker);
+    true
 }
 
 /// `ThaiTokenizer.DBBI_AVAILABLE`: whether a word iterator that segments
 /// Thai is installed (see the module docs).
 pub fn dbbi_available() -> bool {
-    WORD_BREAKER.get().is_some()
+    WORD_BREAKER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
 }
 
 /// The message of `ThaiTokenizer`'s `UnsupportedOperationException`.
@@ -168,7 +187,17 @@ pub type ThaiTokenizer = SegmentingTokenizer<ThaiSegmenter>;
 /// `new ThaiTokenizer()`: Java's `UnsupportedOperationException` when no
 /// Thai word iterator is installed.
 pub fn thai_tokenizer() -> Result<ThaiTokenizer, AnalysisError> {
-    let Some(new_breaker) = WORD_BREAKER.get() else {
+    thai_tokenizer_with(&WORD_BREAKER)
+}
+
+/// [`thai_tokenizer`] over the JVM's word iterator ([`install_jvm_word_breaker`]).
+pub fn thai_tokenizer_jvm() -> Result<ThaiTokenizer, AnalysisError> {
+    thai_tokenizer_with(&JVM_WORD_BREAKER)
+}
+
+fn thai_tokenizer_with(slot: &RwLock<Option<NewBreaker>>) -> Result<ThaiTokenizer, AnalysisError> {
+    let installed = *slot.read().unwrap_or_else(|e| e.into_inner());
+    let Some(new_breaker) = installed else {
         return Err(AnalysisError::UnsupportedOperation(UNSUPPORTED.to_string()));
     };
     Ok(SegmentingTokenizer::new(ThaiSegmenter {

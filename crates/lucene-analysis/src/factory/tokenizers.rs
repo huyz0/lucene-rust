@@ -430,7 +430,7 @@ factory_struct! {
     /// arguments are Java's; without an installed Thai word iterator,
     /// creating the tokenizer is `ThaiTokenizer`'s
     /// `UnsupportedOperationException` (see [`crate::lang::th`]).
-    ThaiTokenizerFactory {}
+    ThaiTokenizerFactory { jvm_breaker: bool }
 }
 analysis_factory!(ThaiTokenizerFactory);
 
@@ -439,14 +439,20 @@ impl FactoryClass for ThaiTokenizerFactory {
     const CLASS_NAME: &'static str = "org.apache.lucene.analysis.th.ThaiTokenizerFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        // Ours: cut with the host JVM's word iterator, Lucene's own.
+        let jvm_breaker = args::get_boolean(args, "jvmBreaker", false);
         args::reject_unknown(args)?;
-        Ok(ThaiTokenizerFactory { base })
+        Ok(ThaiTokenizerFactory { base, jvm_breaker })
     }
 }
 
 impl TokenizerFactory for ThaiTokenizerFactory {
     fn create(&self) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        Ok(Box::new(crate::lang::th::thai_tokenizer()?))
+        Ok(Box::new(if self.jvm_breaker {
+            crate::lang::th::thai_tokenizer_jvm()?
+        } else {
+            crate::lang::th::thai_tokenizer()?
+        }))
     }
 }
 
