@@ -102,7 +102,7 @@ pub use collapse::{
     search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
     MULTI_VALUED,
 };
-pub use opensearch::{HalfFloatSort, ShardDocSort, UnsignedLongSort};
+pub use opensearch::{HalfFloatSort, ScaledFloatSort, ShardDocSort, UnsignedLongSort};
 
 /// `SortField.Type`, for the keys this collector sorts by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,6 +539,10 @@ fn java_round(x: f64) -> i64 {
 /// a root without any sorts as the key's missing value.
 #[derive(Debug, Clone)]
 pub struct NestedSort {
+    /// What the children's stored values are converted with before they are
+    /// picked from: a `scaled_float` and a `half_float` store something other
+    /// than the numbers their comparator picks among.
+    pub convert: ChildConvert,
     /// `rootFilter`: the root documents.
     pub parents: BooleanQuery,
     /// `innerQuery`: the child documents whose values count.
@@ -547,9 +551,41 @@ pub struct NestedSort {
     pub max_children: i32,
 }
 
+/// How a nested key's child values are read ([`NestedSort::convert`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChildConvert {
+    /// The values are the key's own (`Long`, `Int`, `Double`, `Float`).
+    None,
+    /// A `scaled_float`: the stored long times `1 / scaling_factor`, as a
+    /// `Double` key's sortable long.
+    ScaledFloat { inverse: f64 },
+    /// A `half_float`: the stored sortable short as a `Float` key's sortable int.
+    HalfFloat,
+}
+
+impl ChildConvert {
+    fn apply(self, buf: &mut [i64]) {
+        match self {
+            ChildConvert::None => {}
+            ChildConvert::ScaledFloat { inverse } => {
+                for v in buf {
+                    *v = double_to_sortable_long(*v as f64 * inverse);
+                }
+            }
+            ChildConvert::HalfFloat => {
+                for v in buf {
+                    let f = lucene_util::half_float::sortable_short_to_half_float(*v as i16);
+                    *v = i64::from(float_to_sortable_int(f));
+                }
+            }
+        }
+    }
+}
+
 impl PartialEq for NestedSort {
     fn eq(&self, o: &Self) -> bool {
-        self.max_children == o.max_children
+        self.convert == o.convert
+            && self.max_children == o.max_children
             && self.parents == o.parents
             && self.children == o.children
     }
@@ -1411,6 +1447,7 @@ struct NestedColumn<'a> {
     ty: SortType,
     missing: i64,
     max_children: i32,
+    convert: ChildConvert,
     /// `lastSeenParentDoc`, `lastEmittedValue`.
     last_parent: i32,
     last_value: i64,
@@ -1453,6 +1490,7 @@ impl NestedColumn<'_> {
             ChildValues::Single(r) => self.buf.extend(r.value(doc).map_err(crate::Error::from)?),
             ChildValues::Multi(r) => r.values(doc, &mut self.buf).map_err(crate::Error::from)?,
         }
+        self.convert.apply(&mut self.buf);
         Ok(!self.buf.is_empty())
     }
 
@@ -3375,6 +3413,7 @@ fn open_leaf<'a>(
                         ty: f.ty,
                         missing: f.missing,
                         max_children: n.max_children,
+                        convert: n.convert,
                         last_parent: -1,
                         last_value: f.missing,
                         buf: Vec::new(),
@@ -3388,6 +3427,9 @@ fn open_leaf<'a>(
                 });
                 let competitive = match (c.pruning, points_field, f.point_bytes()) {
                     _ if f.nested.is_some() => None,
+                    // A sum can pass every one of the values the points hold, so the
+                    // points' range says nothing about it: such a key never skips.
+                    _ if f.selector == Selector::Sum => None,
                     (Pruning::None, _, _) | (_, _, None) => None,
                     // `buildCompetitiveDISIBuilder`: no points for the
                     // field, so its doc-values skip index, if it has one.
@@ -5078,6 +5120,24 @@ fn count_rest(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn child_values_are_converted_before_they_are_picked() {
+        let mut v = [-250i64, 0, 350];
+        ChildConvert::None.apply(&mut v);
+        assert_eq!(v, [-250, 0, 350]);
+        ChildConvert::ScaledFloat { inverse: 0.01 }.apply(&mut v);
+        assert_eq!(
+            v.map(sortable_long_to_double),
+            [-250.0 * 0.01, 0.0, 350.0 * 0.01]
+        );
+        let mut h = [
+            i64::from(lucene_util::half_float::half_float_to_sortable_short(-1.5)),
+            i64::from(lucene_util::half_float::half_float_to_sortable_short(2.25)),
+        ];
+        ChildConvert::HalfFloat.apply(&mut h);
+        assert_eq!(h.map(|x| sortable_int_to_float(x)), [-1.5, 2.25]);
+    }
+
+    #[test]
     fn cmp_bytes_is_unsigned_lexicographic_order() {
         let alphabet = [0u8, 1, 0x7f, 0x80, 0xff];
         let mut all: Vec<Vec<u8>> = vec![Vec::new()];
@@ -5532,6 +5592,7 @@ mod tests {
                             ty,
                             missing: -77,
                             max_children,
+                            convert: ChildConvert::None,
                             last_parent: -1,
                             last_value: -77,
                             buf: Vec::new(),
@@ -5633,6 +5694,7 @@ mod tests {
         }
         // Through the collector: a nested key sorts the roots by their picks.
         let nested = Arc::new(NestedSort {
+            convert: ChildConvert::None,
             parents: BooleanQuery {
                 must: vec![Clause::PointsRange(crate::query::PointsRangeQuery::new(
                     "r", 0, 2_000_000,

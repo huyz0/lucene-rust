@@ -1564,14 +1564,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int shortcut
     ) {
         SortField[] fields = sort.getSort();
-        // A nested key does not skip natively (its field's points are the children's), nor do a
-        // few others as Lucene's do (SortEncoder.skippingReason); Lucene's comparator skips once
-        // more than the threshold's hits are in, so such a sort runs here only where the shard
-        // cannot hold that many documents.
-        String skipping = SortEncoder.skippingReason(fields);
-        if (skipping != null && ctx.searcher().getIndexReader().maxDoc() > countLimit) {
-            return skipping;
-        }
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
         long[] counts = new long[5];

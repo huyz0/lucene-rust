@@ -34,8 +34,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 use lucene_search::top_field::{
-    CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
-    SortType,
+    ChildConvert, CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector,
+    SortField, SortType,
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
@@ -69,6 +69,10 @@ pub const SORT_UNSIGNED_LONG: u8 = 10;
 /// only, then the script ([`crate::painless_score`]'s layout, context
 /// `3` or `4`).
 pub const SORT_SCRIPT: u8 = 11;
+/// OpenSearch's `scaled_float` key: as [`SORT_HALF_FLOAT`] but the missing
+/// value is the double's sortable long, followed by `1 / scaling_factor` as
+/// the double's raw bits (`i64`).
+pub const SORT_SCALED_FLOAT: u8 = 12;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 pub const MAX_GEO_ORIGINS: usize = 1024;
@@ -200,18 +204,29 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             lucene_geo.push(false);
             continue;
         }
-        if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
+        // A nested `half_float` or `scaled_float` key is a `Float` or `Double` key whose
+        // child values are converted as they are read.
+        let nested_converted =
+            flags & SORT_NESTED != 0 && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT);
+        if !nested_converted
+            && matches!(
+                ty,
+                SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG | SORT_SCALED_FLOAT
+            )
+        {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
             continue;
         }
+        let wire_ty = ty;
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
             SORT_LONG => SortType::Long,
             SORT_INT => SortType::Int,
             SORT_DOUBLE => SortType::Double,
-            SORT_FLOAT => SortType::Float,
+            SORT_FLOAT | SORT_HALF_FLOAT => SortType::Float,
+            SORT_SCALED_FLOAT => SortType::Double,
             SORT_STRING => SortType::String,
             SORT_GEO_DISTANCE => {
                 let (key, lucene) = decode_geo_sort(&mut c, flags)?;
@@ -233,6 +248,19 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 }
                 (field.to_string(), missing)
             }
+        };
+        let convert = match wire_ty {
+            SORT_SCALED_FLOAT => {
+                let inverse = f64::from_bits(c.i64()? as u64);
+                if !inverse.is_finite() || inverse <= 0.0 {
+                    return Err(bad(format!(
+                        "sort blob: scaled_float inverse scaling factor {inverse}"
+                    )));
+                }
+                ChildConvert::ScaledFloat { inverse }
+            }
+            SORT_HALF_FLOAT => ChildConvert::HalfFloat,
+            _ => ChildConvert::None,
         };
         let numeric = matches!(
             ty,
@@ -262,6 +290,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let children = boolean_of(&decode_query(c.bytes()?)?);
             let max_children = c.i32()?;
             Some(Arc::new(NestedSort {
+                convert,
                 parents,
                 children,
                 max_children,
@@ -392,7 +421,9 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// A key of one of OpenSearch's own comparator sources: [`SORT_SHARD_DOC`],
 /// [`SORT_HALF_FLOAT`] or [`SORT_UNSIGNED_LONG`], after its type and flags.
 pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<SortField, Status> {
-    use lucene_search::top_field::{HalfFloatSort, Selector, ShardDocSort, UnsignedLongSort};
+    use lucene_search::top_field::{
+        HalfFloatSort, ScaledFloatSort, Selector, ShardDocSort, UnsignedLongSort,
+    };
     let reverse = flags & SORT_REVERSE != 0;
     if ty == SORT_SHARD_DOC {
         if flags & !SORT_REVERSE != 0 {
@@ -412,7 +443,7 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
         (0, true) => Selector::Max,
         (SORT_MODE_SUM, false) => Selector::Sum,
         (SORT_MODE_AVG, false) => Selector::Avg,
-        (SORT_MODE_MEDIAN, false) if ty == SORT_HALF_FLOAT => Selector::Median,
+        (SORT_MODE_MEDIAN, false) if ty != SORT_UNSIGNED_LONG => Selector::Median,
         _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
     };
     if flags & SORT_NESTED != 0 {
@@ -420,6 +451,23 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
     }
     let field = std::str::from_utf8(c.bytes()?).map_err(|_| Status::InvalidUtf8)?;
     let missing = c.i64()?;
+    if ty == SORT_SCALED_FLOAT {
+        let inverse = f64::from_bits(c.i64()? as u64);
+        if !inverse.is_finite() || inverse <= 0.0 {
+            return Err(invalid(format!(
+                "sort blob: scaled_float inverse scaling factor {inverse}"
+            )));
+        }
+        return Ok(SortField::with_source(
+            field,
+            Arc::new(ScaledFloatSort {
+                selector,
+                missing: lucene_util::numeric_utils::sortable_long_to_double(missing),
+                inverse,
+            }),
+            reverse,
+        ));
+    }
     Ok(if ty == SORT_HALF_FLOAT {
         let bits = i32::try_from(missing)
             .map_err(|_| invalid(format!("sort blob: half_float missing value {missing}")))?;
