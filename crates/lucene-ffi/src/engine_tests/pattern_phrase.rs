@@ -35,7 +35,7 @@ pub(crate) mod tests {
 
     fn decoded(blob: &Blob) -> std::result::Result<Clause, Status> {
         let mut c = Cursor::new(&blob.0[2..]);
-        decode(&mut c)
+        decode(&mut c, 0, &mut 0)
     }
 
     #[test]
