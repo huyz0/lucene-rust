@@ -208,7 +208,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
 | `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
 | `sort_*`, `search_after` | the request needs something the native top-hits path does not produce |
-| `sort_*_nested`, `sort_*_mode_MEDIAN` | a nested `unsigned_long` key; a `median` `unsigned_long` key |
+| `sort_*_mode_MEDIAN_nested` | a `median` nested key (OpenSearch has no nested median pick: it raises) |
 | `collapse_field`, `collapse_search_after`, `collapse_refused` | `collapse` on a field neither keyword nor numeric; `search_after` with a sort other than the collapse field alone (Lucene refuses it); a multi-valued collapse field (Lucene raises the error) |
 | `rescore`, `rescore_<reason>` | a rescorer other than OpenSearch's `query` one; a rescore query that falls back for `<reason>` |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
@@ -221,7 +221,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
 | `points_width` | a points range beyond Lucene's own limits (16 dimensions, 16 bytes each); every numeric, `ip` and `geo_point` range is taken |
 | `search_after_geo` | `search_after` (or a sorted scroll's later page) on Lucene's own `_geo_distance` key: its `compareTop` compares metres where the native side holds the haversine sort keys, which no conversion maps back exactly |
-| `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator under a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
+| `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator under a nested sort with `mode: median` (OpenSearch raises), field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `join_parents` | a block join whose parent filter is not a `QueryBitSetProducer` or OpenSearch's bit-set-cache producer |

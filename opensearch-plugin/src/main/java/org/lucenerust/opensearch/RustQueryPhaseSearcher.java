@@ -446,9 +446,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                         // Everything else reads the buffers written as segments, one per leaf of the
                         // view: aggregations, sorts, collapse, rescore, and what the plain path's
                         // buffers cannot answer.
-                        if (ctx.mapperService().hasNested()) {
+                        if (ctx.mapperService().hasNested() || ctx.explain()) {
                             // The fetch phase finds a buffered hit's root document by doc values the
-                            // view's leaves read only from the buffers given to Lucene as segments.
+                            // view's leaves read only from the buffers given to Lucene as segments,
+                            // and explains a hit by their postings.
                             readByLucene(ctx, searcher, live);
                         }
                         long[] whole = new long[1];
@@ -996,12 +997,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
+     * buffers do not hold for the fetch phase (highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
      * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested k-NN hits.
      */
     static String liveIneligible(SearchContext ctx) {
-        if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
         if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
@@ -1080,7 +1080,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      */
     private static boolean plainIneligible(SearchContext ctx) {
         return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
-            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested();
+            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested()
+            // An explanation is Lucene's, over the postings of the buffers written as segments.
+            || ctx.explain();
     }
 
     /**
