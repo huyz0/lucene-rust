@@ -86,6 +86,8 @@ cc = "1"
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-engine = { path = "../lucene-engine", default-features = false, features = ["test-support"] }
+# The slot-rotation hook that makes a test's buffers independent of thread scheduling.
+lucene-index = { path = "../lucene-index", features = ["test-support"] }
 # The tests that drive the entry points build the queries and scripts they run.
 lucene-painless = { path = "../lucene-painless" }
 lucene-pattern-text = { path = "../lucene-pattern-text" }

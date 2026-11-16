@@ -1681,6 +1681,13 @@ def main():
     # Spans, intervals, combined_fields, function_score, more_like_this.
     for index, shards in (("single", 1), ("multi", 3)):
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
+    # The script shapes that are slower natively run native only under the index setting.
+    for index, shards in (("single", 1), ("multi", 3)):
+        req("PUT", f"/{index}/_settings", {"index.script.accelerated_extended": True})
+        try:
+            native += run_matrix(index, shards, "script extended", rows=extended_matrix.script_extended_rows())
+        finally:
+            req("PUT", f"/{index}/_settings", {"index.script.accelerated_extended": None})
     for index, shards in (("single", 1), ("multi", 3)):
         script_errors(index, shards)
     for index, shards in (("single", 1), ("multi", 3)):

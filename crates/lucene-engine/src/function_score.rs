@@ -1369,7 +1369,7 @@ fn decode_uid(id: &[u8]) -> Vec<u8> {
     out
 }
 
-/// [`decode_uid`], appended to `out`.
+/// `decode_uid`, appended to `out`.
 fn decode_uid_into(id: &[u8], out: &mut Vec<u8>) {
     match id.split_first() {
         None => {}
