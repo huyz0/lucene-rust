@@ -549,7 +549,7 @@ pub fn english_stop_words() -> HashSet<String> {
 /// `org/apache/lucene/analysis/snowball/` -- itself sourced verbatim from the
 /// Snowball project's French stop list, <https://snowballstem.org/algorithms/french/stop.txt>).
 /// This list was transcribed directly from that resource file as it exists in
-/// a real `/home/tuong/work/lucene` 10.5.0 checkout
+/// a real Lucene 10.5.0 checkout
 /// (`lucene/analysis/common/src/resources/org/apache/lucene/analysis/snowball/french_stop.txt`),
 /// stripping the file's `|`-delimited comments and blank lines the same way
 /// real Lucene's `WordlistLoader.getSnowballWordSet` does (split remaining

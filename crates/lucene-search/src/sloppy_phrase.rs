@@ -1,5 +1,5 @@
 //! `SloppyPhraseMatcher`
-//! (`/home/tuong/work/lucene-10.5.0/lucene/core/src/java/org/apache/lucene/search/SloppyPhraseMatcher.java`),
+//! (`lucene/core/src/java/org/apache/lucene/search/SloppyPhraseMatcher.java`),
 //! ported over already-decoded per-slot position lists.
 //!
 //! ## Why this exists at all

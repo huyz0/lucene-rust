@@ -1,7 +1,7 @@
 # b7-points-fields
 
 Sweep of `crates/lucene-codecs/src/{points,field_infos,term_vectors,vectors}.rs`
-against Lucene 10.5.0 at `/home/tuong/work/lucene`.
+against Lucene 10.5.0 in the Lucene checkout.
 
 Java counterparts confirmed present in **`lucene/core`** (not backward-codecs)
 for every format in this batch: `codecs/lucene90/Lucene90Points{Format,Reader,Writer}`,
