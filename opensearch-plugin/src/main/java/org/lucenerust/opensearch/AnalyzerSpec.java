@@ -445,6 +445,51 @@ public final class AnalyzerSpec {
     }
 
     /**
+     * The {@code types} rules that make the factory build {@code table}: one per char whose type is
+     * not its default, and one for the last char so the table is as long. Null when the table could
+     * not have come from a factory (shorter than the default, or a type no rule names).
+     */
+    private static String typeRules(byte[] table, int defaultLength) {
+        if (table.length < defaultLength) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < table.length; i++) {
+            byte def = org.apache.lucene.analysis.miscellaneous.WordDelimiterIterator.getType(i);
+            if (table[i] != def || i == table.length - 1 && table.length > defaultLength) {
+                switch (table[i]) {
+                    case 1, 2, 3, 4, 7, 8 -> {}
+                    default -> {
+                        return null;
+                    }
+                }
+                String name = switch (table[i]) {
+                    case 1 -> "LOWER";
+                    case 2 -> "UPPER";
+                    case 3 -> "ALPHA";
+                    case 4 -> "DIGIT";
+                    case 7 -> "ALPHANUM";
+                    default -> "SUBWORD_DELIM";
+                };
+                sb.append(String.format("\\u%04x => %s\n", i, name));
+            }
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    /** A comma-separated argument value, or null when an item would not survive {@code getSet}'s split. */
+    private static String items(Collection<String> words) {
+        StringJoiner j = new StringJoiner(",");
+        for (String w : words) {
+            if (w.isEmpty() || w.indexOf(',') >= 0 || w.chars().anyMatch(Character::isWhitespace)) {
+                return null;
+            }
+            j.add(w);
+        }
+        return j.toString();
+    }
+
+    /**
      * Words one per line, as {@code getWordSet} reads them back; null when one cannot survive that
      * format (empty, a comment, a line break, or edge whitespace).
      */
@@ -724,7 +769,19 @@ public final class AnalyzerSpec {
         A + "ja.JapaneseKatakanaUppercaseFilter",
         A + "ja.JapaneseNumberFilter",
         A + "ko.KoreanReadingFormFilter",
-        A + "ko.KoreanNumberFilter"
+        A + "ko.KoreanNumberFilter",
+        A + "es.SpanishMinimalStemFilter",
+        A + "fa.PersianStemFilter",
+        A + "fa.PersianCharFilter",
+        A + "no.NorwegianNormalizationFilter",
+        A + "ro.RomanianNormalizationFilter",
+        A + "te.TeluguNormalizationFilter",
+        A + "te.TeluguStemFilter",
+        A + "sv.SwedishMinimalStemFilter",
+        A + "miscellaneous.ScandinavianNormalizationFilter",
+        A + "miscellaneous.FixBrokenOffsetsFilter",
+        A + "payloads.TokenOffsetPayloadTokenFilter",
+        A + "payloads.TypeAsPayloadTokenFilter"
     );
 
     private static Mapper noArgs(Class<?> c) {
@@ -761,7 +818,28 @@ public final class AnalyzerSpec {
 
     /** A pattern with no flags Lucene's factories cannot set. */
     private static String plainPattern(Pattern p) {
-        return p.flags() == 0 ? p.pattern() : null;
+        int f = p.flags();
+        String embedded = "";
+        String body = p.pattern();
+        if ((f & Pattern.LITERAL) != 0) {
+            body = Pattern.quote(body);
+            f &= ~Pattern.LITERAL;
+        }
+        if ((f & Pattern.CANON_EQ) != 0) {
+            return null;
+        }
+        int[] bits = { Pattern.CASE_INSENSITIVE, Pattern.UNIX_LINES, Pattern.MULTILINE, Pattern.DOTALL, Pattern.UNICODE_CASE, Pattern.COMMENTS, Pattern.UNICODE_CHARACTER_CLASS };
+        String letters = "idmsuxU";
+        for (int i = 0; i < bits.length; i++) {
+            if ((f & bits[i]) != 0) {
+                embedded += letters.charAt(i);
+                f &= ~bits[i];
+            }
+        }
+        if (f != 0) {
+            return null;
+        }
+        return embedded.isEmpty() ? body : "(?" + embedded + ")" + body;
     }
 
     static {
@@ -1062,11 +1140,16 @@ public final class AnalyzerSpec {
             Object iterator = read(o, "iterator");
             byte[] table = (byte[]) read(iterator, "charTypeTable");
             byte[] defaults = (byte[]) read(null, iterator.getClass(), "DEFAULT_WORD_DELIM_TABLE");
+            String types = null;
             if (table != defaults && java.util.Arrays.equals(table, defaults) == false) {
-                return "analysis_word_delimiter_types";
+                types = typeRules(table, defaults.length);
+                if (types == null) return "analysis_word_delimiter_types";
             }
             int flags = readInt(o, "flags");
             c.name = graph ? "wordDelimiterGraph" : "wordDelimiter";
+            if (types != null) {
+                c.arg("types", c.writer.resource(types));
+            }
             String[] names = {
                 "generateWordParts",
                 "generateNumberParts",
@@ -1094,6 +1177,153 @@ public final class AnalyzerSpec {
         };
         map("miscellaneous.WordDelimiterGraphFilter", wordDelimiter);
         map("miscellaneous.WordDelimiterFilter", wordDelimiter);
+
+        // ---- more of analysis-common ----
+        map("boost.DelimitedBoostTokenFilter", (o, c) -> {
+            c.name = "delimitedBoost";
+            c.arg("delimiter", String.valueOf((char) read(o, "delimiter")));
+            return null;
+        });
+        map("miscellaneous.DelimitedTermFrequencyTokenFilter", (o, c) -> {
+            c.name = "delimitedTermFrequency";
+            c.arg("delimiter", String.valueOf((char) read(o, "delimiter")));
+            return null;
+        });
+        map("miscellaneous.DropIfFlaggedFilter", (o, c) -> {
+            c.name = "dropIfFlagged";
+            c.arg("dropFlags", readInt(o, "dropFlags"));
+            return null;
+        });
+        map("miscellaneous.CodepointCountFilter", (o, c) -> {
+            c.name = "codepointCount";
+            c.arg("min", readInt(o, "min")).arg("max", readInt(o, "max"));
+            return null;
+        });
+        map("miscellaneous.FingerprintFilter", (o, c) -> {
+            c.name = "fingerprint";
+            c.arg("maxOutputTokenSize", readInt(o, "maxOutputTokenSize")).arg("separator", String.valueOf((char) read(o, "separator")));
+            return null;
+        });
+        map("miscellaneous.LimitTokenOffsetFilter", (o, c) -> {
+            c.name = "limitTokenOffset";
+            c.arg("maxStartOffset", readInt(o, "maxStartOffset")).arg("consumeAllTokens", flag(readBool(o, "consumeAllTokens")));
+            return null;
+        });
+        map("miscellaneous.LimitTokenPositionFilter", (o, c) -> {
+            c.name = "limitTokenPosition";
+            c.arg("maxTokenPosition", readInt(o, "maxTokenPosition")).arg("consumeAllTokens", flag(readBool(o, "consumeAllTokens")));
+            return null;
+        });
+        map("minhash.MinHashFilter", (o, c) -> {
+            c.name = "minHash";
+            c.arg("hashCount", readInt(o, "hashCount"))
+                .arg("bucketCount", readInt(o, "bucketCount"))
+                .arg("hashSetSize", readInt(o, "hashSetSize"))
+                .arg("withRotation", flag(readBool(o, "withRotation")));
+            return null;
+        });
+        map("miscellaneous.TypeAsSynonymFilter", (o, c) -> {
+            c.name = "typeAsSynonym";
+            String prefix = (String) read(o, "prefix");
+            if (prefix != null) {
+                c.arg("prefix", prefix);
+            }
+            @SuppressWarnings("unchecked")
+            Set<String> ignore = (Set<String>) read(o, "ignore");
+            if (ignore != null && ignore.isEmpty() == false) {
+                String items = items(ignore);
+                if (items == null) return "analysis_words";
+                c.arg("ignore", items);
+            }
+            c.arg("synFlagsMask", readInt(o, "synFlagsMask"));
+            return null;
+        });
+        map("miscellaneous.CapitalizationFilter", (o, c) -> {
+            c.name = "capitalization";
+            CharArraySet keep = (CharArraySet) read(o, "keep");
+            if (keep != null) {
+                List<String> words = new ArrayList<>();
+                for (Object w : keep) {
+                    words.add(new String((char[]) w));
+                }
+                String items = items(words);
+                if (items == null) return "analysis_words";
+                c.arg("keep", items).arg("keepIgnoreCase", flag(ignoreCase(keep)));
+            }
+            @SuppressWarnings("unchecked")
+            Collection<char[]> okPrefix = (Collection<char[]>) read(o, "okPrefix");
+            if (okPrefix != null) {
+                List<String> prefixes = new ArrayList<>();
+                for (char[] w : okPrefix) {
+                    prefixes.add(new String(w));
+                }
+                String items = items(prefixes);
+                if (items == null) return "analysis_words";
+                c.arg("okPrefix", items);
+            }
+            c.arg("onlyFirstWord", flag(readBool(o, "onlyFirstWord")))
+                .arg("forceFirstLetter", flag(readBool(o, "forceFirstLetter")))
+                .arg("minWordLength", readInt(o, "minWordLength"))
+                .arg("maxWordCount", readInt(o, "maxWordCount"))
+                .arg("maxTokenLength", readInt(o, "maxTokenLength"));
+            return null;
+        });
+        map("compound.DictionaryCompoundWordTokenFilter", (o, c) -> {
+            c.name = "dictionaryCompoundWord";
+            c.arg("minWordSize", readInt(o, "minWordSize"))
+                .arg("minSubwordSize", readInt(o, "minSubwordSize"))
+                .arg("maxSubwordSize", readInt(o, "maxSubwordSize"))
+                .arg("onlyLongestMatchIgnoreSubwords", flag(readBool(o, "onlyLongestMatch")));
+            return c.words("dictionary", (CharArraySet) read(o, "dictionary"), null);
+        });
+        map("pattern.PatternCaptureGroupTokenFilter", (o, c) -> {
+            Matcher[] matchers = (Matcher[]) read(o, "matchers");
+            c.name = "patternCaptureGroup";
+            for (int i = 0; i < matchers.length; i++) {
+                String p = plainPattern(matchers[i].pattern());
+                if (p == null) return "analysis_pattern_flags";
+                c.arg(i == 0 ? "pattern" : "pattern" + i, p);
+            }
+            c.arg("preserve_original", flag(readBool(o, "preserveOriginal")));
+            return null;
+        });
+        map("payloads.DelimitedPayloadTokenFilter", (o, c) -> {
+            String encoder = read(o, "encoder").getClass().getSimpleName();
+            c.name = "delimitedPayload";
+            c.arg("delimiter", String.valueOf((char) read(o, "delimiter")));
+            switch (encoder) {
+                case "FloatEncoder" -> c.arg("encoder", "float");
+                case "IntegerEncoder" -> c.arg("encoder", "integer");
+                case "IdentityEncoder" -> {
+                    if (StandardCharsets.UTF_8.equals(read(read(o, "encoder"), "charset")) == false) {
+                        throw new ReflectionMiss("a payload encoder no factory builds");
+                    }
+                    c.arg("encoder", "identity");
+                }
+                default -> {
+                    throw new ReflectionMiss("a payload encoder no factory builds");
+                }
+            }
+            return null;
+        });
+        map("payloads.NumericPayloadTokenFilter", (o, c) -> {
+            BytesRef payload = (BytesRef) read(o, "thePayload");
+            c.name = "numericPayload";
+            c.arg("typeMatch", (String) read(o, "typeMatch"))
+                .arg("payload", Float.toString(org.apache.lucene.analysis.payloads.PayloadHelper.decodeFloat(payload.bytes, payload.offset)));
+            return null;
+        });
+        Mapper norwegian = (o, c) -> {
+            Object stemmer = read(o, "stemmer");
+            boolean bokmaal = readBool(stemmer, "useBokmaal");
+            boolean nynorsk = readBool(stemmer, "useNynorsk");
+            if (bokmaal == false && nynorsk == false) throw new ReflectionMiss("a Norwegian stemmer no variant names");
+            c.name = o.getClass().getSimpleName().contains("Minimal") ? "norwegianMinimalStem" : "norwegianLightStem";
+            c.arg("variant", bokmaal && nynorsk ? "no" : bokmaal ? "nb" : "nn");
+            return null;
+        };
+        map("no.NorwegianLightStemFilter", norwegian);
+        map("no.NorwegianMinimalStemFilter", norwegian);
 
         // ---- kuromoji and nori (OpenSearch's analysis-kuromoji and analysis-nori) ----
         map("ja.JapaneseTokenizer", (o, c) -> {

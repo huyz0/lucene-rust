@@ -251,7 +251,7 @@ pub(crate) fn yield_to_searches() {
 pub unsafe extern "C" fn ffi_engine_writer_apply(handle: u64, op: *const u8, op_len: usize) -> i32 {
     guard(|| {
         yield_to_searches();
-        let _busy = crate::purge::writing();
+        crate::purge::writing();
         // SAFETY: caller contract.
         let op = decode_op(unsafe { bytes_from_raw(op, op_len)? })?;
         apply_op(handle, op)
@@ -297,7 +297,7 @@ pub unsafe extern "C" fn ffi_engine_prepare(op: *const u8, op_len: usize, out_id
 pub extern "C" fn ffi_engine_writer_apply_prepared(handle: u64, id: u64) -> i32 {
     guard(|| {
         yield_to_searches();
-        let _busy = crate::purge::writing();
+        crate::purge::writing();
         let op = PREPARED
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -631,7 +631,7 @@ pub unsafe extern "C" fn ffi_engine_writer_commit(
     out_generation: *mut i64,
 ) -> i32 {
     guard(|| {
-        let _busy = crate::purge::writing();
+        crate::purge::writing();
         if out_generation.is_null() {
             return Err(FfiStatus::NullPointer);
         }
@@ -1064,7 +1064,7 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
     out_generation: *mut i64,
 ) -> i32 {
     guard(|| {
-        let _busy = crate::purge::writing();
+        crate::purge::writing();
         if out_generation.is_null() {
             return Err(FfiStatus::NullPointer);
         }

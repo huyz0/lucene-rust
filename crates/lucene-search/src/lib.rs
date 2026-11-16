@@ -242,6 +242,7 @@ pub mod ordinal_map;
 mod phrase_scorer;
 pub mod points_query;
 pub mod prefetch;
+pub mod profile_search;
 pub mod query;
 pub mod query_auto_stop_word_analyzer;
 pub mod query_builder;

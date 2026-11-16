@@ -57,7 +57,7 @@ import java.util.function.Predicate;
  * {@code classic}, and {@code scripted} (inside the {@code NonNegativeScoresSimilarity} OpenSearch
  * wraps it in) when the native runtime runs its scripts -- and records it. It refuses anything
  * else, which falls back as {@code field_similarity}: a scripted similarity whose scripts stay in
- * Java, or a plugin's similarity. Matched by exact class: a subclass may score differently.
+ * Java, or a plugin's similarity that does not declare a {@link NativeSimilarity} equivalent. Matched by exact class: a subclass may score differently.
  */
 final class SimilarityEncoder implements Predicate<String> {
     static final byte QUERY_SIMILARITY = 4;
@@ -125,6 +125,10 @@ final class SimilarityEncoder implements Predicate<String> {
     static byte[] spec(Similarity sim) {
         if (sim == null) {
             return null;
+        }
+        if (sim instanceof NativeSimilarity declared) {
+            Similarity equivalent = declared.nativeEquivalent();
+            return equivalent == null || equivalent instanceof NativeSimilarity ? null : spec(equivalent);
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Class<?> c = sim.getClass();

@@ -167,6 +167,15 @@ pub trait SimScorer: Send + Sync {
 /// this one) and the query-time scorer. An `Arc<dyn Similarity>` upcasts to
 /// the `Arc<dyn NormSimilarity>` `IndexWriter::set_similarity` takes.
 pub trait Similarity: NormSimilarity {
+    /// The statistics scoring uses in place of the reader's, when the searcher
+    /// overrides them (`ContextIndexSearcher.termStatistics` /
+    /// `collectionStatistics` under an aggregated DFS): carried by the
+    /// similarity because that is what every search path already hands to
+    /// the statistics pass.
+    fn statistics_source(&self) -> Option<&dyn crate::index_searcher::StatisticsSource> {
+        None
+    }
+
     /// `Similarity.scorer(boost, collectionStats, termStats...)`. `field` is
     /// `collectionStats.field()`.
     fn scorer(
@@ -2216,13 +2225,36 @@ impl Similarity for MultiSimilarity {
 pub struct PerFieldSimilarity {
     default: Arc<dyn Similarity>,
     fields: HashMap<String, Arc<dyn Similarity>>,
+    statistics: Option<StatisticsHandle>,
+}
+
+/// A [`crate::index_searcher::StatisticsSource`] a similarity carries.
+#[derive(Clone)]
+struct StatisticsHandle(Arc<dyn crate::index_searcher::StatisticsSource>);
+
+impl std::fmt::Debug for StatisticsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StatisticsSource")
+    }
 }
 
 impl PerFieldSimilarity {
+    /// This similarity, scoring with `source`'s statistics (see
+    /// [`Similarity::statistics_source`]).
+    #[must_use]
+    pub fn with_statistics(
+        mut self,
+        source: Arc<dyn crate::index_searcher::StatisticsSource>,
+    ) -> Self {
+        self.statistics = Some(StatisticsHandle(source));
+        self
+    }
+
     pub fn new(default: Arc<dyn Similarity>) -> Self {
         Self {
             default,
             fields: HashMap::new(),
+            statistics: None,
         }
     }
 
@@ -2244,6 +2276,10 @@ impl NormSimilarity for PerFieldSimilarity {
 }
 
 impl Similarity for PerFieldSimilarity {
+    fn statistics_source(&self) -> Option<&dyn crate::index_searcher::StatisticsSource> {
+        self.statistics.as_ref().map(|h| h.0.as_ref())
+    }
+
     /// Java's `PerFieldSimilarityWrapper` is abstract, so the name printed is
     /// its subclass's; this port's concrete form names the wrapper.
     fn simple_name(&self) -> &str {

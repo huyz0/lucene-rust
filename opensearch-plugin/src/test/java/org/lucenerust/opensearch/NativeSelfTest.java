@@ -155,6 +155,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=security: NativeSelfTestSecurity alone.
+        if ("security".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (security only): %d checks, %d failures%n", checks, failures);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
         if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -189,6 +195,8 @@ public final class NativeSelfTest {
         geo(new Random(13));
         }
         NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSecurity.compared >= 120, "security view queries compared: " + NativeSelfTestSecurity.compared);
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -638,16 +646,18 @@ public final class NativeSelfTest {
             "search_after_fields".equals(SortEncoder.encode(new Sort(SortField.FIELD_DOC), new FieldDoc(1, 0f, new Object[0])).fallbackReason()),
             "search_after with the wrong arity falls back"
         );
-        // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
-        BooleanQuery.Builder atCap = new BooleanQuery.Builder();
-        for (int i = 0; i < 1023; i++) {
-            atCap.add(new TermQuery(new Term("body", "t" + i)), Occur.SHOULD);
+        // The native decoder's depth bound: 128 levels encode, a 129th falls back by name.
+        Query deep = new TermQuery(new Term("body", "t"));
+        for (int i = 0; i < 100; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
         }
-        check(QueryEncoder.encode(atCap.build(), f -> true).blob() != null, "1024 nodes encode");
-        atCap.add(new TermQuery(new Term("body", "t1023")), Occur.SHOULD);
+        check(QueryEncoder.encode(deep, f -> true).blob() != null, "100 nested booleans encode");
+        for (int i = 0; i < 40; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
+        }
         check(
-            "query_too_large".equals(QueryEncoder.encode(atCap.build(), f -> true).fallbackReason()),
-            "1025 nodes fall back as query_too_large, not a native error"
+            "query_too_deep".equals(QueryEncoder.encode(deep, f -> true).fallbackReason()),
+            "140 nested booleans fall back as query_too_deep, not a native error"
         );
     }
 
@@ -924,7 +934,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0))
+                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0, 0.0))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];

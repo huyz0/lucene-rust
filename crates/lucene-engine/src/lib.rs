@@ -36,6 +36,7 @@ pub mod memory;
 pub mod nodes;
 pub mod painless_score;
 pub mod pattern_phrase;
+pub mod profile;
 pub mod queries;
 pub mod query_blob;
 pub mod reader_handle;

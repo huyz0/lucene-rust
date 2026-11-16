@@ -89,8 +89,10 @@ final class NativeSelfTestAnalysis {
                 "keep.txt", "the\nquick\nfox's\njumps\nbanana\ncafé\n",
                 "articles.txt", "l\nd\nqu\n",
                 "common.txt", "the\nof\nand\nto\n",
-                "wdtypes.txt", "- => ALPHA\n",
+                "wdtypes.txt", "- => ALPHA\n\\u00e9 => SUBWORD_DELIM\n",
+                "wdtypes2.txt", "\\u0394 => LOWER\n\\u0e01 => DIGIT\n_ => ALPHANUM\n",
                 "synonyms.txt", "quick, fast, speedy\njumps => leaps, hops over\nthe fox => the vixen\nbanana, ba\\,na\ne mail, email\ncafé => coffee shop\nwi fi, wifi, wireless\n",
+                "compound.txt", "sun\nflower\nfoot\nball\nlazy\nbrown\n",
                 "override.txt", "running\trun\njumps\tjump\ncafé\tcoffee\nbanana\tfruit thing\n"
             );
             for (Map.Entry<String, String> f : files.entrySet()) {
@@ -328,6 +330,135 @@ final class NativeSelfTestAnalysis {
                 .build()
         );
         m.put("keyword tokenizer, ascii folding", b().withTokenizer("keyword").addTokenFilter("asciiFolding").build());
+        m.put("persian", new PersianAnalyzer());
+        m.put(
+            "word delimiter with a type table",
+            b().withTokenizer("whitespace").addTokenFilter("wordDelimiterGraph", "types", "wdtypes.txt", "catenateWords", "1").build()
+        );
+        m.put(
+            "word delimiter with a type table past the default length",
+            b().withTokenizer("whitespace").addTokenFilter("wordDelimiter", "types", "wdtypes2.txt", "preserveOriginal", "1").build()
+        );
+        m.put(
+            "payload, boost and term frequency delimiters",
+            b().withTokenizer("whitespace")
+                .addTokenFilter("delimitedPayload", "delimiter", "-", "encoder", "identity")
+                .addTokenFilter("delimitedBoost", "delimiter", "^")
+                .addTokenFilter("delimitedTermFrequency", "delimiter", "~")
+                .build()
+        );
+        m.put(
+            "numeric payload, type payloads, offsets, flags",
+            b().withTokenizer("standard")
+                .addTokenFilter("numericPayload", "payload", "2.5", "typeMatch", "<ALPHANUM>")
+                .addTokenFilter("typeAsPayload")
+                .addTokenFilter("tokenOffsetPayload")
+                .addTokenFilter("dropIfFlagged", "dropFlags", "4")
+                .addTokenFilter("fixBrokenOffsets")
+                .build()
+        );
+        m.put(
+            "float payloads, integer payloads",
+            b().withTokenizer("whitespace").addTokenFilter("delimitedPayload", "delimiter", "\u03a9", "encoder", "float").build()
+        );
+        m.put(
+            "integer payload",
+            b().withTokenizer("whitespace").addTokenFilter("delimitedPayload", "delimiter", "\u0416", "encoder", "integer").build()
+        );
+        m.put(
+            "fingerprint, min hash",
+            b().withTokenizer("standard").addTokenFilter("lowercase").addTokenFilter("fingerprint", "separator", "+", "maxOutputTokenSize", "60").build()
+        );
+        m.put(
+            "min hash",
+            b().withTokenizer("standard").addTokenFilter("minHash", "hashCount", "2", "bucketCount", "4", "hashSetSize", "2", "withRotation", "true").build()
+        );
+        m.put(
+            "limits",
+            b().withTokenizer("standard")
+                .addTokenFilter("limitTokenOffset", "maxStartOffset", "60", "consumeAllTokens", "false")
+                .addTokenFilter("limitTokenPosition", "maxTokenPosition", "9", "consumeAllTokens", "true")
+                .addTokenFilter("codepointCount", "min", "2", "max", "9")
+                .build()
+        );
+        m.put(
+            "type as synonym",
+            b().withTokenizer("standard")
+                .addTokenFilter("typeAsSynonym", "prefix", "T_", "ignore", "<NUM>,<ALPHANUM>", "synFlagsMask", "3")
+                .build()
+        );
+        m.put(
+            "capitalization",
+            b().withTokenizer("whitespace")
+                .addTokenFilter("capitalization", "keep", "the,of", "keepIgnoreCase", "true", "okPrefix", "mc,mac", "onlyFirstWord", "false", "minWordLength", "2", "maxWordCount", "9", "maxTokenLength", "20")
+                .build()
+        );
+        m.put(
+            "dictionary compound words",
+            b().withTokenizer("whitespace")
+                .addTokenFilter("lowercase")
+                .addTokenFilter("dictionaryCompoundWord", "dictionary", "compound.txt", "minWordSize", "5", "minSubwordSize", "2", "maxSubwordSize", "10", "onlyLongestMatchIgnoreSubwords", "false")
+                .build()
+        );
+        m.put(
+            "pattern capture group",
+            b().withTokenizer("whitespace").addTokenFilter("patternCaptureGroup", "pattern", "(\\w)(\\w)", "preserve_original", "false").build()
+        );
+        m.put("pattern capture groups, several patterns", new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String field) {
+                Tokenizer t = new WhitespaceTokenizer();
+                return new TokenStreamComponents(
+                    t,
+                    new org.apache.lucene.analysis.pattern.PatternCaptureGroupTokenFilter(
+                        t,
+                        true,
+                        java.util.regex.Pattern.compile("(\\p{L}+)(\\d+)"),
+                        java.util.regex.Pattern.compile("(?i)(a)(.)")
+                    )
+                );
+            }
+        });
+        m.put(
+            "language stemmers and normalizers",
+            b().withTokenizer("standard")
+                .addTokenFilter("spanishMinimalStem")
+                .addTokenFilter("persianStem")
+                .addTokenFilter("norwegianNormalization")
+                .addTokenFilter("romanianNormalization")
+                .addTokenFilter("teluguNormalization")
+                .addTokenFilter("teluguStem")
+                .addTokenFilter("swedishMinimalStem")
+                .addTokenFilter("scandinavianNormalization")
+                .addTokenFilter("norwegianLightStem", "variant", "nb")
+                .addTokenFilter("norwegianMinimalStem", "variant", "no")
+                .build()
+        );
+        m.put("pattern tokenizer with flags", new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String field) {
+                Tokenizer t = new org.apache.lucene.analysis.pattern.PatternTokenizer(
+                    java.util.regex.Pattern.compile("[aeiou]+", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE),
+                    0
+                );
+                return new TokenStreamComponents(t, new LowerCaseFilter(t));
+            }
+        });
+        m.put("pattern replace char filter with flags", new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String field) {
+                return new TokenStreamComponents(new WhitespaceTokenizer());
+            }
+
+            @Override
+            protected java.io.Reader initReader(String field, java.io.Reader reader) {
+                return new org.apache.lucene.analysis.pattern.PatternReplaceCharFilter(
+                    java.util.regex.Pattern.compile("(?:the|of)\\s", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL),
+                    "X",
+                    reader
+                );
+            }
+        });
         List<byte[]> en = List.of(utf8(EN_DIC), utf8(EXTRA_DIC));
         m.put("hunspell (two .dic files, stem exception)", hunspell(false, true, dictionary(utf8(EN_AFF), en, false, true), true, false));
         m.put(
@@ -362,14 +493,10 @@ final class NativeSelfTestAnalysis {
             "hunspell without its files",
             Map.entry(hunspell(false, true, dictionary(utf8(EN_AFF), List.of(utf8(EN_DIC)), false, false), true, false), "analysis_hunspell")
         );
-        // PersianCharFilter is not mapped.
-        m.put("persian", Map.entry(new PersianAnalyzer(), "analysis_PersianCharFilter"));
+        // The port carries Lucene's GITHUB#16577 fix for FixedShingleFilter; the bundled 10.5.1 does not have it.
         m.put(
-            "word delimiter with a type table",
-            Map.entry(
-                b().withTokenizer("whitespace").addTokenFilter("wordDelimiterGraph", "types", "wdtypes.txt").build(),
-                "analysis_word_delimiter_types"
-            )
+            "fixed shingles",
+            Map.entry(b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2").build(), "analysis_FixedShingleFilter")
         );
         return m;
     }

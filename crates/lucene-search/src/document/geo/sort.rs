@@ -954,6 +954,19 @@ impl FieldComparator for Comparator {
             _ => Ordering::Equal,
         }
     }
+
+    /// `LatLonPointDistanceComparator.compareTop`: the top value is a
+    /// distance in metres (the sort values a hit reports), compared with the
+    /// document's `haversin2` of its key.
+    fn compare_top(&self, top: &SortValue, v: &SortValue) -> Ordering {
+        match (&self.source, top, v) {
+            (Source::LatLon(_), SortValue::Long(top), SortValue::Long(key)) => {
+                let metres = haversin2(lucene_util::numeric_utils::sortable_long_to_double(*key));
+                top.cmp(&lucene_util::numeric_utils::double_to_sortable_long(metres))
+            }
+            _ => self.compare_values(top, v),
+        }
+    }
 }
 
 struct LeafComparator<'a> {
