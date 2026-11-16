@@ -217,8 +217,7 @@ def rows():
     add("geo sort then n", {"query": {"match": {"body": "beta"}}, "sort": [gsort([0, 0]), {"n": "asc"}]})
     add("geo sort after n", {"query": {"match": {"body": "gamma"}}, "sort": [{"tag": "asc"}, gsort([-70, 40])]})
     add("geo sort track_scores", {"query": {"match": {"body": "delta"}}, "track_scores": True, "sort": [gsort([10, 10])]})
-    add("geo sort search_after", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10]), {"n": "asc"}], "search_after": [5_000_000.0, 100]},
-        "search_after_geo")
+    add("geo sort search_after", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10]), {"n": "asc"}], "search_after": [5_000_000.0, 100]})
     add("geo sort desc", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], order="desc")]})
     add("geo sort km", {"query": {"match": {"body": "beta"}}, "sort": [gsort([20, 10], unit="km")]})
     add("geo sort miles desc", {"sort": [gsort([-120, 35], unit="mi", order="desc"), "_doc"]})

@@ -441,7 +441,8 @@ def matrix():
     add("agg no query min double (points)", {"size": 0, "aggs": {"lo": {"min": {"field": "price"}}, "lof": {"min": {"field": "ratio"}}}}, "native")
     add("agg explicit match_all min max", {"size": 0, "query": {"match_all": {}}, "aggs": {"lo": {"min": {"field": "price"}}, "hi": {"max": {"field": "ratio"}}}}, "native")
     # A time-series shard sorted by @timestamp ascending: OpenSearch visits segments last first.
-    add("agg sort @timestamp asc", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "aggs": {"s": {"sum": {"field": "price"}}}}, "time_series_order")
+    add("agg sort @timestamp asc", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "aggs": {"s": {"sum": {"field": "price"}}}}, "native")
+    add("sort @timestamp asc terminate_after", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "terminate_after": 50}, "time_series_order")
     add("agg date min max", {"size": 0, "query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "aggs": {"first": {"min": {"field": "ts"}}, "last": {"max": {"field": "ts"}}}}, "native")
     add("agg sparse, nothing matches", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"s": {"stats": {"field": "sp"}}, "a": {"avg": {"field": "sp"}}}}, "native")
     add("agg float sum with sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "aggs": {"r": {"sum": {"field": "ratio"}}}}, "native")
@@ -704,7 +705,7 @@ def matrix():
     add("terminate_after field sort range", {"query": {"range": {"n": {"gte": 100}}}, "sort": [{"n": "desc"}], "terminate_after": 5}, "terminate_after")
     add("terminate_after match_all hits", {"query": {"match_all": {}}, "terminate_after": 5}, "terminate_after")
     add("terminate_after aggs", {"size": 0, "query": {"match": {"body": "alpha"}}, "terminate_after": 5, "aggs": {"t": {"terms": {"field": "tag"}}}}, "terminate_after")
-    add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
+    add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "native")
     # timeout: native, checked before and after the native search as ContextIndexSearcher
     # checks it before each segment; none of these reaches it.
     add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "native")
@@ -737,7 +738,7 @@ def matrix():
     add("fuzzy keyword", {"query": {"fuzzy": {"tag": {"value": "gamna", "fuzziness": 2}}}}, "native")
     add("match fuzziness", {"query": {"match": {"body": {"query": "alpah betta", "fuzziness": "AUTO"}}}}, "native")
     add("fuzzy in bool", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "should": [{"fuzzy": {"body": "delda"}}]}}}, "native")
-    add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs_multi")
+    add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "native")
     # rescore: OpenSearch's QueryRescorer natively, every score_mode, windows below and past the
     # hits asked for, chained rescorers, beside aggregations and a post_filter.
     add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "native")
@@ -920,10 +921,6 @@ def run_matrix_rows(index, shards, label, shapes, index_sorted, rows):
             # A type or shape with no native node: the reason names the type (aggregation_<type>)
             # or the shape (aggregation_shape).
             expect = "aggregation*"
-        if expect == "dfs_multi":
-            # OpenSearch runs a one-shard dfs search as query_then_fetch
-            # (TransportSearchAction), so only a multi-shard index gets the dfs phase.
-            expect = "dfs" if shards > 1 else "native"
         if expect == "time_series_order" and index_sorted:
             # IndexShard enables the time-series segment order only on a shard without
             # an index sort; an index-sorted shard visits segments in order, as native does.
@@ -1623,7 +1620,7 @@ def nested_rows():
     add("agg nested > filter, histogram and percentiles", {"size": 0, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"f": {"filter": {"term": {"props.k": "alpha"}}, "aggs": {"s": {"sum": {"field": "props.f"}}}}, "h": {"histogram": {"field": "props.v", "interval": 25}}, "q": {"percentiles": {"field": "props.w"}}, "c": {"cardinality": {"field": "props.k"}}}}}}, "native")
     add("agg global > nested and terms > nested", {"size": 0, "query": {"match": {"body": "epsilon"}}, "aggs": {"g": {"global": {}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"v": {"min": {"field": "props.v"}}}}}}, "t": {"terms": {"field": "tag", "size": 2}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"k": {"terms": {"field": "props.k"}}}}}}}}, "native")
     add("agg nested > top_hits", {"size": 0, "query": {"match": {"body": "zeta"}}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"h": {"top_hits": {"size": 2}}}}}}, "aggregations")
-    add("nested no total", {"query": {"match": {"body": "rho"}}, "track_total_hits": False, "sort": ns("props.v", "asc", "min")}, "sort_nested")
+    add("nested no total", {"query": {"match": {"body": "rho"}}, "track_total_hits": False, "sort": ns("props.v", "asc", "min")}, "native")
     return rows
 
 
