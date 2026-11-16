@@ -586,6 +586,11 @@ impl Run<'_, '_> {
                     let rewritten = q.rewrite_over(&self.leaf.terms);
                     self.extract(&rewritten, boost)
                 }
+                ExtendedQuery::MoreLikeThisHighlight(q) => {
+                    self.ensure_terms()?;
+                    let rewritten = q.rewrite_over(&self.leaf.terms);
+                    self.extract(&rewritten, boost)
+                }
                 ExtendedQuery::MultiTerm(m) => self.extract_multi_term(query, m.field(), boost),
                 ExtendedQuery::LateJoin(_) if self.cfg.opensearch => Ok(()),
                 ExtendedQuery::IndexOrDocValues(q) if self.cfg.opensearch => {
@@ -1264,6 +1269,11 @@ impl Scorer for QueryScorer {
             self.total_score += weight;
         }
         weight
+    }
+
+    fn token_score_unmatched(&mut self, token: &AttributeSource) -> f32 {
+        self.position += token.position_increment();
+        0.0
     }
 
     fn fragment_score(&self) -> f32 {

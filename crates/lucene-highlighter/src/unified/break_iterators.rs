@@ -88,6 +88,196 @@ pub fn word_instance() -> Box<dyn BreakIterator> {
     Box::new(RuleBreakIterator::from_utf16(Kind::Word, Vec::new()))
 }
 
+/// The word boundaries of a text, from a host whose word `BreakIterator`
+/// segments a language by a dictionary this library does not carry (the
+/// JDK's Thai): every boundary in ascending order, `0` and the text's length
+/// included; `None` when the host cannot give them.
+pub type WordBoundaries = fn(&[u16]) -> Option<Vec<i32>>;
+
+static THAI_WORDS: std::sync::OnceLock<WordBoundaries> = std::sync::OnceLock::new();
+
+/// Registers the host's Thai word boundaries, once per process.
+pub fn install_thai_word_boundaries(boundaries: WordBoundaries) {
+    let _ = THAI_WORDS.set(boundaries);
+}
+
+/// A `BreakIterator` over boundaries already known: the answers of the
+/// host's iterator for one text, kept as a cursor over them.
+#[derive(Debug, Default, Clone)]
+pub struct ListBreakIterator {
+    bounds: Vec<i32>,
+    end: i32,
+    pos: i32,
+}
+
+impl ListBreakIterator {
+    /// A cursor over `bounds` (any order; `0` and `end` are added) of a text `end` units long.
+    pub fn with_boundaries(end: i32, bounds: Vec<i32>) -> Self {
+        let mut list = ListBreakIterator::default();
+        list.set(end, bounds);
+        list
+    }
+
+    fn set(&mut self, end: i32, mut bounds: Vec<i32>) {
+        bounds.sort_unstable();
+        bounds.dedup();
+        if bounds.first() != Some(&0) {
+            bounds.insert(0, 0);
+        }
+        if bounds.last() != Some(&end) {
+            bounds.push(end);
+        }
+        self.bounds = bounds;
+        self.end = end;
+        self.pos = 0;
+    }
+
+    fn check(&self, offset: i32) {
+        assert!(offset >= 0 && offset <= self.end, "offset out of bounds");
+    }
+
+    fn after(&self, offset: i32) -> i32 {
+        let i = self.bounds.partition_point(|&b| b <= offset);
+        self.bounds.get(i).copied().unwrap_or(DONE)
+    }
+
+    fn before(&self, offset: i32) -> i32 {
+        let i = self.bounds.partition_point(|&b| b < offset);
+        if i == 0 {
+            DONE
+        } else {
+            self.bounds[i - 1]
+        }
+    }
+}
+
+impl BreakIterator for ListBreakIterator {
+    fn set_text(&mut self, text: &[u16]) {
+        self.set(to_i32(text.len()), Vec::new());
+    }
+    fn text_end(&self) -> i32 {
+        self.end
+    }
+    fn current(&self) -> i32 {
+        self.pos
+    }
+    fn first(&mut self) -> i32 {
+        self.pos = 0;
+        0
+    }
+    fn last(&mut self) -> i32 {
+        self.pos = self.end;
+        self.end
+    }
+    fn next(&mut self) -> i32 {
+        let n = self.after(self.pos);
+        if n != DONE {
+            self.pos = n;
+        }
+        n
+    }
+    fn previous(&mut self) -> i32 {
+        let p = self.before(self.pos);
+        if p != DONE {
+            self.pos = p;
+        }
+        p
+    }
+    fn following(&mut self, offset: i32) -> i32 {
+        self.check(offset);
+        self.pos = offset;
+        let n = self.after(offset);
+        if n != DONE {
+            self.pos = n;
+        }
+        n
+    }
+    fn preceding(&mut self, offset: i32) -> i32 {
+        self.check(offset);
+        self.pos = offset;
+        self.previous()
+    }
+}
+
+/// `BreakIterator.getWordInstance(new Locale("th"))`: the host's boundaries
+/// of each text ([`install_thai_word_boundaries`]), the rule-based word
+/// iterator's when the host gives none.
+pub struct ThaiWordBreakIterator {
+    list: ListBreakIterator,
+    rules: Box<dyn BreakIterator>,
+    from_list: bool,
+}
+
+impl ThaiWordBreakIterator {
+    fn active(&mut self) -> &mut dyn BreakIterator {
+        if self.from_list {
+            &mut self.list
+        } else {
+            self.rules.as_mut()
+        }
+    }
+}
+
+impl BreakIterator for ThaiWordBreakIterator {
+    fn set_text(&mut self, text: &[u16]) {
+        // Without the host's boundaries the rule iterator would cut Thai differently from
+        // the JDK's dictionary, silently: the call fails instead (the plugin then hands the
+        // field to OpenSearch's highlighter).
+        let bounds = THAI_WORDS
+            .get()
+            .and_then(|f| f(text))
+            .expect("the host's Thai word boundaries are unavailable");
+        self.list.set(to_i32(text.len()), bounds);
+        self.from_list = true;
+    }
+    fn text_end(&self) -> i32 {
+        if self.from_list {
+            self.list.text_end()
+        } else {
+            self.rules.text_end()
+        }
+    }
+    fn current(&self) -> i32 {
+        if self.from_list {
+            self.list.current()
+        } else {
+            self.rules.current()
+        }
+    }
+    fn first(&mut self) -> i32 {
+        self.active().first()
+    }
+    fn last(&mut self) -> i32 {
+        self.active().last()
+    }
+    fn next(&mut self) -> i32 {
+        self.active().next()
+    }
+    fn previous(&mut self) -> i32 {
+        self.active().previous()
+    }
+    fn following(&mut self, offset: i32) -> i32 {
+        self.active().following(offset)
+    }
+    fn preceding(&mut self, offset: i32) -> i32 {
+        self.active().preceding(offset)
+    }
+}
+
+/// `BreakIterator.getWordInstance(thai)` for a request that names the Thai
+/// locale, [`word_instance`] otherwise.
+pub fn word_instance_for(thai: bool) -> Box<dyn BreakIterator> {
+    if thai {
+        Box::new(ThaiWordBreakIterator {
+            list: ListBreakIterator::default(),
+            rules: word_instance(),
+            from_list: false,
+        })
+    } else {
+        word_instance()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WholeBreakIterator
 // ---------------------------------------------------------------------------
