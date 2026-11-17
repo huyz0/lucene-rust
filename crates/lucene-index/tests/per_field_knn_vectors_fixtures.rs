@@ -228,6 +228,7 @@ fn check(which: &str, merge: bool) {
 }
 
 fn check_with(which: &str, merge: bool, codec: bool) {
+    lucene_codecs::vectors::use_stock_vector_data_alignment();
     let tmp = TempDir::new("per-field-knn-vectors");
     let dir = FsDirectory::open(&tmp);
     write_with(&dir, merge, codec);

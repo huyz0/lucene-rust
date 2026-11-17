@@ -106,8 +106,6 @@ pub const HALF_FLOAT_FORMAT_NAME: &str = "KNN1040HnswHalfFloatVectorsFormat";
 pub const HALF_FLOAT_META_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatMeta";
 /// `KNN1040HalfFloatFlatVectorsFormat`'s `.vec` codec name.
 pub const HALF_FLOAT_DATA_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatData";
-/// `KNN1040HalfFloatFlatVectorsWriter.VECTOR_DATA_ALIGNMENT`.
-const HALF_FLOAT_ALIGNMENT: usize = 64;
 /// The half-float flat files' only version.
 const HALF_FLOAT_VERSION: i32 = 0;
 
@@ -255,13 +253,33 @@ pub(crate) fn element_bytes(encoding: VectorEncoding, half: bool) -> usize {
     }
 }
 
-/// `Lucene99FlatVectorsWriter.alignOutput`'s alignment per encoding: 64 for
-/// FLOAT32 (Arm Neoverse cache-line reads), `Float.BYTES` for BYTE.
-fn alignment(encoding: VectorEncoding) -> usize {
-    match encoding {
-        VectorEncoding::Byte => 4,
-        VectorEncoding::Float32 => 64,
+/// Where each field's vector data starts, whatever the encoding: a page
+/// (Lucene main's `Lucene99FlatVectorsWriter.alignOutput`). Readers find the
+/// data through the offset in the metadata, so stock readers open these
+/// files. A vector whose size divides a page, or is a multiple of one, then
+/// never straddles a page boundary: a read touches one page instead of two
+/// when memory is short. Costs under a page of padding per field and
+/// segment.
+pub const VECTOR_DATA_ALIGNMENT: usize = 4096;
+
+/// What Lucene 10.5 and 10.6 write: 64 bytes (Arm Neoverse cache-line
+/// reads) for float vectors, 4 for bytes. Byte-for-byte comparisons against
+/// fixtures made by that Lucene turn it on with
+/// [`use_stock_vector_data_alignment`].
+fn stock_alignment(encoding: VectorEncoding, half: bool) -> usize {
+    match (encoding, half) {
+        (VectorEncoding::Byte, false) => 4,
+        _ => 64,
     }
+}
+
+static STOCK_ALIGNMENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes later-written flat vector data start where Lucene 10.5 and 10.6
+/// write it, for the whole process, instead of at
+/// [`VECTOR_DATA_ALIGNMENT`].
+pub fn use_stock_vector_data_alignment() {
+    STOCK_ALIGNMENT.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -1935,14 +1953,13 @@ impl FlatVectorsWriter {
         (self.data, self.meta)
     }
 
-    /// `Lucene99FlatVectorsWriter.alignOutput`: pad to the encoding's
-    /// alignment and return the aligned offset. Part of the format, not an
-    /// optimisation.
+    /// `Lucene99FlatVectorsWriter.alignOutput`: pad to the data alignment
+    /// ([`VECTOR_DATA_ALIGNMENT`]) and return the aligned offset.
     fn align_output(&mut self, encoding: VectorEncoding) -> i64 {
-        let align = if self.half {
-            HALF_FLOAT_ALIGNMENT
+        let align = if STOCK_ALIGNMENT.load(std::sync::atomic::Ordering::Relaxed) {
+            stock_alignment(encoding, self.half)
         } else {
-            alignment(encoding)
+            VECTOR_DATA_ALIGNMENT
         };
         let padded = self.data.len().next_multiple_of(align);
         self.data.resize(padded, 0);

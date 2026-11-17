@@ -181,6 +181,7 @@ fn reads_java_merged_segment() {
 
 #[test]
 fn rebuilds_java_flushed_segment_byte_for_byte() {
+    lucene_codecs::vectors::use_stock_vector_data_alignment();
     let seg = Segment::open("flush");
     for (suffix, format, fields) in groups() {
         let flat: Vec<FlatVectorsField> = fields
