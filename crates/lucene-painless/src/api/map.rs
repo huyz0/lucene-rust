@@ -50,6 +50,14 @@ fn map_ref(v: &Value) -> Result<&Rc<RefCell<JMapValue>>, Throw> {
     }
 }
 
+/// The null and ordering checks a `TreeMap` makes on a lookup key.
+fn probe(m: &crate::value::JMapValue, key: &Value) -> Result<(), Throw> {
+    if m.kind == MapKind::TreeMap {
+        collection::tree_probe(&m.map, key)?;
+    }
+    Ok(())
+}
+
 /// `map.put(k, v)`: the previous value.
 pub fn put(_vm: &mut Vm, recv: &Value, k: &Value, v: &Value) -> Result<Value, Throw> {
     let m = map_ref(recv)?;
@@ -270,15 +278,25 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Res
     let m = m.clone();
     Some((|| -> Result<Value, Throw> {
         Ok(match (name, args.len()) {
-            ("get", 1) => get_value(&m.borrow(), &args[0]),
+            ("get", 1) => {
+                probe(&m.borrow(), &args[0])?;
+                get_value(&m.borrow(), &args[0])
+            }
             ("put", 2) => put(vm, recv, &args[0], &args[1])?,
-            ("containsKey", 1) => Value::Bool(m.borrow().map.contains_key(&args[0])),
+            ("containsKey", 1) => {
+                probe(&m.borrow(), &args[0])?;
+                Value::Bool(m.borrow().map.contains_key(&args[0]))
+            }
             ("containsValue", 1) => Value::Bool(m.borrow().map.values().iter().any(|v| v.java_equals(&args[0]))),
             ("size", 0) => Value::Int(m.borrow().map.len() as i32),
             ("isEmpty", 0) => Value::Bool(m.borrow().map.is_empty()),
-            ("getOrDefault", 2) => m.borrow().map.get(&args[0]).cloned().unwrap_or_else(|| args[1].clone()),
+            ("getOrDefault", 2) => {
+                probe(&m.borrow(), &args[0])?;
+                m.borrow().map.get(&args[0]).cloned().unwrap_or_else(|| args[1].clone())
+            }
             ("remove", 1) => {
                 check_mutable(&m)?;
+                probe(&m.borrow(), &args[0])?;
                 m.borrow_mut().map.remove(&args[0]).unwrap_or_default()
             }
             ("remove", 2) => {

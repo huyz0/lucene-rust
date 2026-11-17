@@ -1,0 +1,224 @@
+(a)(b)?	abab	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(a)(b)?	abab	l,g,e	#	true;ab;2
+(a)(b)?	abab	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;ab;0;2;a;0;1;true;ab;a;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(a)(b)?	abab	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;ab
+(a)(b)?	abab	c,f,g2,s2,e2	#	2;true;b;1;2
+(a)(b)?	abab	g	#	!java.lang.IllegalStateException
+(a)(b)?	abab	s	#	!java.lang.IllegalStateException
+(a)(b)?	abab	e	#	!java.lang.IllegalStateException
+(a)(b)?	abab	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(a)(b)?	abab	f2,g,f2,g	#	true;ab;true;ab
+(a)(b)?	abab	f-1	#	!java.lang.IndexOutOfBoundsException
+(a)(b)?	abab	A	#	<a><a>
+(a)(b)?	abab	F	#	<a>ab
+(a)(b)?	abab	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(a)(b)?	abab	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(a)(b)?	abab	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+(\d+)-(\d+)	10-20 and 3-4	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	l,g,e	#	true;10-20;5
+(\d+)-(\d+)	10-20 and 3-4	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;10-20;0;5;10;0;2;true;3-4;3;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;10-20
+(\d+)-(\d+)	10-20 and 3-4	c,f,g2,s2,e2	#	2;true;20;3;5
+(\d+)-(\d+)	10-20 and 3-4	g	#	!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	s	#	!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	e	#	!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(\d+)-(\d+)	10-20 and 3-4	f2,g,f2,g	#	true;3-4;true;3-4
+(\d+)-(\d+)	10-20 and 3-4	f-1	#	!java.lang.IndexOutOfBoundsException
+(\d+)-(\d+)	10-20 and 3-4	A	#	<10> and <3>
+(\d+)-(\d+)	10-20 and 3-4	F	#	<10> and 3-4
+(\d+)-(\d+)	10-20 and 3-4	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(\d+)-(\d+)	10-20 and 3-4	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(\d+)-(\d+)	10-20 and 3-4	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+x*	aaa	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+x*	aaa	l,g,e	#	true;;0
+x*	aaa	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;;0;0;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;true;;!java.lang.IndexOutOfBoundsException;true;;2
+x*	aaa	f,f,f,f,r,f,g	#	true;true;true;true;reset;true;
+x*	aaa	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+x*	aaa	g	#	!java.lang.IllegalStateException
+x*	aaa	s	#	!java.lang.IllegalStateException
+x*	aaa	e	#	!java.lang.IllegalStateException
+x*	aaa	f,r,g	#	true;reset;!java.lang.IllegalStateException
+x*	aaa	f2,g,f2,g	#	true;;true;
+x*	aaa	f-1	#	!java.lang.IndexOutOfBoundsException
+x*	aaa	A	#	!java.lang.IndexOutOfBoundsException
+x*	aaa	F	#	!java.lang.IndexOutOfBoundsException
+x*	aaa	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+x*	aaa	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+x*	aaa	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+	abc	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+	abc	l,g,e	#	true;;0
+	abc	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;;0;0;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;true;;!java.lang.IndexOutOfBoundsException;true;;2
+	abc	f,f,f,f,r,f,g	#	true;true;true;true;reset;true;
+	abc	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+	abc	g	#	!java.lang.IllegalStateException
+	abc	s	#	!java.lang.IllegalStateException
+	abc	e	#	!java.lang.IllegalStateException
+	abc	f,r,g	#	true;reset;!java.lang.IllegalStateException
+	abc	f2,g,f2,g	#	true;;true;
+	abc	f-1	#	!java.lang.IndexOutOfBoundsException
+	abc	A	#	!java.lang.IndexOutOfBoundsException
+	abc	F	#	!java.lang.IndexOutOfBoundsException
+	abc	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+	abc	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+	abc	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	l,g,e	#	true;HeLLo;5
+(?i)hello	HeLLo wOrld	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;HeLLo;0;5;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	f,f,f,f,r,f,g	#	true;false;false;false;reset;true;HeLLo
+(?i)hello	HeLLo wOrld	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	g	#	!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	s	#	!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	e	#	!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	f2,g,f2,g	#	false;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException
+(?i)hello	HeLLo wOrld	f-1	#	!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	A	#	!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	F	#	!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(?i)hello	HeLLo wOrld	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+a|b	c	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+a|b	c	l,g,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+a|b	c	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+a|b	c	f,f,f,f,r,f,g	#	false;false;false;false;reset;false;!java.lang.IllegalStateException
+a|b	c	c,f,g2,s2,e2	#	0;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+a|b	c	g	#	!java.lang.IllegalStateException
+a|b	c	s	#	!java.lang.IllegalStateException
+a|b	c	e	#	!java.lang.IllegalStateException
+a|b	c	f,r,g	#	false;reset;!java.lang.IllegalStateException
+a|b	c	f2,g,f2,g	#	!java.lang.IndexOutOfBoundsException;!java.lang.IllegalStateException;!java.lang.IndexOutOfBoundsException;!java.lang.IllegalStateException
+a|b	c	f-1	#	!java.lang.IndexOutOfBoundsException
+a|b	c	A	#	c
+a|b	c	F	#	c
+a|b	c	f,g3	#	false;!java.lang.IllegalStateException
+a|b	c	f,s9	#	false;!java.lang.IllegalStateException
+a|b	c	f,e9	#	false;!java.lang.IllegalStateException
+(a)|(b)	ab	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(a)|(b)	ab	l,g,e	#	true;a;1
+(a)|(b)	ab	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;a;0;1;a;0;1;true;b;null;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(a)|(b)	ab	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;a
+(a)|(b)	ab	c,f,g2,s2,e2	#	2;true;null;-1;-1
+(a)|(b)	ab	g	#	!java.lang.IllegalStateException
+(a)|(b)	ab	s	#	!java.lang.IllegalStateException
+(a)|(b)	ab	e	#	!java.lang.IllegalStateException
+(a)|(b)	ab	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(a)|(b)	ab	f2,g,f2,g	#	false;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException
+(a)|(b)	ab	f-1	#	!java.lang.IndexOutOfBoundsException
+(a)|(b)	ab	A	#	<a><>
+(a)|(b)	ab	F	#	<a>b
+(a)|(b)	ab	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(a)|(b)	ab	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(a)|(b)	ab	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+^\w+$	word	m,g,s,e	#	true;word;0;4
+^\w+$	word	l,g,e	#	true;word;4
+^\w+$	word	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;word;0;4;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+^\w+$	word	f,f,f,f,r,f,g	#	true;false;false;false;reset;true;word
+^\w+$	word	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+^\w+$	word	g	#	!java.lang.IllegalStateException
+^\w+$	word	s	#	!java.lang.IllegalStateException
+^\w+$	word	e	#	!java.lang.IllegalStateException
+^\w+$	word	f,r,g	#	true;reset;!java.lang.IllegalStateException
+^\w+$	word	f2,g,f2,g	#	false;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException
+^\w+$	word	f-1	#	!java.lang.IndexOutOfBoundsException
+^\w+$	word	A	#	!java.lang.IndexOutOfBoundsException
+^\w+$	word	F	#	!java.lang.IndexOutOfBoundsException
+^\w+$	word	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+^\w+$	word	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+^\w+$	word	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	l,g,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;foo;2;5;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;true;foo;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;foo
+\bfoo\b	a foo b foo	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	g	#	!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	s	#	!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	e	#	!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	f,r,g	#	true;reset;!java.lang.IllegalStateException
+\bfoo\b	a foo b foo	f2,g,f2,g	#	true;foo;true;foo
+\bfoo\b	a foo b foo	f-1	#	!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	A	#	!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	F	#	!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+\bfoo\b	a foo b foo	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+(?<y>\d{4})	in 2024 and 1999	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	l,g,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;2024;3;7;2024;3;7;true;1999;1999;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;2024
+(?<y>\d{4})	in 2024 and 1999	c,f,g2,s2,e2	#	1;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+(?<y>\d{4})	in 2024 and 1999	g	#	!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	s	#	!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	e	#	!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(?<y>\d{4})	in 2024 and 1999	f2,g,f2,g	#	true;2024;true;2024
+(?<y>\d{4})	in 2024 and 1999	f-1	#	!java.lang.IndexOutOfBoundsException
+(?<y>\d{4})	in 2024 and 1999	A	#	in <2024> and <1999>
+(?<y>\d{4})	in 2024 and 1999	F	#	in <2024> and 1999
+(?<y>\d{4})	in 2024 and 1999	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(?<y>\d{4})	in 2024 and 1999	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(?<y>\d{4})	in 2024 and 1999	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	l,g,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;abcabc;2;8;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	f,f,f,f,r,f,g	#	true;false;false;false;reset;true;abcabc
+[abc]+	xxabcabcxx	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	g	#	!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	s	#	!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	e	#	!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	f,r,g	#	true;reset;!java.lang.IllegalStateException
+[abc]+	xxabcabcxx	f2,g,f2,g	#	true;abcabc;true;abcabc
+[abc]+	xxabcabcxx	f-1	#	!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	A	#	!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	F	#	!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+[abc]+	xxabcabcxx	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+(.)\1	aabbcd	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(.)\1	aabbcd	l,g,e	#	true;aa;2
+(.)\1	aabbcd	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;aa;0;2;a;0;1;true;bb;b;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+(.)\1	aabbcd	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;aa
+(.)\1	aabbcd	c,f,g2,s2,e2	#	1;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+(.)\1	aabbcd	g	#	!java.lang.IllegalStateException
+(.)\1	aabbcd	s	#	!java.lang.IllegalStateException
+(.)\1	aabbcd	e	#	!java.lang.IllegalStateException
+(.)\1	aabbcd	f,r,g	#	true;reset;!java.lang.IllegalStateException
+(.)\1	aabbcd	f2,g,f2,g	#	true;bb;true;bb
+(.)\1	aabbcd	f-1	#	!java.lang.IndexOutOfBoundsException
+(.)\1	aabbcd	A	#	<a><b>cd
+(.)\1	aabbcd	F	#	<a>bbcd
+(.)\1	aabbcd	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+(.)\1	aabbcd	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+(.)\1	aabbcd	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+é+	aéé	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+é+	aéé	l,g,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+é+	aéé	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;éé;1;3;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+é+	aéé	f,f,f,f,r,f,g	#	true;false;false;false;reset;true;éé
+é+	aéé	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+é+	aéé	g	#	!java.lang.IllegalStateException
+é+	aéé	s	#	!java.lang.IllegalStateException
+é+	aéé	e	#	!java.lang.IllegalStateException
+é+	aéé	f,r,g	#	true;reset;!java.lang.IllegalStateException
+é+	aéé	f2,g,f2,g	#	true;é;true;é
+é+	aéé	f-1	#	!java.lang.IndexOutOfBoundsException
+é+	aéé	A	#	!java.lang.IndexOutOfBoundsException
+é+	aéé	F	#	!java.lang.IndexOutOfBoundsException
+é+	aéé	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+é+	aéé	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+é+	aéé	f,e9	#	true;!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	m,g,s,e	#	false;!java.lang.IllegalStateException;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+\p{L}+	héllo wörld	l,g,e	#	true;héllo;5
+\p{L}+	héllo wörld	f,g,s,e,g1,s1,e1,f,g,g1,f,g,s	#	true;héllo;0;5;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;true;wörld;!java.lang.IndexOutOfBoundsException;false;!java.lang.IllegalStateException;!java.lang.IllegalStateException
+\p{L}+	héllo wörld	f,f,f,f,r,f,g	#	true;true;false;false;reset;true;héllo
+\p{L}+	héllo wörld	c,f,g2,s2,e2	#	0;true;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException;!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	g	#	!java.lang.IllegalStateException
+\p{L}+	héllo wörld	s	#	!java.lang.IllegalStateException
+\p{L}+	héllo wörld	e	#	!java.lang.IllegalStateException
+\p{L}+	héllo wörld	f,r,g	#	true;reset;!java.lang.IllegalStateException
+\p{L}+	héllo wörld	f2,g,f2,g	#	true;llo;true;llo
+\p{L}+	héllo wörld	f-1	#	!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	A	#	!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	F	#	!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	f,g3	#	true;!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	f,s9	#	true;!java.lang.IndexOutOfBoundsException
+\p{L}+	héllo wörld	f,e9	#	true;!java.lang.IndexOutOfBoundsException

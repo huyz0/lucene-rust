@@ -186,11 +186,20 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Res
                 let (a, b) = (int_arg(&args[0])?, int_arg(&args[1])?);
                 let l = l.borrow();
                 let n = l.items.len() as i32;
-                if a < 0 || b > n || a > b {
+                if a < 0 {
                     return Err(Throw::new(
                         "java.lang.IndexOutOfBoundsException",
-                        format!("fromIndex: {a}, toIndex: {b}, size: {n}"),
+                        format!("fromIndex = {a}"),
                     ));
+                }
+                if b > n {
+                    return Err(Throw::new(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("toIndex = {b}"),
+                    ));
+                }
+                if a > b {
+                    return Err(Throw::illegal_arg(format!("fromIndex({a}) > toIndex({b})")));
                 }
                 Ok(Value::list(
                     ListKind::ArrayList,

@@ -1387,6 +1387,49 @@ fn scalb(z: f64, n: i32) -> f64 {
     }
 }
 
+/// `StrictMath.cbrt` (`FdLibm.Cbrt`, fdlibm `s_cbrt.c`).
+pub fn cbrt(x: f64) -> f64 {
+    const B1: u32 = 715_094_163;
+    const B2: u32 = 696_219_795;
+    const C: f64 = 5.428_571_428_571_428e-1;
+    const D: f64 = -7.053_061_224_489_796e-1;
+    const E: f64 = 1.414_285_714_285_714_4;
+    const F: f64 = 1.607_142_857_142_857_2;
+    const G: f64 = 3.571_428_571_428_571_5e-1;
+    if x == 0.0 || !x.is_finite() {
+        return x;
+    }
+    let negative = x.is_sign_negative();
+    let x = x.abs();
+    let hx = (x.to_bits() >> 32) as u32;
+    let mut t = if hx < 0x0010_0000 {
+        // subnormal: scale by 2^54 first
+        let t = f64::from_bits(0x4350_0000_0000_0000) * x;
+        let high = (t.to_bits() >> 32) as u32 / 3 + B2;
+        f64::from_bits((u64::from(high) << 32) | (t.to_bits() & 0xffff_ffff))
+    } else {
+        f64::from_bits(u64::from(hx / 3 + B1) << 32)
+    };
+    // a cbrt to 23 bits
+    let r = t * t / x;
+    let s = C + r * t;
+    t *= G + F / (s + E + D / s);
+    // chopped to 20 bits, and made larger than the cbrt
+    let high = (t.to_bits() >> 32) as u32 + 1;
+    t = f64::from_bits(u64::from(high) << 32);
+    // one Newton step to 53 bits
+    let s = t * t;
+    let mut r = x / s;
+    let w = t + t;
+    r = (r - t) / (w + r);
+    t += t * r;
+    if negative {
+        -t
+    } else {
+        t
+    }
+}
+
 /// `StrictMath.pow` (`FdLibm.Pow`, the JDK's translation of fdlibm
 /// `e_pow.c`, with its fast paths for `y` of `2`, `0.5` and `+-1`).
 pub fn pow(x: f64, y: f64) -> f64 {

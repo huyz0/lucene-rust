@@ -227,8 +227,7 @@ pub fn call(vm: &mut Vm, s: &Rc<str>, name: &str, args: &[Value]) -> Option<Resu
             }
             ("encodeBase64", 0) => Value::string(base64_encode(s.as_bytes())),
             ("decodeBase64", 0) => {
-                let b = base64_decode(s)
-                    .ok_or_else(|| Throw::illegal_arg("Illegal base64 character"))?;
+                let b = base64_decode(s).map_err(Throw::illegal_arg)?;
                 Value::string(String::from_utf8_lossy(&b).into_owned())
             }
             ("regionMatches", 4) | ("regionMatches", 5) => {
@@ -333,23 +332,66 @@ pub fn base64_encode(b: &[u8]) -> String {
     out
 }
 
-pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut acc = 0u32;
-    let mut bits = 0;
-    for c in s.bytes() {
-        if c == b'=' {
+/// `Base64.getDecoder().decode(s)` with the JDK's checks and messages: the
+/// unpadded form is accepted, anything else malformed throws.
+pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    let src: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    let n = src.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n < 2 {
+        return Err("Input byte[] should at least have 2 bytes for base64 bytes".into());
+    }
+    let mut out = Vec::with_capacity(n / 4 * 3 + 3);
+    let (mut bits, mut shift, mut sp) = (0u32, 18i32, 0usize);
+    while sp < n {
+        let c = src[sp];
+        sp += 1;
+        if c == u32::from(b'=') {
+            // Java reads the byte after a first `=`; a unit that starts on `=` or
+            // lacks its second `=` is malformed.
+            let second_missing = shift == 6 && (sp == n || src[sp] != u32::from(b'='));
+            if shift == 6 && !second_missing {
+                sp += 1;
+            }
+            if second_missing || shift == 18 {
+                return Err("Input byte array has wrong 4-byte ending unit".into());
+            }
             break;
         }
-        let v = B64.iter().position(|&x| x == c)? as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
+        let v = if c < 128 {
+            B64.iter().position(|&x| u32::from(x) == c)
+        } else {
+            None
+        }
+        .ok_or_else(|| {
+            // Java decodes the Latin-1 bytes: a wider char is `?`, a high byte is negative.
+            let b = if c > 0xff { 0x3f } else { c as i32 };
+            let b = if b > 127 { b - 256 } else { b };
+            let sign = if b < 0 { "-" } else { "" };
+            format!("Illegal base64 character {sign}{:x}", b.abs())
+        })? as u32;
+        bits |= v << shift;
+        shift -= 6;
+        if shift < 0 {
+            out.extend([(bits >> 16) as u8, (bits >> 8) as u8, bits as u8]);
+            shift = 18;
+            bits = 0;
         }
     }
-    Some(out)
+    match shift {
+        6 => out.push((bits >> 16) as u8),
+        0 => out.extend([(bits >> 16) as u8, (bits >> 8) as u8]),
+        12 => return Err("Last unit does not have enough valid bits".into()),
+        _ => {}
+    }
+    if sp < n {
+        return Err(format!(
+            "Input byte array has incorrect ending byte at {sp}"
+        ));
+    }
+    Ok(out)
 }
 
 /// `String.valueOf` and friends.
@@ -409,36 +451,127 @@ fn char_array_string(v: &Value) -> Result<String, Throw> {
     }
 }
 
+/// A parsed `%[index$][flags][width][.precision]conversion`.
+#[derive(Default)]
+struct Spec {
+    /// `1$` as 0, `<` as `usize::MAX`.
+    index: Option<usize>,
+    flags: String,
+    width: Option<usize>,
+    prec: Option<usize>,
+    conv: char,
+}
+
+impl Spec {
+    fn has(&self, f: char) -> bool {
+        self.flags.contains(f)
+    }
+}
+
+fn format_throw(class: &str, message: impl Into<String>) -> Throw {
+    Throw::new(&format!("java.util.{class}"), message)
+}
+
+/// Reads the specifier after a `%`; `text` is its text for the messages.
+fn parse_spec(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<(Spec, String), Throw> {
+    let mut text = String::new();
+    let take_digits = |chars: &mut std::iter::Peekable<std::str::Chars>, text: &mut String| {
+        let mut d = String::new();
+        while let Some(&c) = chars.peek() {
+            if !c.is_ascii_digit() {
+                break;
+            }
+            d.push(c);
+            text.push(c);
+            chars.next();
+        }
+        d
+    };
+    let mut spec = Spec::default();
+    // An argument index `n$` or width: digits, then `$` makes them an index.
+    let first = take_digits(chars, &mut text);
+    let mut width_digits = first.clone();
+    if !first.is_empty() && chars.peek() == Some(&'$') {
+        chars.next();
+        text.push('$');
+        spec.index = first.parse::<usize>().ok().map(|i| i.saturating_sub(1));
+        width_digits.clear();
+    } else if !first.is_empty() && first.starts_with('0') {
+        // Leading zeros of a number are the `0` flag.
+        let zeros = first.len() - first.trim_start_matches('0').len();
+        spec.flags.push_str(&"0".repeat(zeros));
+        width_digits = first[zeros..].to_string();
+    }
+    if spec.index.is_none() && chars.peek() == Some(&'<') {
+        chars.next();
+        text.push('<');
+        spec.index = Some(usize::MAX);
+    }
+    if width_digits.is_empty() {
+        while let Some(&c) = chars.peek() {
+            if !"-#+ 0,(".contains(c) {
+                break;
+            }
+            spec.flags.push(c);
+            text.push(c);
+            chars.next();
+        }
+        width_digits = take_digits(chars, &mut text);
+    }
+    spec.width = width_digits.parse().ok();
+    if chars.peek() == Some(&'.') {
+        chars.next();
+        text.push('.');
+        let p = take_digits(chars, &mut text);
+        spec.prec =
+            Some(p.parse().map_err(|_| {
+                format_throw("UnknownFormatConversionException", "Conversion = '.'")
+            })?);
+    }
+    spec.conv = chars
+        .next()
+        .ok_or_else(|| format_throw("UnknownFormatConversionException", "Conversion = '%'"))?;
+    text.push(spec.conv);
+    Ok((spec, text))
+}
+
 /// `java.util.Formatter` for the common conversions.
 pub fn format(fmt: &str, args: &[Value]) -> Result<String, Throw> {
     let mut out = String::new();
     let mut chars = fmt.chars().peekable();
-    let mut next_arg = 0usize;
+    let (mut next_arg, mut last_arg) = (0usize, None::<usize>);
     while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
             continue;
         }
-        let mut spec = String::new();
-        let conv = loop {
-            match chars.next() {
-                Some(ch)
-                    if "-#+ 0,(".contains(ch) || ch.is_ascii_digit() || ch == '.' || ch == '$' =>
-                {
-                    spec.push(ch)
-                }
-                Some(ch) => break ch,
-                None => {
-                    return Err(Throw::new(
-                        "java.util.UnknownFormatConversionException",
-                        "Conversion = '%'",
-                    ))
-                }
-            }
-        };
+        let (spec, text) = parse_spec(&mut chars)?;
+        let conv = spec.conv;
+        if "aAtT".contains(conv) {
+            return Err(Throw::new(api::UNSUPPORTED, format!("Formatter %{conv}")));
+        }
+        if !"bBhHsScCdoxXeEfgGn%".contains(conv) {
+            return Err(format_throw(
+                "UnknownFormatConversionException",
+                format!("Conversion = '{conv}'"),
+            ));
+        }
+        if spec.has('-') && spec.width.is_none() || spec.has('0') && spec.width.is_none() {
+            return Err(format_throw(
+                "MissingFormatWidthException",
+                format!("%{text}"),
+            ));
+        }
+        if spec.has('-') && spec.has('0') || spec.has('+') && spec.has(' ') {
+            return Err(format_throw(
+                "IllegalFormatFlagsException",
+                format!("Flags = '{}'", spec.flags),
+            ));
+        }
         match conv {
             '%' => {
-                out.push('%');
+                let body = "%".to_string();
+                pad_into(&mut out, &spec, body, false);
                 continue;
             }
             'n' => {
@@ -447,171 +580,228 @@ pub fn format(fmt: &str, args: &[Value]) -> Result<String, Throw> {
             }
             _ => {}
         }
-        let (index, spec) = match spec.find('$') {
-            Some(p) => (
-                spec[..p].parse::<usize>().ok().map(|i| i - 1),
-                spec[p + 1..].to_string(),
-            ),
-            None => (None, spec),
-        };
-        let arg = match index {
-            Some(i) => args.get(i).cloned(),
+        let at = match spec.index {
+            Some(usize::MAX) => last_arg,
+            Some(i) => Some(i),
             None => {
-                let a = args.get(next_arg).cloned();
                 next_arg += 1;
-                a
+                Some(next_arg - 1)
             }
-        }
-        .ok_or_else(|| {
-            Throw::new(
-                "java.util.MissingFormatArgumentException",
-                format!("Format specifier '%{spec}{conv}'"),
+        };
+        last_arg = at;
+        let arg = at.and_then(|i| args.get(i).cloned()).ok_or_else(|| {
+            format_throw(
+                "MissingFormatArgumentException",
+                format!("Format specifier '%{text}'"),
             )
         })?;
-        let left = spec.contains('-');
-        let zero = spec.starts_with('0') || spec.contains(",0");
-        let plus = spec.contains('+');
-        let comma = spec.contains(',');
-        let digits: String = spec
-            .trim_start_matches(['-', '+', ' ', '#', ',', '('])
-            .to_string();
-        let (width, prec) = match digits.split_once('.') {
-            Some((w, p)) => (
-                w.trim_start_matches('0').parse::<usize>().ok(),
-                p.parse::<usize>().ok(),
-            ),
-            None => (digits.trim_start_matches('0').parse::<usize>().ok(), None),
+        let body = format_one(&spec, &arg)?;
+        let numeric = matches!(conv, 'd' | 'o' | 'x' | 'X' | 'e' | 'E' | 'f' | 'g' | 'G')
+            && !matches!(arg, Value::Null)
+            && !body.contains("NaN")
+            && !body.contains("Infinity");
+        pad_into(&mut out, &spec, body, numeric);
+    }
+    Ok(out)
+}
+
+/// `body` padded to the width: left-justified, zero-filled after the sign
+/// and radix prefix for a number, or blank-filled.
+fn pad_into(out: &mut String, spec: &Spec, body: String, numeric: bool) {
+    let pad = spec.width.unwrap_or(0).saturating_sub(body.chars().count());
+    if spec.has('-') {
+        out.push_str(&body);
+        out.extend(std::iter::repeat_n(' ', pad));
+    } else if spec.has('0') && numeric {
+        let lead = if body.starts_with(['-', '+', ' ', '(']) {
+            1
+        } else {
+            0
         };
-        let body = match conv {
-            's' | 'S' => {
-                let s = arg.java_to_string();
-                let s = match prec {
-                    Some(p) => s.chars().take(p).collect(),
-                    None => s,
-                };
-                if conv == 'S' {
-                    s.to_uppercase()
-                } else {
-                    s
+        let rest = &body[lead..];
+        let prefix = if rest.starts_with("0x") || rest.starts_with("0X") {
+            2
+        } else {
+            0
+        };
+        out.push_str(&body[..lead + prefix]);
+        out.extend(std::iter::repeat_n('0', pad));
+        out.push_str(&body[lead + prefix..]);
+    } else {
+        out.extend(std::iter::repeat_n(' ', pad));
+        out.push_str(&body);
+    }
+}
+
+fn flag_mismatch(conv: char, flag: char) -> Throw {
+    format_throw(
+        "FormatFlagsConversionMismatchException",
+        format!("Conversion = {conv}, Flags = {flag}"),
+    )
+}
+
+/// The text of one conversion, before the width.
+fn format_one(spec: &Spec, arg: &Value) -> Result<String, Throw> {
+    let conv = spec.conv;
+    let upper = conv.is_ascii_uppercase();
+    let text = |s: String| if upper { s.to_uppercase() } else { s };
+    let body = match conv {
+        's' | 'S' | 'h' | 'H' | 'b' | 'B' => {
+            for f in "0+ ,(".chars() {
+                if spec.has(f) {
+                    return Err(flag_mismatch(conv, f));
                 }
             }
-            'b' | 'B' => {
-                let s = match &arg {
+            let s = match conv {
+                'h' | 'H' => match arg {
+                    Value::Null => "null".to_string(),
+                    v => format!("{:x}", v.java_hash() as u32),
+                },
+                'b' | 'B' => match arg {
                     Value::Null => "false".to_string(),
                     Value::Bool(b) => b.to_string(),
                     _ => "true".to_string(),
-                };
-                if conv == 'B' {
-                    s.to_uppercase()
-                } else {
-                    s
-                }
-            }
-            'c' => match &arg {
-                Value::Char(c) => char_string(*c),
-                Value::Int(i) => char::from_u32(*i as u32)
-                    .map(String::from)
-                    .unwrap_or_default(),
-                o => return Err(illegal_conv(conv, o)),
-            },
-            'd' => match &arg {
-                Value::Int(_) | Value::Long(_) | Value::Short(_) | Value::Byte(_) => {
-                    let v = crate::types::as_i64(&arg).unwrap_or(0);
-                    let mut s = v.unsigned_abs().to_string();
-                    if comma {
-                        s = group(&s);
-                    }
-                    if v < 0 {
-                        format!("-{s}")
-                    } else if plus {
-                        format!("+{s}")
-                    } else {
-                        s
-                    }
-                }
-                o => return Err(illegal_conv(conv, o)),
-            },
-            'x' | 'X' => {
-                let s = match &arg {
-                    Value::Int(i) => format!("{:x}", *i as u32),
-                    Value::Long(i) => format!("{:x}", *i as u64),
-                    o => return Err(illegal_conv(conv, o)),
-                };
-                if conv == 'X' {
-                    s.to_uppercase()
-                } else {
-                    s
-                }
-            }
-            'o' => match &arg {
-                Value::Int(i) => format!("{:o}", *i as u32),
-                Value::Long(i) => format!("{:o}", *i as u64),
-                o => return Err(illegal_conv(conv, o)),
-            },
-            'f' | 'e' | 'E' | 'g' => match &arg {
-                Value::Float(_) | Value::Double(_) => {
-                    let v = crate::types::as_f64(&arg).unwrap_or(0.0);
-                    let p = prec.unwrap_or(6);
-                    let mut s = match conv {
-                        'f' => format_fixed(v, p),
-                        'e' | 'E' => {
-                            let s = format!("{:.*e}", p, v);
-                            let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
-                            let e: i32 = e.parse().unwrap_or(0);
-                            let s = format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs());
-                            if conv == 'E' {
-                                s.to_uppercase()
-                            } else {
-                                s
-                            }
-                        }
-                        _ => format!("{v}"),
-                    };
-                    if comma {
-                        let (i, f) = s.split_once('.').map_or((s.clone(), None), |(i, f)| {
-                            (i.to_string(), Some(f.to_string()))
-                        });
-                        let neg = i.starts_with('-');
-                        let g = group(i.trim_start_matches('-'));
-                        s = format!(
-                            "{}{g}{}",
-                            if neg { "-" } else { "" },
-                            f.map(|f| format!(".{f}")).unwrap_or_default()
-                        );
-                    }
-                    if plus && v >= 0.0 {
-                        s = format!("+{s}");
-                    }
-                    s
-                }
-                o => return Err(illegal_conv(conv, o)),
-            },
-            other => {
-                return Err(Throw::new(
-                    "java.util.UnknownFormatConversionException",
-                    format!("Conversion = '{other}'"),
-                ))
-            }
-        };
-        let pad = width.unwrap_or(0).saturating_sub(body.chars().count());
-        if left {
-            out.push_str(&body);
-            out.extend(std::iter::repeat_n(' ', pad));
-        } else if zero && conv != 's' {
-            let (sign, digits) = if body.starts_with(['-', '+']) {
-                body.split_at(1)
-            } else {
-                ("", body.as_str())
+                },
+                _ => arg.java_to_string(),
             };
-            out.push_str(sign);
-            out.extend(std::iter::repeat_n('0', pad));
-            out.push_str(digits);
-        } else {
-            out.extend(std::iter::repeat_n(' ', pad));
-            out.push_str(&body);
+            let s = match spec.prec {
+                Some(p) => s.chars().take(p).collect(),
+                None => s,
+            };
+            text(s)
         }
+        'c' | 'C' => {
+            if let Some(p) = spec.prec {
+                return Err(format_throw(
+                    "IllegalFormatPrecisionException",
+                    p.to_string(),
+                ));
+            }
+            text(match arg {
+                Value::Null => "null".to_string(),
+                Value::Char(c) => char_string(*c),
+                Value::Int(i) => char::from_u32(*i as u32).map(String::from).ok_or_else(|| {
+                    format_throw(
+                        "IllegalFormatCodePointException",
+                        format!("Code point = 0x{:x}", *i),
+                    )
+                })?,
+                o => return Err(illegal_conv(conv, o)),
+            })
+        }
+        'd' | 'o' | 'x' | 'X' => {
+            if let Some(p) = spec.prec {
+                return Err(format_throw(
+                    "IllegalFormatPrecisionException",
+                    p.to_string(),
+                ));
+            }
+            if matches!(arg, Value::Null) {
+                return Ok(text("null".into()));
+            }
+            let (v, bits) = match arg {
+                Value::Int(i) => (i64::from(*i), 32),
+                Value::Long(i) => (*i, 64),
+                Value::Short(i) => (i64::from(*i), 16),
+                Value::Byte(i) => (i64::from(*i), 8),
+                o => return Err(illegal_conv(conv, o)),
+            };
+            if conv == 'd' {
+                if spec.has('#') {
+                    return Err(flag_mismatch(conv, '#'));
+                }
+                let mut s = v.unsigned_abs().to_string();
+                if spec.has(',') {
+                    s = group(&s);
+                }
+                signed(spec, v < 0, s)
+            } else {
+                for f in "+ ,(".chars() {
+                    if spec.has(f) {
+                        return Err(flag_mismatch(conv, f));
+                    }
+                }
+                // Negative values print as the two's complement of their width.
+                let u = (v as u64) & (u64::MAX >> (64 - bits));
+                let digits = if conv == 'o' {
+                    format!("{u:o}")
+                } else {
+                    format!("{u:x}")
+                };
+                let prefix = match (spec.has('#'), conv) {
+                    (false, _) => "",
+                    (true, 'o') => "0",
+                    (true, _) => "0x",
+                };
+                text(format!("{prefix}{digits}"))
+            }
+        }
+        'f' | 'e' | 'E' | 'g' | 'G' => {
+            if matches!(arg, Value::Null) {
+                let s: String = "null".chars().take(spec.prec.unwrap_or(4)).collect();
+                return Ok(text(s));
+            }
+            let v = match arg {
+                Value::Float(_) | Value::Double(_) => crate::types::as_f64(arg).unwrap_or(0.0),
+                o => return Err(illegal_conv(conv, o)),
+            };
+            if spec.has(',') && matches!(conv, 'e' | 'E') {
+                return Err(flag_mismatch(conv, ','));
+            }
+            let p = spec.prec.unwrap_or(6);
+            let mut s = match conv {
+                'f' => format_fixed(v, p),
+                'e' | 'E' => format_sci(v, p, conv == 'E'),
+                _ => format_general(v, p, conv == 'G'),
+            };
+            let finite = v.is_finite();
+            if spec.has(',') && finite {
+                let (i, f) = s.split_once('.').map_or((s.clone(), None), |(i, f)| {
+                    (i.to_string(), Some(f.to_string()))
+                });
+                let neg = i.starts_with('-');
+                let g = group(i.trim_start_matches('-'));
+                s = format!(
+                    "{}{g}{}",
+                    if neg { "-" } else { "" },
+                    f.map(|f| format!(".{f}")).unwrap_or_default()
+                );
+            }
+            if spec.has('#') && conv == 'f' && p == 0 && finite {
+                s.push('.');
+            }
+            if v.is_nan() {
+                s
+            } else {
+                let neg = s.starts_with('-');
+                signed(spec, neg, s.trim_start_matches('-').to_string())
+            }
+        }
+        _ => {
+            return Err(format_throw(
+                "UnknownFormatConversionException",
+                format!("Conversion = '{conv}'"),
+            ))
+        }
+    };
+    Ok(body)
+}
+
+/// The sign flags of a number: `-`, `+`, a leading space, or `(` `)`.
+fn signed(spec: &Spec, neg: bool, magnitude: String) -> String {
+    if neg {
+        if spec.has('(') {
+            format!("({magnitude})")
+        } else {
+            format!("-{magnitude}")
+        }
+    } else if spec.has('+') {
+        format!("+{magnitude}")
+    } else if spec.has(' ') {
+        format!(" {magnitude}")
+    } else {
+        magnitude
     }
-    Ok(out)
 }
 
 fn illegal_conv(conv: char, v: &Value) -> Throw {
@@ -630,6 +820,110 @@ fn group(digits: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// The shortest decimal digits of a finite `v > 0` and the decimal exponent of
+/// the first one (`12.5` is `[1, 2, 5]`, 1).
+fn decimal_digits(v: f64) -> (Vec<u8>, i32) {
+    let plain = to_plain(&crate::number::double_to_string(v));
+    let (i, f) = plain.split_once('.').unwrap_or((&plain, ""));
+    let all: Vec<u8> = i.bytes().chain(f.bytes()).map(|b| b - b'0').collect();
+    let first = all.iter().position(|&d| d != 0).unwrap_or(0);
+    let mut digits = all[first..].to_vec();
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    (digits, i.len() as i32 - 1 - first as i32)
+}
+
+/// `digits` rounded HALF_UP to `n` significant digits, as Java's `Formatter`
+/// does on the shortest representation; the exponent follows a carry.
+fn round_significant(digits: &[u8], exp: i32, n: usize) -> (Vec<u8>, i32) {
+    let mut out: Vec<u8> = digits.iter().copied().take(n).collect();
+    let up = digits.get(n).is_some_and(|&d| d >= 5);
+    out.resize(n, 0);
+    let mut exp = exp;
+    if up {
+        let mut k = n;
+        loop {
+            if k == 0 {
+                out.insert(0, 1);
+                out.truncate(n);
+                exp += 1;
+                break;
+            }
+            k -= 1;
+            if out[k] == 9 {
+                out[k] = 0;
+            } else {
+                out[k] += 1;
+                break;
+            }
+        }
+    }
+    (out, exp)
+}
+
+fn non_finite(v: f64) -> Option<String> {
+    (!v.is_finite()).then(|| {
+        if v.is_nan() {
+            "NaN".into()
+        } else if v > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        }
+    })
+}
+
+fn sci_text(digits: &[u8], exp: i32, neg: bool, upper: bool) -> String {
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    s.push((digits[0] + b'0') as char);
+    if digits.len() > 1 {
+        s.push('.');
+        s.extend(digits[1..].iter().map(|d| (d + b'0') as char));
+    }
+    s.push(if upper { 'E' } else { 'e' });
+    s.push(if exp < 0 { '-' } else { '+' });
+    s.push_str(&format!("{:02}", exp.abs()));
+    s
+}
+
+/// `%.Ne`: one digit, `N` more, and a two-digit exponent, rounded HALF_UP.
+pub fn format_sci(v: f64, p: usize, upper: bool) -> String {
+    if let Some(s) = non_finite(v) {
+        return if upper { s.to_uppercase() } else { s };
+    }
+    let neg = v.is_sign_negative();
+    let (mut digits, exp) = if v == 0.0 {
+        (vec![0], 0)
+    } else {
+        let (d, e) = decimal_digits(v.abs());
+        round_significant(&d, e, p + 1)
+    };
+    digits.resize(p + 1, 0);
+    sci_text(&digits, exp, neg, upper)
+}
+
+/// `%.Ng`: `N` significant digits, fixed notation when the rounded value is
+/// in `[1e-4, 10^N)` and scientific otherwise; trailing zeros are kept.
+pub fn format_general(v: f64, p: usize, upper: bool) -> String {
+    if let Some(s) = non_finite(v) {
+        return if upper { s.to_uppercase() } else { s };
+    }
+    let p = p.max(1);
+    if v == 0.0 {
+        return format_fixed(v, p - 1);
+    }
+    let (d, e) = decimal_digits(v.abs());
+    let (digits, exp) = round_significant(&d, e, p);
+    if exp < -4 || exp >= p as i32 {
+        return sci_text(&digits, exp, v.is_sign_negative(), upper);
+    }
+    format_fixed(v, (p as i32 - 1 - exp) as usize)
 }
 
 /// `%.Nf` with Java's HALF_UP rounding of the exact decimal value.
@@ -938,5 +1232,7 @@ impl JObject for JStringBuilder {
 
 #[cfg(test)]
 mod format_tests;
+#[cfg(test)]
+mod java_diff_tests;
 #[cfg(test)]
 mod tests;

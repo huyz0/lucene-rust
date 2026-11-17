@@ -23,6 +23,8 @@ pub mod string;
 pub mod time;
 
 #[cfg(test)]
+mod java_diff_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 
 use std::rc::Rc;

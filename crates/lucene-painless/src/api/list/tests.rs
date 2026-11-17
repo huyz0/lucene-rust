@@ -28,7 +28,10 @@ fn indexed_reads_and_writes() {
     assert_eq!(t(&l, "indexOf", &[i(99)]), "-1");
     assert_eq!(t(&l, "lastIndexOf", &[i(20)]), "1");
     assert_eq!(t(&l, "subList", &[i(1), i(3)]), "[20, 30]");
-    assert!(t(&l, "subList", &[i(2), i(1)]).contains("fromIndex: 2, toIndex: 1, size: 3"));
+    assert_eq!(
+        t(&l, "subList", &[i(2), i(1)]),
+        "java.lang.IllegalArgumentException: fromIndex(2) > toIndex(1)"
+    );
     assert_eq!(t(&l, "clone", &[]), "[11, 20, 30]");
     assert_eq!(t(&l, "trimToSize", &[]), "null");
     assert_eq!(t(&l, "ensureCapacity", &[i(100)]), "null");
