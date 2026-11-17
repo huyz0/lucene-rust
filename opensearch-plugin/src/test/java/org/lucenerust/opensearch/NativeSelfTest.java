@@ -4,6 +4,11 @@
 package org.lucenerust.opensearch;
 
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.IntPoint;
@@ -73,7 +78,6 @@ import java.util.stream.Stream;
  */
 public final class NativeSelfTest {
     private static int checks;
-    private static int failures;
     private static int bitExact;
     private static int scored;
     private static int sortedChecks;
@@ -126,15 +130,50 @@ public final class NativeSelfTest {
     private static boolean geoSorts;
     private static int geoSortPages;
 
-    public static void main(String[] args) throws Exception {
+    private static final Path FIXTURES = Path.of(System.getProperty("accelerated.fixtures", "fixtures/data"));
+    private static final List<String> FAILED = new ArrayList<>();
+    private int failuresBefore;
+
+    @BeforeClass
+    public static void loadNative() throws Exception {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
+        assertNoFailuresSince(0);
+    }
 
+    @Before
+    public void remember() {
+        failuresBefore = FAILED.size();
+    }
+
+    @After
+    public void noCheckFailed() {
+        assertNoFailuresSince(failuresBefore);
+    }
+
+    private static void assertNoFailuresSince(int from) {
+        if (FAILED.size() > from) {
+            List<String> mine = FAILED.subList(from, FAILED.size());
+            Assert.fail(mine.size() + " check(s) failed: " + String.join("; ", mine.subList(0, Math.min(10, mine.size()))));
+        }
+    }
+
+    private static void checkAreaEncoded(Map<String, int[]> encoded, int min, String what) {
+        for (var e : encoded.entrySet()) {
+            check(e.getValue()[0] >= min, what + " " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
+        }
+    }
+
+    @Test
+    public void realtimeAndCcr() throws Exception {
         realtimePrimary();
         ccrFollower();
         sparseCodec();
+        jsNames();
+    }
 
-        // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
+    @Test
+    public void analysis() throws Exception {
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
         check(NativeSelfTestAnalysis.described >= 48, "analyzers described: " + NativeSelfTestAnalysis.described);
         System.out.printf(
@@ -142,92 +181,101 @@ public final class NativeSelfTest {
             NativeSelfTestAnalysis.described,
             NativeSelfTestAnalysis.compared
         );
-        if ("analysis".equals(System.getenv("SELFTEST_ONLY"))) {
-            System.out.printf("NativeSelfTest (analysis only): %d checks, %d failures%n", checks, failures);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=extended: NativeSelfTestExtended's shapes alone.
-        boolean onlyExtended = "extended".equals(System.getenv("SELFTEST_ONLY"));
-        // SELFTEST_ONLY=leaves: NativeSelfTestLeaves' shapes alone.
-        if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-            System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=security: NativeSelfTestSecurity alone.
-        if ("security".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-            System.out.printf("NativeSelfTest (security only): %d checks, %d failures%n", checks, failures);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
-        if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-            System.out.printf("NativeSelfTest (substring only): %d queries compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSubstring.encoded, checks, failures, bitExact, scored);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
-        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
-        if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-            System.out.printf("NativeSelfTest (similarity only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSimilarity.COMPARED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        // SELFTEST_ONLY=nrt: the multi-segment readers alone.
-        if ("nrt".equals(System.getenv("SELFTEST_ONLY"))) {
-            nrtReaders(new Random(42));
-            pointSetsMatchingNothing(new Random(43));
-            System.out.printf("NativeSelfTest (nrt only): %d checks, %d failures%n", checks, failures);
-            System.exit(failures > 0 ? 1 : 0);
-        }
-        if (onlyExtended == false) {
+    }
+
+    /** The bridge's error paths, the encoder matrix, NRT readers, soft deletes and geo, with the counts they must reach. */
+    @Test
+    public void encoderMatrixAndReaders() throws Exception {
         bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
         pointSetsMatchingNothing(new Random(43));
         softDeletes(new Random(7));
         geo(new Random(13));
-        }
+        System.out.printf("NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key%n", geoEncoded, geoSortPages);
+        check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
+        check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
+        check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
+        check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
+        check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
+        check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
+        check(termRangesCompared >= 50, "queries holding a term range compared: " + termRangesCompared);
+        check(pointsCompared >= 50, "queries holding an int, float or ip range or a point set compared: " + pointsCompared);
+        check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
+        check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
+        System.out.printf("NativeSelfTest: %d of %d compared scores bit-exact; %d sorted pages compared%n", bitExact, scored, sortedChecks);
+    }
+
+    @Test
+    public void nrtReadersAlone() throws Exception {
+        nrtReaders(new Random(42));
+        pointSetsMatchingNothing(new Random(43));
+    }
+
+    @Test
+    public void extendedQueries() throws Exception {
         NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        checkAreaEncoded(NativeSelfTestExtended.ENCODED, 100, "extended");
+        check(NativeSelfTestExtended.ENCODED.size() == 5, "extended shapes compared: " + NativeSelfTestExtended.ENCODED.keySet());
+    }
+
+    @Test
+    public void security() throws Exception {
         NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSecurity.compared >= 120, "security view queries compared: " + NativeSelfTestSecurity.compared);
+    }
+
+    @Test
+    public void leafQueries() throws Exception {
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
         check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
-        jsNames();
+    }
+
+    @Test
+    public void similarities() throws Exception {
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
+    }
+
+    @Test
+    public void knn() throws Exception {
         NativeSelfTestKnn.run(new Random(31), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
+    }
+
+    @Test
+    public void tensor() throws Exception {
         NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+    }
+
+    @Test
+    public void patternText() throws Exception {
         NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
+    }
+
+    @Test
+    public void substring() throws Exception {
         NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSubstring.encoded >= 150, "compact_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
-        System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
-            check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
-        }
-        check(NativeSelfTestExtended.ENCODED.size() == 5, "extended shapes compared: " + NativeSelfTestExtended.ENCODED.keySet());
-        System.out.printf("NativeSelfTest: extended queries encoded and compared, by shape: %s%n", NativeSelfTestExtended.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        if (onlyExtended) {
-            System.out.printf("NativeSelfTest (extended only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
-            System.exit(failures > 0 ? 1 : 0);
-        }
+    }
+
+    @Test
+    public void storedFieldsAndPointDocValues() throws Exception {
         storedFields(new Random(11));
         pointDocValues(new Random(12));
+    }
+
+    @Test
+    public void fixtureIndexesServedNatively() throws Exception {
         int compared = 0;
         int bwc = 0;
         int bwcCompared = 0;
-        for (Path fixture : fixtureIndexes(Path.of(args[0]))) {
+        for (Path fixture : fixtureIndexes(FIXTURES)) {
             boolean old = fixture.getParent().getFileName().toString().startsWith("bwc");
             boolean ok = fixture(fixture);
             compared += ok ? 1 : 0;
@@ -239,8 +287,8 @@ public final class NativeSelfTest {
         // Indexes with a completion field (Completion104, and the formats of 9.0-10.3)
         // are read natively; their fixtures sit one level down.
         int completion = 0;
-        List<Path> completionIndexes = new ArrayList<>(List.of(Path.of(args[0], "completion_query", "index")));
-        try (Stream<Path> versions = Files.list(Path.of(args[0], "bwc-completion"))) {
+        List<Path> completionIndexes = new ArrayList<>(List.of(FIXTURES.resolve("completion_query").resolve("index")));
+        try (Stream<Path> versions = Files.list(FIXTURES.resolve("bwc-completion"))) {
             versions.sorted().forEach(v -> completionIndexes.add(v.resolve("index")));
         }
         for (Path index : completionIndexes) {
@@ -252,38 +300,6 @@ public final class NativeSelfTest {
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
         System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
-        System.out.printf(
-            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key%n",
-            geoEncoded,
-            geoSortPages
-        );
-        check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
-        check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
-        check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
-        check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
-        check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
-        check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
-        check(termRangesCompared >= 50, "queries holding a term range compared: " + termRangesCompared);
-        check(pointsCompared >= 50, "queries holding an int, float or ip range or a point set compared: " + pointsCompared);
-        check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
-        check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
-        System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
-            checks,
-            failures,
-            bitExact,
-            scored,
-            sortedChecks,
-            trackedPages,
-            sortedMinScoreChecks,
-            aggChecks,
-            termsChecks,
-            terminateChecks,
-            minScoreChecks
-        );
-        if (failures > 0) {
-            System.exit(1);
-        }
     }
 
     /** Which realtime indices RealtimePrimaryFilter sends to their primaries. */
@@ -461,7 +477,7 @@ public final class NativeSelfTest {
     static void check(boolean ok, String what) {
         checks++;
         if (ok == false) {
-            failures++;
+            FAILED.add(what);
             System.out.println("FAIL: " + what);
         }
     }
