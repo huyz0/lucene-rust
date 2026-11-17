@@ -25,15 +25,23 @@
     "checked": "2026-11-17"
   },
   "ported_prs": [
+    16139,
     16243,
     16297,
     16305,
     16307,
     16371,
+    16378,
+    16380,
     16423,
+    16428,
+    16435,
+    16446,
     16452,
     16476,
     16484,
+    16515,
+    16520,
     16547,
     16631,
     16647,
@@ -42,6 +50,8 @@
     16718,
     16720,
     16732,
+    16739,
+    16764,
     16788,
     16849,
     16855,
@@ -51,7 +61,11 @@
     "16669": "measured 2-17x slower in the port",
     "16696": "measured no gain",
     "16394": "changes totalHits",
-    "16220": "changes totalHits"
+    "16220": "changes totalHits",
+    "16588": "no analogue: the k-NN accept set already intersects live docs word-wise",
+    "16593": "already in: live docs are applied in bulk by live_word_at",
+    "16355": "already in: the lowercase filter has an ASCII fast path",
+    "16316": "no analogue: the accumulator buffer is not allocated per scorer"
   },
   "notes": "ported_prs lists upstream PR numbers from 10.5.2..10.6.0 that the port has taken; skipped_prs have a measured reason. scripts/lucene-upstream-diff.py reads both and also treats a PR number mentioned anywhere in the repo as 'referenced'. Update this file in the same PR that ports or rejects a change; bump base when the pin moves."
 }
