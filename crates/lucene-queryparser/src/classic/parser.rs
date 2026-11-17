@@ -831,15 +831,15 @@ impl<'p> Parser<'p> {
         &self,
         clauses: Vec<(Occur, ParsedQuery)>,
     ) -> PResult<Option<ParsedQuery>> {
-        if let Some(o) = &self.cfg.overrides {
-            return hooked(o.boolean_query(clauses));
-        }
         if clauses.is_empty() {
             return Ok(None);
         }
         // `BooleanQuery.Builder.add` refuses the clause past the limit.
         if clauses.len() > MAX_CLAUSE_COUNT {
             return Err(Fail::TooManyClauses);
+        }
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.boolean_query(clauses));
         }
         Ok(Some(ParsedQuery::Boolean(ParsedBoolean {
             clauses,
