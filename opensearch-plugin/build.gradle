@@ -8,7 +8,7 @@
 //
 //   scripts/opensearch-dist.sh               # once: extract lib/ from the image
 //   gradle -p opensearch-plugin bundlePlugin # the installable zip
-//   gradle -p opensearch-plugin check        # the JVM-side self test
+//   gradle -p opensearch-plugin test         # the JUnit tests (NativeSelfTest: native path against Lucene)
 
 plugins {
     id 'java'
@@ -233,23 +233,6 @@ tasks.register('bundlePlugin', Zip) {
     }
 }
 
-// The self test is a plain `main` (NativeSelfTest) rather than a JUnit suite,
-// so that it needs no artifact beyond the distribution's jars and the kuromoji
-// and nori modules.
-def selfTest = tasks.register('selfTest', JavaExec) {
-    description = 'Differential self test: the native path against Lucene IndexSearcher.'
-    dependsOn tasks.named('testClasses'), cargoBuild, makeDataPacks
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
-    systemProperty 'accelerated.library.path', nativeLib.absolutePath
-    systemProperty 'accelerated.data_packs', dataPacks.absolutePath
-    // Rust's float kernels always fuse multiply-adds; Lucene's scalar kernels do
-    // only where Constants.HAS_FAST_SCALAR_FMA picks it for the CPU, so scores
-    // would differ in the last ulp on some runners.
-    systemProperty 'lucene.useScalarFMA', 'true'
-    jvmArgs nativeAccess, '-ea'
-    args "${repoRoot}/fixtures/data"
-}
 // The Rust engine's writer against Lucene's IndexWriter, document by document.
 def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
     description = 'Differential test: AcceleratedIndexWriter against Lucene IndexWriter on the same operations.'
@@ -268,19 +251,23 @@ def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
     systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
-// The JUnit tests: `gradle test`, or one class with `--tests org.lucenerust.opensearch.WireGoldenTest`.
-// The main()-based self tests above are not JUnit classes, so this task does not pick them up.
+// The JUnit tests: `gradle test`, one class with `--tests org.lucenerust.opensearch.WireGoldenTest`,
+// or one area of the native self test with `--tests '*NativeSelfTest.knn'`.
+// NativeSelfTest's checks differential against Lucene's own IndexSearcher on the real library;
+// Rust's float kernels always fuse multiply-adds, so Lucene's scalar FMA is forced on.
 tasks.named('test') {
     useJUnit()
+    dependsOn cargoBuild, makeDataPacks
+    systemProperty 'accelerated.fixtures', "${repoRoot}/fixtures/data"
     include '**/*Test.class'
-    exclude '**/NativeSelfTest*', '**/NativeBench*', '**/engine/**', '**/store/**'
+    exclude '**/NativeBench*', '**/engine/**', '**/store/**'
     systemProperty 'accelerated.library.path', nativeLib.absolutePath
     systemProperty 'accelerated.data_packs', dataPacks.absolutePath
     systemProperty 'lucene.useScalarFMA', 'true'
     jvmArgs nativeAccess, '-ea'
     testLogging { events 'failed'; exceptionFormat 'short' }
 }
-tasks.named('check') { dependsOn selfTest, engineWriterTest, encryptedStoreTest }
+tasks.named('check') { dependsOn engineWriterTest, encryptedStoreTest }
 
 // With the JVM in the loop: the native call's crossing cost and
 // in-process query latency, native vs Lucene. Not part of `check` -- it is a

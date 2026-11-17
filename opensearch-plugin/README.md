@@ -14,7 +14,7 @@ the engine: [`docs/opensearch-engine.md`](../docs/opensearch-engine.md).
 ```
 scripts/opensearch-dist.sh                 # once: lib/ of the pinned image -> target/opensearch-dist/
 gradle -p opensearch-plugin bundlePlugin   # build/distributions/accelerated-search-0.1.0.zip
-gradle -p opensearch-plugin check          # JVM-side differential self test
+gradle -p opensearch-plugin test           # the JUnit tests, NativeSelfTest (native path against Lucene) among them
 ```
 
 The plugin compiles against the jars of the distribution it installs into,
@@ -211,7 +211,7 @@ decode it, and is freed with the segment).
 | `NativeReaders` | one native reader per Java searcher reader: built from its `SegmentInfos`, `maxDoc`s and live docs, closed by its close listener |
 | `NativeBridge` (+ `NativeCall`), `NativeLibrary` | the FFM downcall plumbing (per-thread native scratch memory for arguments and results) and the loader/handshake |
 | `NativeSearch`, `NativeStore`, `NativeAnalysis`, `NativeMl`, `NativeSparse`, `NativeZstd`, `NativeLimits`, `NativeWriter`, `NativeLive` | the downcalls grouped by area: search and aggregations, directory and stores, analysis, ML, sparse, zstd, limits and breakers, the writer, the live reader |
-| `src/test/…/NativeSelfTest` | the native path against Lucene's `IndexSearcher`: NRT readers with in-memory deletes, refreshes, merges, every Java-written fixture, the bridge's error paths |
+| `src/test/…/NativeSelfTest` (JUnit, one `@Test` per area) | the native path against Lucene's `IndexSearcher`: NRT readers with in-memory deletes, refreshes, merges, every Java-written fixture, the bridge's error paths |
 | `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
