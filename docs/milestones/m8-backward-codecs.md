@@ -487,7 +487,7 @@ through `NativeReaders` and answer its term, boolean, sorted, aggregated,
       queries native before the merge). **Not native, by design, and outside
       M8:** the `knn` index -- the k-NN plugin's `index.knn: true` segments
       name its own codec (`KNN9120Codec`), which the native reader does not
-      open (`native_open_failed`, once per reader, answers still equal). The
+      open (`accelerated_open_failed`, once per reader, answers still equal). The
       3.8.0 nodes keep the bundled k-NN plugin (the mapping needs it) and drop
       the other bundled plugins, as the 2.19 node does. In CI since the M8
       close-out (`ci.yml`'s `opensearch-upgrade` job).

@@ -1207,7 +1207,7 @@ def script_check(failures):
     ]:
         before = fallback_counts()
         compare(label, "lucene_l2", script_score({"match_all": {}}, script))
-        if fell_back(before).get("native_error"):
+        if fell_back(before).get("accelerated_error"):
             failures.append(f"{label}: native error instead of a Java fallback")
     # hammingbit over long and binary fields.
     rng = random.Random(f"{SEED}-hammingbit")

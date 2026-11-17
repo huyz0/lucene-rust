@@ -154,7 +154,7 @@ final class HybridPhase {
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("accelerated-search: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, collapseField, NativeHybrid.terminates(ctx));
             InternalAggregations[] aggOut = new InternalAggregations[1];
@@ -221,7 +221,7 @@ final class HybridPhase {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             out[0] = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
             NativeAggregations.consumeBuckets(ctx, out[0]);
@@ -234,7 +234,7 @@ final class HybridPhase {
             NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return FallbackReason.NATIVE_ERROR.key();
+            return FallbackReason.ACCELERATED_ERROR.key();
         }
         try {
             out[0] = tree.build(result[0], slices, ctx.partialOnShard());
@@ -243,7 +243,7 @@ final class HybridPhase {
         } catch (ReflectiveOperationException | RuntimeException e) {
             stats.nativeError();
             logger.warn("accelerated-search: building native aggregation results failed, re-running on Lucene", e);
-            return FallbackReason.NATIVE_ERROR.key();
+            return FallbackReason.ACCELERATED_ERROR.key();
         }
         NativeAggregations.consumeBuckets(ctx, out[0]);
         return null;

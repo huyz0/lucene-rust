@@ -346,7 +346,7 @@ public final class NativeReaders {
         int rc = NativeSearch.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
         if (rc != NativeBridge.OK) {
             logger.warn("accelerated-search: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
-            return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
+            return new Acquired(0, FallbackReason.ACCELERATED_OPEN_FAILED.key());
         }
         open.incrementAndGet();
         return new Acquired(out[0], null);
@@ -611,7 +611,7 @@ public final class NativeReaders {
             infos.add(sci);
             maxDocs[i] = leaf.maxDoc();
             if (NativeStores.refusal(sci.info.dir) != null) {
-                return new Acquired(0, FallbackReason.DIRECTORY_NOT_NATIVE.key());
+                return new Acquired(0, FallbackReason.DIRECTORY_UNSUPPORTED.key());
             }
             Path p = NativeStores.path(sci.info.dir);
             if (path != null && path.equals(p) == false) {
@@ -621,7 +621,7 @@ public final class NativeReaders {
         }
         if (path == null) {
             if (NativeStores.refusal(sdr.directory()) != null) {
-                return new Acquired(0, FallbackReason.DIRECTORY_NOT_NATIVE.key());
+                return new Acquired(0, FallbackReason.DIRECTORY_UNSUPPORTED.key());
             }
             path = NativeStores.path(sdr.directory());
         }
@@ -651,7 +651,7 @@ public final class NativeReaders {
         }
         if (rc != NativeBridge.OK) {
             logger.warn("accelerated-search: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());
-            return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
+            return new Acquired(0, FallbackReason.ACCELERATED_OPEN_FAILED.key());
         }
         long handle = out[0];
         open.incrementAndGet();

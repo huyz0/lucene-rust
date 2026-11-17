@@ -173,7 +173,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             stats.nativeTime(System.nanoTime() - nativeStart);
             return false;
         }
-        if (FallbackReason.NATIVE_ERROR.key().equals(why) && NativeExecution.scriptFailed()) {
+        if (FallbackReason.ACCELERATED_ERROR.key().equals(why) && NativeExecution.scriptFailed()) {
             throw execution.scriptFailure(searcher.getIndexReader(), false);
         }
         stats.fallback(why);
@@ -246,7 +246,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // A native search that ran a Painless script fails as the script did: running it again in
         // Java would run the script twice.
-        if (FallbackReason.NATIVE_ERROR.key().equals(reason) && NativeExecution.scriptFailed()) {
+        if (FallbackReason.ACCELERATED_ERROR.key().equals(reason) && NativeExecution.scriptFailed()) {
             throw execution.scriptFailure(searcher.getIndexReader(), true);
         }
         stats.fallback(reason);

@@ -29,13 +29,18 @@ final class NodeRegistry<W> {
         String encode(Q query, W walk) throws ReflectiveOperationException;
     }
 
-    private record Row<W>(Class<? extends Query> type, boolean exact, BiPredicate<Query, W> when, Encoder<Query, W> encoder) {
-        boolean claims(Query q, W w) {
-            return (exact ? q.getClass() == type : type.isInstance(q)) && (when == null || when.test(q, w));
-        }
-    }
+    private record Row<W>(Class<? extends Query> type, boolean exact, BiPredicate<Query, W> when, Encoder<Query, W> encoder) {}
 
     private final List<Row<W>> rows = new ArrayList<>();
+
+    /** The rows that can claim a query class, in table order; built once per class. */
+    private final ClassValue<Row<W>[]> byClass = new ClassValue<>() {
+        @Override
+        @SuppressWarnings("unchecked")
+        protected Row<W>[] computeValue(Class<?> c) {
+            return rows.stream().filter(r -> r.exact() ? c == r.type() : r.type().isAssignableFrom(c)).toArray(Row[]::new);
+        }
+    };
 
     /** A row for {@code type} and its subclasses. */
     <Q extends Query> NodeRegistry<W> add(Class<Q> type, Encoder<Q, W> encoder) {
@@ -60,8 +65,8 @@ final class NodeRegistry<W> {
 
     /** Encodes {@code q} with the first row that claims it, or returns {@link #NOT_REGISTERED}. */
     String encode(Query q, W walk) throws ReflectiveOperationException {
-        for (Row<W> r : rows) {
-            if (r.claims(q, walk)) {
+        for (Row<W> r : byClass.get(q.getClass())) {
+            if (r.when() == null || r.when().test(q, walk)) {
                 return r.encoder().encode(q, walk);
             }
         }

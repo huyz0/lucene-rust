@@ -280,15 +280,110 @@ def derive_engine(src: str) -> str:
     p.sub("        return primaryOperationPolicy.planDelete(deletionStrategyPlanner, delete);",
           "        return deletionStrategyPlanner.planOperationAsPrimary(delete);")
 
-    # Live search: a searcher supplier that also reads the writer's buffers.
+    # Live search: a searcher supplier that also reads the writer's buffers, a searcher on the
+    # reader alone for the requests that are not searches, and the engine's fetch layer under both.
     p.sub(
         "    @Override\n    protected final ReferenceManager<OpenSearchDirectoryReader> getReferenceManager(SearcherScope scope) {",
+        "    /**\n"
+        "     * A searcher taken on its own (segment stats, a point in time's segment list, a get) reads the\n"
+        "     * reader alone, as a refresh left it: the buffered documents are for search requests, which take\n"
+        "     * a {@link #acquireSearcherSupplier supplier}. A search's can-match check takes one on its own\n"
+        "     * too, and rewrites the query by the reader's bounds: it reads the buffers as the search does, or\n"
+        "     * a range over buffered documents alone would be rewritten to match nothing.\n"
+        "     */\n"
+        "    @Override\n"
+        "    public Searcher acquireSearcher(String source, SearcherScope scope, java.util.function.Function<Searcher, Searcher> wrapper)\n"
+        "        throws EngineException {\n"
+        "        SearcherSupplier supplier = CAN_MATCH_SEARCH_SOURCE.equals(source)\n"
+        "            ? acquireSearcherSupplier(wrapper, scope)\n"
+        "            : super.acquireSearcherSupplier(EngineFetchLayer.under(wrapper, engineConfig.getIndexSettings()), scope);\n"
+        "        Searcher searcher = null;\n"
+        "        try {\n"
+        "            searcher = supplier.acquireSearcher(source);\n"
+        "            Searcher acquired = searcher;\n"
+        "            return new Searcher(\n"
+        "                source,\n"
+        "                acquired.getDirectoryReader(),\n"
+        "                acquired.getSimilarity(),\n"
+        "                acquired.getQueryCache(),\n"
+        "                acquired.getQueryCachingPolicy(),\n"
+        "                () -> org.opensearch.common.lease.Releasables.close(acquired, supplier)\n"
+        "            );\n"
+        "        } catch (RuntimeException e) {\n"
+        "            org.opensearch.common.lease.Releasables.closeWhileHandlingException(searcher, supplier);\n"
+        "            throw e;\n"
+        "        }\n"
+        "    }\n\n"
         "    /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */\n"
         "    @Override\n"
         "    public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {\n"
-        "        return LiveSearchers.supplier(documentIndexWriter, wrapper, scope, super::acquireSearcherSupplier);\n"
+        "        return LiveSearchers.supplier(\n"
+        "            documentIndexWriter,\n"
+        "            EngineFetchLayer.under(wrapper, engineConfig.getIndexSettings()),\n"
+        "            scope,\n"
+        "            super::acquireSearcherSupplier,\n"
+        "            engineConfig.getThreadPool() == null ? null : engineConfig.getThreadPool().generic()\n"
+        "        );\n"
         "    }\n\n"
         "    @Override\n    protected final ReferenceManager<OpenSearchDirectoryReader> getReferenceManager(SearcherScope scope) {",
+    )
+
+    # Realtime: `wait_for` writes released without a refresh, the writer's external refresh listener,
+    # and the reader manager told how many searches a refresh leaves.
+    p.sub(
+        "    private final LastRefreshedCheckpointListener lastRefreshedCheckpointListener;\n",
+        "    private final LastRefreshedCheckpointListener lastRefreshedCheckpointListener;\n"
+        "    /** Releases {@code wait_for} writes without a refresh when searches read the buffers; null otherwise. */\n"
+        "    private volatile LiveWaitFor liveWaitFor;\n",
+    )
+    p.sub(
+        "            internalReaderManager.addListener(documentIndexWriter);\n",
+        "            internalReaderManager.addListener(documentIndexWriter);\n"
+        "            if (documentIndexWriter instanceof AcceleratedIndexWriter rustWriter) {\n"
+        "                this.externalReaderManager.addListener(rustWriter.externalRefreshListener());\n"
+        "            }\n",
+    )
+    p.sub(
+        "            this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();\n            success = true;\n",
+        "            this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();\n"
+        "            this.liveWaitFor = LiveWaitFor.start(engineConfig, documentIndexWriter);\n"
+        "            success = true;\n",
+    )
+    p.sub(
+        "                return newReader; // steal the reference\n",
+        "                internalReaderManager.searchesLeft(referenceToRefresh);\n"
+        "                return newReader; // steal the reference\n",
+    )
+    p.sub(
+        '        refresh("write indexing buffer", SearcherScope.INTERNAL, false);\n',
+        "        // Realtime searches see the buffered documents already, so moving them to the new segments\n"
+        "        // changes no result, and lets the writer drop the buffers the new segments hold.\n"
+        "        boolean live = documentIndexWriter instanceof AcceleratedIndexWriter w && w.liveSearch();\n"
+        '        refresh("write indexing buffer", live ? SearcherScope.EXTERNAL : SearcherScope.INTERNAL, false);\n',
+    )
+    p.sub(
+        "                if (onlyExpungeDeletes) {\n                    assert upgrade == false;\n",
+        "                if (upgrade) {\n"
+        "                    // OpenSearchMergePolicy's upgrade pass: each old segment rewritten alone before\n"
+        "                    // the forced merge the request asks for.\n"
+        "                    int upgraded = ((AcceleratedIndexWriter) documentIndexWriter).upgradeSegments(upgradeOnlyAncientSegments);\n"
+        '                    logger.debug("rewrote {} segments for the upgrade", upgraded);\n'
+        "                }\n"
+        "                if (onlyExpungeDeletes) {\n                    assert upgrade == false;\n",
+    )
+    p.sub(
+        "                if (flush) {\n                    flush(false, true);\n",
+        "                // The writer commits what a forced merge or upgrade publishes, so the flush below finds\n"
+        "                // nothing to commit: the committed segment list the segments API reports is read here.\n"
+        "                refreshLastCommittedSegmentInfos();\n"
+        "                if (flush) {\n                    flush(false, true);\n",
+    )
+    p.sub(
+        "                this.versionMap.clear();\n",
+        "                if (liveWaitFor != null) {\n"
+        "                    liveWaitFor.close();\n"
+        "                }\n"
+        "                this.versionMap.clear();\n",
     )
 
     # `_seq_no` may be indexed without points (SeqNoSettings): the restore range reads it either way.
