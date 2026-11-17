@@ -330,7 +330,7 @@ pub fn static_lookup(name: &str, arity: usize) -> Option<ApiFn> {
 }
 
 /// Java's replacement syntax (`$1`, `${name}`, `\$`) to `regex`'s.
-fn replacement(r: &str) -> Result<String, Throw> {
+fn replacement(r: &str, groups: usize, names: &[Option<String>]) -> Result<String, Throw> {
     let mut out = String::new();
     let mut chars = r.chars().peekable();
     while let Some(c) = chars.next() {
@@ -344,11 +344,30 @@ fn replacement(r: &str) -> Result<String, Throw> {
                 Some('{') => {
                     chars.next();
                     let name: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
+                    if !names.iter().flatten().any(|n| *n == name) {
+                        return Err(Throw::illegal_arg(format!("No group with name {{{name}}}")));
+                    }
                     out.push_str(&format!("${{{name}}}"));
                 }
                 Some(d) if d.is_ascii_digit() => {
-                    let d = chars.next().unwrap_or('0');
-                    out.push_str(&format!("${{{d}}}"));
+                    // The first digit names the group; more digits extend it
+                    // while the number is still a group.
+                    let mut n = chars.next().and_then(|d| d.to_digit(10)).unwrap_or(0) as usize;
+                    if n > groups {
+                        return Err(Throw::new(
+                            "java.lang.IndexOutOfBoundsException",
+                            format!("No group {n}"),
+                        ));
+                    }
+                    while let Some(next) = chars.peek().and_then(|d| d.to_digit(10)) {
+                        let longer = n * 10 + next as usize;
+                        if longer > groups {
+                            break;
+                        }
+                        n = longer;
+                        chars.next();
+                    }
+                    out.push_str(&format!("${{{n}}}"));
                 }
                 _ => return Err(Throw::illegal_arg("Illegal group reference")),
             },
@@ -464,7 +483,7 @@ impl JObject for JMatcher {
     fn call(
         &self,
         _vm: &mut Vm,
-        _this: &Value,
+        this: &Value,
         name: &str,
         args: &[Value],
     ) -> Option<Result<Value, Throw>> {
@@ -487,6 +506,12 @@ impl JObject for JMatcher {
                 ("find", 0) | ("find", 1) => {
                     if args.len() == 1 {
                         let i = int_arg(&args[0])?;
+                        if i < 0 || i as usize > self.input.chars().count() {
+                            return Err(Throw::new(
+                                "java.lang.IndexOutOfBoundsException",
+                                "Illegal start index",
+                            ));
+                        }
                         let byte = self
                             .input
                             .char_indices()
@@ -565,9 +590,16 @@ impl JObject for JMatcher {
                         }
                     }
                 }
-                ("hitEnd", 0) => Value::Bool(self.pos.get() >= self.input.len()),
                 ("replaceAll", 1) | ("replaceFirst", 1) => {
-                    let rep = replacement(&str_arg(&args[0])?)?;
+                    // Java reads the replacement text only when something matches.
+                    if !self.re().is_match(&self.input) {
+                        return Ok(Value::string(self.input.to_string()));
+                    }
+                    let rep = replacement(
+                        &str_arg(&args[0])?,
+                        self.re().captures_len() - 1,
+                        &self.names,
+                    )?;
                     let s = if name == "replaceAll" {
                         self.re()
                             .replace_all(&self.input, rep.as_str())
@@ -580,7 +612,7 @@ impl JObject for JMatcher {
                 ("reset", 0) => {
                     self.pos.set(0);
                     *self.groups.borrow_mut() = None;
-                    Value::Null
+                    this.clone()
                 }
                 ("pattern", 0) => self.pattern.clone(),
                 _ => return Err(Throw::new(api::UNSUPPORTED, "")),

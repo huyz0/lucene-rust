@@ -68,11 +68,29 @@ pub fn tree_key_check(map: &JMap, key: &Value) -> Result<(), Throw> {
     }
 }
 
+/// A lookup in a `TreeMap` or `TreeSet`: a null key throws, and a key the
+/// ordering cannot compare with the others is a `ClassCastException`.
+pub fn tree_probe(map: &JMap, key: &Value) -> Result<(), Throw> {
+    if key.is_null() {
+        return Err(npe());
+    }
+    match map.iter().next() {
+        Some((k, _)) => compare::compare_to(key, k).map(|_| ()),
+        None => Ok(()),
+    }
+}
+
 /// `collection.contains(x)`.
 pub fn contains(v: &Value, x: &Value) -> Result<bool, Throw> {
     Ok(match v {
         Value::List(l) => l.borrow().items.iter().any(|e| e.java_equals(x)),
-        Value::Set(s) => s.borrow().map.contains_key(x),
+        Value::Set(s) => {
+            let s = s.borrow();
+            if s.kind == SetKind::TreeSet {
+                tree_probe(&s.map, x)?;
+            }
+            s.map.contains_key(x)
+        }
         Value::Null => return Err(npe()),
         o => {
             return Err(Throw::class_cast(format!(
@@ -97,7 +115,13 @@ pub fn remove_object(_vm: &mut Vm, v: &Value, x: &Value) -> Result<Value, Throw>
                 None => false,
             }
         }
-        Value::Set(s) => s.borrow_mut().map.remove(x).is_some(),
+        Value::Set(s) => {
+            let mut s = s.borrow_mut();
+            if s.kind == SetKind::TreeSet {
+                tree_probe(&s.map, x)?;
+            }
+            s.map.remove(x).is_some()
+        }
         Value::Map(m) => return Ok(m.borrow_mut().map.remove(x).unwrap_or_default()),
         Value::Null => return Err(npe()),
         o => {

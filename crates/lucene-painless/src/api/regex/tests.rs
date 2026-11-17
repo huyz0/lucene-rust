@@ -101,7 +101,11 @@ fn matcher_walks_matches_and_groups() {
     assert!(t(&m, "group", &[]).contains("IllegalState"));
     assert!(t(&m, "start", &[]).contains("No match available"));
     assert!(t(&m, "group", &[s("nope")]).contains("No group with name <nope>"));
-    assert_eq!(t(&m, "reset", &[]), "null");
+    let again = call(&m, "reset", &[]).unwrap();
+    match (&again, &m) {
+        (Value::Object(a), Value::Object(b)) => assert!(Rc::ptr_eq(a, b)),
+        _ => panic!("reset returns the matcher"),
+    }
     assert_eq!(t(&m, "find", &[]), "true");
     assert_eq!(t(&m, "group", &[]), "12-ab");
 }
@@ -123,7 +127,9 @@ fn matcher_modes_and_replacement() {
     assert!(t(&matcher("a", "a"), "replaceAll", &[s("$x")]).contains("Illegal group reference"));
     assert!(t(&matcher("a", "a"), "replaceAll", &[s("\\")])
         .contains("character to be escaped is missing"));
-    assert_eq!(t(&matcher("a", "a"), "hitEnd", &[]), "false");
+    // Java's hitEnd depends on how far the engine looked ahead, so a script
+    // that asks is run by Painless.
+    assert!(t(&matcher("a", "a"), "hitEnd", &[]).contains("not found"));
     assert_eq!(t(&matcher("x", "ab"), "find", &[i(1)]), "false");
     assert_eq!(t(&matcher("b", "ab"), "find", &[i(1)]), "true");
 }
