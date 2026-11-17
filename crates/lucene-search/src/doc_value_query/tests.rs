@@ -513,6 +513,7 @@ fn numeric_range_live_docs_filters_matches() {
 
 fn constant_entry(field_number: i32, value: i64, num_values: i64) -> NumericEntry {
     NumericEntry {
+        disi: Default::default(),
         field_number,
         docs_with_field_offset: -1, // dense
         docs_with_field_length: 0,
@@ -1072,6 +1073,7 @@ fn sorted_numeric_range_respects_live_docs() {
 #[test]
 fn sorted_numeric_range_propagates_decode_errors() {
     let numeric = doc_values::NumericEntry {
+        disi: Default::default(),
         field_number: 0,
         docs_with_field_offset: -1,
         docs_with_field_length: 0,

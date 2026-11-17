@@ -76,6 +76,7 @@ const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
 const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
+const DISI_CODEC: &str = "Lucene90DocValuesDISI";
 /// The `tableSize` that marks a value array of [`crate::adaptive_values`]
 /// blocks, which only the `Adaptive90` format writes: below every
 /// `-2 - blockShift` Lucene90 writes. The rest of such an entry keeps
@@ -96,7 +97,13 @@ const ORDS_SLACK_PERCENT: usize = 3;
 const VERSION_START: i32 = 0;
 const VERSION_SKIPPER_SEPARATE_FILE: i32 = 1;
 const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
-const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
+/// Lucene 10.6: a sparse field's `IndexedDISI` moves from `.dvd` into its own
+/// `.dvp` file (`Lucene90DocValuesFormat.VERSION_DISI_SEPARATE_FILE`).
+const VERSION_DISI_SEPARATE_FILE: i32 = 3;
+const VERSION_CURRENT: i32 = VERSION_DISI_SEPARATE_FILE;
+/// The version a writer stamps by default: the last one stock Lucene 10.5.x
+/// can read.
+const VERSION_WRITE_DEFAULT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 
 const DOC_VALUES_TYPE_NUMERIC: u8 = 0;
 const DOC_VALUES_TYPE_BINARY: u8 = 1;
@@ -180,9 +187,62 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The bytes of a segment's `.dvp` file, shared by every entry whose sparse
+/// `IndexedDISI` lives there.
+#[derive(Clone)]
+pub struct DisiBytes(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>);
+
+impl DisiBytes {
+    pub fn new(bytes: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl std::fmt::Debug for DisiBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DisiBytes({} bytes)", (*self.0).as_ref().len())
+    }
+}
+
+/// Where an entry's docs-with-field region (`IndexedDISI`) is: in `.dvd`
+/// beside the values (format versions before 3), or in `.dvp` (from version
+/// 3, Lucene 10.6). A version-3 entry whose `.dvp` was never attached reads
+/// as an empty region, so a sparse lookup fails instead of misreading `.dvd`.
+#[derive(Debug, Clone, Default)]
+pub struct DisiLoc {
+    separate: bool,
+    bytes: Option<DisiBytes>,
+}
+
+impl DisiLoc {
+    /// The entry's DISI lives in `.dvp`, held by `bytes`.
+    pub fn in_separate_file(bytes: DisiBytes) -> Self {
+        Self {
+            separate: true,
+            bytes: Some(bytes),
+        }
+    }
+
+    /// Whether the region is in `.dvp` rather than `.dvd`.
+    pub fn is_separate(&self) -> bool {
+        self.separate
+    }
+
+    /// The bytes the entry's `docs_with_field_offset` indexes: `.dvp` for a
+    /// version-3 entry, otherwise `data` (the `.dvd`).
+    pub fn backing<'a>(&'a self, data: &'a [u8]) -> &'a [u8] {
+        if !self.separate {
+            return data;
+        }
+        self.bytes.as_ref().map_or(&[], |b| (*b.0).as_ref())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NumericEntry {
     pub field_number: i32,
+    /// Where the docs-with-field region is ([`DisiLoc`]).
+    pub disi: DisiLoc,
     pub docs_with_field_offset: i64,
     pub docs_with_field_length: i64,
     pub jump_table_entry_count: i16,
@@ -294,6 +354,16 @@ impl AdaptiveEntry {
 }
 
 impl NumericEntry {
+    /// The docs-with-field (`IndexedDISI`) region of a sparse field, out of
+    /// `data` (the `.dvd`) or the `.dvp` this entry was opened with.
+    pub fn docs_region<'a>(&'a self, data: &'a [u8]) -> Result<&'a [u8]> {
+        region(
+            self.disi.backing(data),
+            self.docs_with_field_offset,
+            self.docs_with_field_length,
+        )
+    }
+
     pub fn is_empty_field(&self) -> bool {
         self.docs_with_field_offset == DOCS_WITH_FIELD_EMPTY
     }
@@ -306,6 +376,8 @@ impl NumericEntry {
 #[derive(Debug, Clone)]
 pub struct BinaryEntry {
     pub field_number: i32,
+    /// Where the docs-with-field region is ([`DisiLoc`]).
+    pub disi: DisiLoc,
     pub docs_with_field_offset: i64,
     pub docs_with_field_length: i64,
     pub jump_table_entry_count: i16,
@@ -334,6 +406,15 @@ pub struct BinaryAddresses {
 }
 
 impl BinaryEntry {
+    /// [`NumericEntry::docs_region`] for a BINARY field.
+    pub fn docs_region<'a>(&'a self, data: &'a [u8]) -> Result<&'a [u8]> {
+        region(
+            self.disi.backing(data),
+            self.docs_with_field_offset,
+            self.docs_with_field_length,
+        )
+    }
+
     pub fn is_empty_field(&self) -> bool {
         self.docs_with_field_offset == DOCS_WITH_FIELD_EMPTY
     }
@@ -466,6 +547,36 @@ pub struct DocValuesMeta {
 }
 
 impl DocValuesMeta {
+    /// Gives every entry whose `IndexedDISI` is in `.dvp` the file's bytes.
+    pub fn attach_disi(&mut self, bytes: DisiBytes) {
+        self.for_each_disi_mut(|loc| {
+            if loc.separate {
+                loc.bytes = Some(bytes.clone());
+            }
+        });
+    }
+
+    fn for_each_disi_mut(&mut self, mut f: impl FnMut(&mut DisiLoc)) {
+        for e in &mut self.numeric {
+            f(&mut e.disi);
+        }
+        for e in &mut self.binary {
+            f(&mut e.disi);
+        }
+        for e in &mut self.sorted {
+            f(&mut e.ords.disi);
+        }
+        for e in &mut self.sorted_numeric {
+            f(&mut e.numeric.disi);
+        }
+        for e in &mut self.sorted_set {
+            match &mut e.kind {
+                SortedSetKind::Single(sorted) => f(&mut sorted.ords.disi),
+                SortedSetKind::Multi { ords, .. } => f(&mut ords.numeric.disi),
+            }
+        }
+    }
+
     pub fn numeric_entry(&self, field_number: i32) -> Option<&NumericEntry> {
         self.numeric.iter().find(|e| e.field_number == field_number)
     }
@@ -501,6 +612,13 @@ impl DocValuesMeta {
 /// Parses a whole `.dvm` metadata file already read into memory. `field_infos`
 /// must be the segment's already-parsed `.fnm` (used to reject unknown field
 /// numbers and to detect unsupported per-field doc-values skip indexes).
+/// Whether doc-values files of format `version` (from [`parse_meta`]) keep
+/// sparse fields' `IndexedDISI` in a `.dvp` file, which the caller then
+/// opens and hands to [`DocValuesMeta::attach_disi`].
+pub fn has_disi_file(version: i32) -> bool {
+    version >= VERSION_DISI_SEPARATE_FILE
+}
+
 pub fn parse_meta(
     buf: &[u8],
     segment_id: &[u8; ID_LENGTH],
@@ -559,6 +677,9 @@ pub fn parse_meta(
 
     if header.version < VERSION_SKIPPER_MAX_VALUE_COUNT {
         infer_max_value_counts(&mut meta, field_infos);
+    }
+    if header.version >= VERSION_DISI_SEPARATE_FILE {
+        meta.for_each_disi_mut(|loc| loc.separate = true);
     }
 
     codec_util::check_footer(&mut input, buf.len())?;
@@ -630,6 +751,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         let substring = crate::substring::read_meta(input)?;
         return Ok(BinaryEntry {
             mask: None,
+            disi: DisiLoc::default(),
             field_number,
             docs_with_field_offset,
             docs_with_field_length,
@@ -667,6 +789,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
     let _ = field_number;
     Ok(BinaryEntry {
         mask: None,
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -804,6 +927,7 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     let value_jump_table_offset = input.read_i64()?; // only meaningful for varying-bpv blocks
 
     Ok(NumericEntry {
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -844,6 +968,7 @@ fn read_adaptive_numeric_entry(
     let values_length = input.read_i64()?;
     let descriptor_offset = input.read_i64()?;
     Ok(NumericEntry {
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -885,6 +1010,34 @@ pub fn check_data_header_footer(
     )?;
     codec_util::retrieve_checksum(buf)?;
     Ok(header.version)
+}
+
+/// Validates a `.dvp` file's header and footer against the `.dvm`'s format
+/// `meta_version` (`Lucene90DocValuesProducer`'s `disiVersion` check).
+pub fn check_disi_header_footer(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    meta_version: i32,
+) -> Result<()> {
+    let mut input = SliceInput::new(buf);
+    let header = codec_util::check_index_header(
+        &mut input,
+        DISI_CODEC,
+        VERSION_DISI_SEPARATE_FILE,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    )?;
+    if header.version != meta_version {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "Format versions mismatch: meta={meta_version}, disi={}",
+            header.version
+        ))
+        .into());
+    }
+    codec_util::retrieve_checksum(buf)?;
+    Ok(())
 }
 
 /// Reads one `Lucene90DocValuesProducer.DocValuesSkipperEntry` out of
@@ -1298,11 +1451,7 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
         return Ok(Some(decode_value(data, entry, doc as i64)?));
     }
 
-    let region = region(
-        data,
-        entry.docs_with_field_offset,
-        entry.docs_with_field_length,
-    )?;
+    let region = entry.docs_region(data)?;
     // One forward-only pass over the block headers rather than decoding the
     // whole region: `DisiCursor` reads one 4-byte header per 65,536 documents
     // and then resolves the ordinal inside a single block. It allocates
@@ -1523,10 +1672,9 @@ impl<'a> NumericReader<'a> {
         let docs = if entry.is_empty_field() || entry.is_dense() {
             None
         } else {
-            usize::try_from(entry.docs_with_field_offset)
+            entry
+                .docs_region(data)
                 .ok()
-                .zip(usize::try_from(entry.docs_with_field_length).ok())
-                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
                 .map(|region| {
                     indexed_disi::DisiCursor::new(
                         region,
@@ -2420,11 +2568,7 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
         }
         doc as i64
     } else {
-        let region = region(
-            data,
-            entry.docs_with_field_offset,
-            entry.docs_with_field_length,
-        )?;
+        let region = entry.docs_region(data)?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(
             region,
@@ -2563,10 +2707,9 @@ impl<'a> BinaryReader<'a> {
         let docs = if entry.is_empty_field() || entry.is_dense() {
             None
         } else {
-            usize::try_from(entry.docs_with_field_offset)
+            entry
+                .docs_region(data)
                 .ok()
-                .zip(usize::try_from(entry.docs_with_field_length).ok())
-                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
                 .map(|region| {
                     indexed_disi::DisiCursor::new(
                         region,
@@ -2723,11 +2866,7 @@ pub fn sorted_numeric_values(
         }
         doc as i64
     } else {
-        let region = region(
-            data,
-            entry.numeric.docs_with_field_offset,
-            entry.numeric.docs_with_field_length,
-        )?;
+        let region = entry.numeric.docs_region(data)?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(
             region,
@@ -2814,11 +2953,7 @@ impl<'a> SortedNumericReader<'a> {
         let docs = if numeric.is_empty_field() || numeric.is_dense() {
             None
         } else {
-            region(
-                data,
-                numeric.docs_with_field_offset,
-                numeric.docs_with_field_length,
-            )
+            numeric.docs_region(data)
             .ok()
             .map(|region| {
                 indexed_disi::DisiCursor::new(
@@ -3196,11 +3331,7 @@ impl<'a> SortedNumericReader<'a> {
             return Ok(());
         };
         let mut words = vec![0u64; words_len];
-        let filled = region(
-            self.data,
-            numeric.docs_with_field_offset,
-            numeric.docs_with_field_length,
-        )
+        let filled = numeric.docs_region(self.data)
         .ok()
         .and_then(|r| indexed_disi::or_into_words(r, numeric.dense_rank_power, &mut words).ok());
         if filled.is_none() {
@@ -4023,7 +4154,7 @@ fn new_skip_index_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
     codec_util::write_index_header(
         &mut skip_index,
         SKIP_INDEX_META_CODEC,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         segment_suffix,
     );
@@ -5448,7 +5579,7 @@ fn new_meta_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8
     codec_util::write_index_header(
         &mut meta,
         META_CODEC,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         segment_suffix,
     );
@@ -5460,7 +5591,7 @@ fn new_data_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8
     codec_util::write_index_header(
         &mut data,
         DATA_META_CODEC,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         segment_suffix,
     );
@@ -5481,7 +5612,7 @@ fn finish_field_list_and_footers(
     codec_util::write_index_header(
         &mut skip_index,
         SKIP_INDEX_META_CODEC,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         segment_suffix,
     );

@@ -1015,7 +1015,7 @@ impl SegmentFormat {
             SegmentFormat::Postings => &[
                 "tim", "tip", "tmd", "doc", "psm", "pos", "pay", "lkp", "cmp",
             ],
-            SegmentFormat::DocValues => &["dvd", "dvm", "dvs"],
+            SegmentFormat::DocValues => &["dvd", "dvm", "dvs", "dvp"],
             SegmentFormat::Norms => &["nvd", "nvm"],
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes

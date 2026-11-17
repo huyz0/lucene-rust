@@ -2627,26 +2627,31 @@ impl SegmentReader {
                 let Some((meta, data)) = self.doc_values_for_field(info.number) else {
                     return Ok(ExistsDocs::None);
                 };
-                let numeric = |e: &doc_values::NumericEntry| {
+                fn numeric<'e>(
+                    e: &'e doc_values::NumericEntry,
+                    data: &'e [u8],
+                ) -> (&'e [u8], i64, i64, u8) {
                     (
+                        e.disi.backing(data),
                         e.docs_with_field_offset,
                         e.docs_with_field_length,
                         e.dense_rank_power,
                     )
-                };
-                let (o, l, d) = match doc_values_field(meta, info.number) {
+                }
+                let (data, o, l, d) = match doc_values_field(meta, info.number) {
                     None => return Ok(ExistsDocs::None),
-                    Some(DocValuesField::Numeric(e)) => numeric(e),
+                    Some(DocValuesField::Numeric(e)) => numeric(e, data),
                     Some(DocValuesField::Binary(e)) => (
+                        e.disi.backing(data),
                         e.docs_with_field_offset,
                         e.docs_with_field_length,
                         e.dense_rank_power,
                     ),
-                    Some(DocValuesField::Sorted(e)) => numeric(&e.ords),
-                    Some(DocValuesField::SortedNumeric(e)) => numeric(&e.numeric),
+                    Some(DocValuesField::Sorted(e)) => numeric(&e.ords, data),
+                    Some(DocValuesField::SortedNumeric(e)) => numeric(&e.numeric, data),
                     Some(DocValuesField::SortedSet(e)) => match &e.kind {
-                        doc_values::SortedSetKind::Single(sorted) => numeric(&sorted.ords),
-                        doc_values::SortedSetKind::Multi { ords, .. } => numeric(&ords.numeric),
+                        doc_values::SortedSetKind::Single(sorted) => numeric(&sorted.ords, data),
+                        doc_values::SortedSetKind::Multi { ords, .. } => numeric(&ords.numeric, data),
                     },
                 };
                 (data, o, l, d)
