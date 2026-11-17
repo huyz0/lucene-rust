@@ -66,3 +66,26 @@ unchanged within noise: it is 25 k-means iterations of brute-force assignment
 (about 660 GFLOP), where Faiss's BLAS is ahead (7.5 s). A 4x2 register tile was tried
 and was 3x slower (spills), so it was dropped. IVF search at nprobe 64 is memory
 bound (10 MB of lists per query) and sits within about 15% of Faiss.
+
+## GEMM assignment and shared SIMD kernels (2026-11-18)
+
+k-means training and the final list assignment of `IDMap,IVF<n>,Flat` now rank
+centroids with one matrix product per 256-vector block (`lucene_util::gemm::dot_rows`,
+the `matrixmultiply` micro-kernels, no C BLAS) as Faiss does with BLAS: Euclidean
+ranks `c.c/2 - x.c`, inner product `-x.c`. Distances in searches and scans use the
+shared AVX2 (x86) and NEON (aarch64) kernels of `lucene_util::simd`. Same data,
+three-run medians:
+
+| index | setting | recall@10 | latency µs | python Faiss µs |
+|---|---|---|---|---|
+| native HNSW | ef 64 | 0.880 | 121 | 204 |
+| native HNSW | ef 128 | 0.933 | 233 | 288 |
+| native HNSW | ef 256 | 0.964 | 502 | 495 |
+| native IVF-flat | nprobe 32 | 0.942 | 489 | 546 |
+| native IVF-flat | nprobe 64 | 0.974 | 990 | 1102 |
+
+IVF-flat build 26 s → 9.5 s (python Faiss 7.5 s, BLAS), same recall. Our own IVF
+(`lucene-ivf`) already clusters with a hand-tiled SIMD kernel; swapping its
+`full_assign` for the same GEMM was measured (390k x 100, 1693 clusters, 10 full
+rounds): 13.8 s vs 13.1 s with identical recall, about 5% on a non-default setting,
+so it was not adopted.
