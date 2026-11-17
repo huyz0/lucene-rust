@@ -98,7 +98,7 @@ final class GeoEncoder {
                 default -> NOT_GEO;
             };
         } catch (ReflectiveOperationException | RuntimeException e) {
-            return "geo_reflect";
+            return FallbackReason.GEO_REFLECT.key();
         }
     }
 
@@ -106,7 +106,7 @@ final class GeoEncoder {
     private static String pointsBox(PointRangeQuery pr, ByteArrayOutputStream out) {
         // PointValues.MAX_DIMENSIONS and MAX_NUM_BYTES; the native decoder takes no more.
         if (pr.getNumDims() < 1 || pr.getNumDims() > 16 || pr.getBytesPerDim() < 1 || pr.getBytesPerDim() > 16) {
-            return "points_width";
+            return FallbackReason.POINTS_WIDTH.key();
         }
         out.write(NODE_POINTS_BOX);
         writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
@@ -123,7 +123,7 @@ final class GeoEncoder {
         Field lon = Reflect.declared(c, "longitude");
         Field radius = Reflect.declared(c, "radiusMeters");
         if (field == null || lat == null || lon == null || radius == null) {
-            return "geo_reflect";
+            return FallbackReason.GEO_REFLECT.key();
         }
         out.write(NODE_GEO_DISTANCE);
         writeBytes(out, ((String) field.get(q)).getBytes(StandardCharsets.UTF_8));
@@ -139,7 +139,7 @@ final class GeoEncoder {
         Field relation = Reflect.inHierarchy(q.getClass(), "queryRelation");
         Field geometries = Reflect.inHierarchy(q.getClass(), "geometries");
         if (field == null || relation == null || geometries == null) {
-            return "geo_reflect";
+            return FallbackReason.GEO_REFLECT.key();
         }
         Object[] geoms = (Object[]) geometries.get(q);
         ShapeField.QueryRelation rel = (ShapeField.QueryRelation) relation.get(q);
@@ -149,7 +149,7 @@ final class GeoEncoder {
         body.write(rel.ordinal());
         if (kind == NODE_GEO_SHAPE_BOX) {
             if (geoms.length != 1 || geoms[0].getClass() != Rectangle.class) {
-                return "geo_geometry";
+                return FallbackReason.GEO_GEOMETRY.key();
             }
             Rectangle r = (Rectangle) geoms[0];
             writeDouble(body, r.minLat);
@@ -158,12 +158,12 @@ final class GeoEncoder {
             writeDouble(body, r.maxLon);
         } else {
             if (geoms.length == 0) {
-                return "geo_geometry";
+                return FallbackReason.GEO_GEOMETRY.key();
             }
             writeInt(body, geoms.length);
             for (Object g : geoms) {
                 if (geometry(g, body) == false) {
-                    return "geo_geometry";
+                    return FallbackReason.GEO_GEOMETRY.key();
                 }
             }
         }
@@ -261,7 +261,7 @@ final class GeoEncoder {
                 Field lat = Reflect.declared(f.getClass(), "latitude");
                 Field lon = Reflect.declared(f.getClass(), "longitude");
                 if (lat == null || lon == null) {
-                    return "sort_geo_reflect";
+                    return FallbackReason.SORT_GEO_REFLECT.key();
                 }
                 return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN, false, null);
             }
@@ -271,34 +271,34 @@ final class GeoEncoder {
             IndexFieldData.XFieldComparatorSource src = (IndexFieldData.XFieldComparatorSource) f.getComparatorSource();
             // MultiValueMode.MEDIAN has no nested pick: OpenSearch raises there, in Java.
             if (src.nested() != null && src.sortMode() == MultiValueMode.MEDIAN) {
-                return "sort_geo_nested";
+                return FallbackReason.SORT_GEO_NESTED.key();
             }
             Class<?> c = src.getClass();
             Field builder = Reflect.declared(c, "this$0");
             Field points = Reflect.declared(c, "val$localPoints");
             Field data = Reflect.declared(c, "val$geoIndexFieldData");
             if (builder == null || points == null || data == null) {
-                return "sort_geo_reflect";
+                return FallbackReason.SORT_GEO_REFLECT.key();
             }
             GeoDistanceSortBuilder b = (GeoDistanceSortBuilder) builder.get(src);
             if (!(data.get(src) instanceof LatLonPointIndexFieldData ifd)) {
-                return "sort_geo_field_data";
+                return FallbackReason.SORT_GEO_FIELD_DATA.key();
             }
             GeoPoint[] origins = (GeoPoint[]) points.get(src);
             if (origins.length == 0 || origins.length > MAX_ORIGINS) {
-                return "sort_geo_origins";
+                return FallbackReason.SORT_GEO_ORIGINS.key();
             }
             double[] lats = new double[origins.length], lons = new double[origins.length];
             for (int i = 0; i < origins.length; i++) {
                 lats[i] = origins[i].lat();
                 lons[i] = origins[i].lon();
                 if (Double.isFinite(lats[i]) == false || Double.isFinite(lons[i]) == false) {
-                    return "sort_geo_origins";
+                    return FallbackReason.SORT_GEO_ORIGINS.key();
                 }
             }
             return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode(), b.geoDistance() == GeoDistance.PLANE, src.nested());
         } catch (ReflectiveOperationException | RuntimeException e) {
-            return "sort_geo_reflect";
+            return FallbackReason.SORT_GEO_REFLECT.key();
         }
     }
 

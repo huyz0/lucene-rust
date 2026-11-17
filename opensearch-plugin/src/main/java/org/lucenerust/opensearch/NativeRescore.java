@@ -55,18 +55,18 @@ record NativeRescore(
             try {
                 query = searcher.rewrite(q.parsedQuery().query());
             } catch (IOException | RuntimeException e) {
-                return "rescore_query";
+                return FallbackReason.RESCORE_QUERY.key();
             }
             // A root range or match_all that ContextIndexSearcher.rewrite resolved to OpenSearch's
             // approximation (for the search's own size) matches only the documents it visits
             // first: the rescore then scales the rest by query_weight alone, which the exact native
             // query does not reproduce.
             if (RustQueryPhaseSearcher.approximated(query)) {
-                return "rescore_approximate";
+                return FallbackReason.RESCORE_APPROXIMATE.key();
             }
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
             if (enc.fallbackReason() != null) {
-                return "rescore_" + enc.fallbackReason();
+                return FallbackReason.RESCORE_ANY.key() + enc.fallbackReason();
             }
             out.add(new NativeRescore(similarities.prefix(enc.blob()), q.getWindowSize(), q.queryWeight(), q.rescoreQueryWeight(), q.scoreMode().ordinal(), q));
         }

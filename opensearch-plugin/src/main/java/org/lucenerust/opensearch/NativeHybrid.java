@@ -86,8 +86,8 @@ final class NativeHybrid {
         boolean minScore = ctx.minimumScore() != null;
         boolean postFilter = ctx.parsedPostFilter() != null;
         if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0) + (terminates(ctx) ? 1 : 0)
-            || hasFilterCollector != (postFilter || minScore || terminates(ctx))) return "collectors";
-        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminates(ctx)) return "time_series_order";
+            || hasFilterCollector != (postFilter || minScore || terminates(ctx))) return FallbackReason.COLLECTORS.key();
+        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminates(ctx)) return FallbackReason.TIME_SERIES_ORDER.key();
         return null;
     }
 
@@ -286,7 +286,7 @@ final class NativeHybrid {
                     int rc = NativeSearch.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
                     if (rc != NativeBridge.OK) {
                         NativeMemory.check(rc);
-                        return "native_error";
+                        return FallbackReason.NATIVE_ERROR.key();
                     }
                     r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
                 }
@@ -340,7 +340,7 @@ final class NativeHybrid {
                 return new Encoded(null, enc.fallbackReason());
             }
             if (enc.fast() == false && allShapes == false) {
-                return new Encoded(null, "slower_shape");
+                return new Encoded(null, FallbackReason.SLOWER_SHAPE.key());
             }
             blobs.add(enc.blob());
         }

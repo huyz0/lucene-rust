@@ -345,7 +345,7 @@ public final class QueryEncoder {
         for (int i = 0; i < arrays.length; i++) {
             nodes[0] += Math.max(1, arrays[i].length);
             if (nodes[0] > MAX_NODES) {
-                return "query_too_large";
+                return FallbackReason.QUERY_TOO_LARGE.key();
             }
             writeInt(out, positions[i]);
             writeInt(out, arrays[i].length);
@@ -396,10 +396,10 @@ public final class QueryEncoder {
                 if (keepsItselfOnRewrite(child)) {
                     return visited(child, out, fieldOk, depth, nodes);
                 }
-                return "highlight_nested_" + name(child);
+                return FallbackReason.HIGHLIGHT_NESTED_ANY.key() + name(child);
             }
             if (child instanceof IndexOrDocValuesQuery || name(child).contains("LateParsing") || name(child).startsWith("Has")) {
-                return "highlight_nested_" + name(child);
+                return FallbackReason.HIGHLIGHT_NESTED_ANY.key() + name(child);
             }
         }
         return node(child, out, fieldOk, depth + 1, nodes);
@@ -519,7 +519,7 @@ public final class QueryEncoder {
         try {
             q.visit(root);
         } catch (RuntimeException e) {
-            return "highlight_" + name(q);
+            return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
         }
         out.write(NODE_VISITED);
         String reason = writeRecord(root, q, out, fieldOk, depth + 1, nodes);
@@ -528,12 +528,12 @@ public final class QueryEncoder {
 
     private static String writeRecord(Recorder r, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
-            return "query_too_deep";
+            return FallbackReason.QUERY_TOO_DEEP.key();
         }
         // counted as the native decoder counts them: each event, then each term
         nodes[0] += r.events.size();
         if (nodes[0] > MAX_NODES) {
-            return "query_too_large";
+            return FallbackReason.QUERY_TOO_LARGE.key();
         }
         writeInt(out, r.events.size());
         for (Object[] e : r.events) {
@@ -545,7 +545,7 @@ public final class QueryEncoder {
                     Term[] terms = (Term[]) e[2];
                     nodes[0] += terms.length;
                     if (nodes[0] > MAX_NODES) {
-                        return "query_too_large";
+                        return FallbackReason.QUERY_TOO_LARGE.key();
                     }
                     writeInt(out, terms.length);
                     for (Term t : terms) {
@@ -564,7 +564,7 @@ public final class QueryEncoder {
                 default -> {
                     if (e[1] == null) {
                         // an automaton of a query this encoder cannot write
-                        return "highlight_" + name(q);
+                        return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
                     }
                     String reason = node((Query) e[1], out, fieldOk, depth + 1, nodes);
                     if (reason != null) {
@@ -620,7 +620,7 @@ public final class QueryEncoder {
                 // the rewrite keeps it, reads the terms its visit consumes when it has none yet.
                 return visited(q, out, fieldOk, depth, nodes);
             }
-            return "highlight_" + name(q);
+            return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
         }
         if (PLAIN.get() && q instanceof FuzzyQuery fq) {
             out.write(NODE_FUZZY);
@@ -677,7 +677,7 @@ public final class QueryEncoder {
             }
             nodes[0] += terms.length;
             if (nodes[0] > MAX_NODES) {
-                return "query_too_large";
+                return FallbackReason.QUERY_TOO_LARGE.key();
             }
             out.write(NODE_PHRASE_POSITIONS);
             writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
@@ -723,7 +723,7 @@ public final class QueryEncoder {
             }
         }
         if (fieldOk.test(arrays[0][0].field()) == false) {
-            return "field_similarity";
+            return FallbackReason.FIELD_SIMILARITY.key();
         }
         String reason = multiPhrase(kind, arrays, positions, slop, maxExpansions, "", out, nodes);
         return reason.isEmpty() ? null : reason;
@@ -733,11 +733,11 @@ public final class QueryEncoder {
         query = unwrapUnitBoost(query);
         if (query instanceof TermQuery tq && tq.getTermStates() == null) {
             if (plainTerm(tq) == false) {
-                return Encoded.fallback("term_states");
+                return Encoded.fallback(FallbackReason.TERM_STATES.key());
             }
             Term t = tq.getTerm();
             if (fieldOk.test(t.field()) == false) {
-                return Encoded.fallback("field_similarity");
+                return Encoded.fallback(FallbackReason.FIELD_SIMILARITY.key());
             }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(NativeBridge.QUERY_TERM);
@@ -817,10 +817,10 @@ public final class QueryEncoder {
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
-            return "query_too_deep";
+            return FallbackReason.QUERY_TOO_DEEP.key();
         }
         if (++nodes[0] > MAX_NODES) {
-            return "query_too_large";
+            return FallbackReason.QUERY_TOO_LARGE.key();
         }
         q = unwrapUnitBoost(q);
         if (HIGHLIGHT.get()) {
@@ -831,11 +831,11 @@ public final class QueryEncoder {
         }
         if (q instanceof TermQuery tq) {
             if (tq.getClass() != TermQuery.class) {
-                return "term_states";
+                return FallbackReason.TERM_STATES.key();
             }
             Term t = tq.getTerm();
             if (fieldOk.test(t.field()) == false) {
-                return "field_similarity";
+                return FallbackReason.FIELD_SIMILARITY.key();
             }
             TermStates states = tq.getTermStates();
             if (states == null) {
@@ -846,7 +846,7 @@ public final class QueryEncoder {
             }
             IndexReaderContext top = TOP.get();
             if (top == null) {
-                return "term_states";
+                return FallbackReason.TERM_STATES.key();
             }
             if (states.wasBuiltFor(top) == false) {
                 // TermQuery.createWeight ignores states built for another reader and rebuilds them
@@ -861,7 +861,7 @@ public final class QueryEncoder {
                 docFreq = states.docFreq();
             } catch (IllegalStateException | AssertionError e) {
                 // States built without statistics: nothing to score from.
-                return "term_states";
+                return FallbackReason.TERM_STATES.key();
             }
             if (docFreq < 1) {
                 // No statistics, so no scorer (TermWeight's termStates.get(leaf) is null on every
@@ -880,11 +880,11 @@ public final class QueryEncoder {
         if (q instanceof BooleanQuery bq) {
             if (bq.getMinimumNumberShouldMatch() < 0) {
                 // BooleanQuery.Builder does not reject it; the native decoder does.
-                return "boolean_msm_negative";
+                return FallbackReason.BOOLEAN_MSM_NEGATIVE.key();
             }
             if (PLAIN.get() && inExtractorOrder(bq) == false) {
                 if (EXTENDED.get() == false) {
-                    return "highlight_clause_order";
+                    return FallbackReason.HIGHLIGHT_CLAUSE_ORDER.key();
                 }
                 // The plain highlighter's extractor reads a bool query's clauses in the order they
                 // were added, whatever their occurrence, and skips the prohibited ones: the native
@@ -930,7 +930,7 @@ public final class QueryEncoder {
         if (q instanceof BoostQuery b) {
             float boost = b.getBoost();
             if (Float.isFinite(boost) == false || boost < 0) {
-                return "boost_invalid";
+                return FallbackReason.BOOST_INVALID.key();
             }
             out.write(NODE_BOOST);
             writeInt(out, Float.floatToIntBits(boost));
@@ -966,7 +966,7 @@ public final class QueryEncoder {
                 return null;
             }
             if (fieldOk.test(pq.getField()) == false) {
-                return "field_similarity";
+                return FallbackReason.FIELD_SIMILARITY.key();
             }
             // A gap in the positions is a stopword the analyzer removed: the node then carries them.
             boolean gaps = false;
@@ -975,7 +975,7 @@ public final class QueryEncoder {
             }
             nodes[0] += terms.length;
             if (nodes[0] > MAX_NODES) {
-                return "query_too_large";
+                return FallbackReason.QUERY_TOO_LARGE.key();
             }
             out.write(gaps ? NODE_PHRASE_POSITIONS : NODE_PHRASE);
             writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
@@ -1075,7 +1075,7 @@ public final class QueryEncoder {
             // classes, so found by name; their query by the visitor, which hands it over as it is).
             Query inner = wrappedMultiTermQuery(q);
             if (inner == null) {
-                return "clause_" + wrapper;
+                return FallbackReason.CLAUSE_ANY.key() + wrapper;
             }
             return multiTerm(inner, rewrite, out, fieldOk, depth, nodes);
         }
@@ -1138,7 +1138,7 @@ public final class QueryEncoder {
      */
     private static String synonym(SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
         if (fieldOk.test(q.getField()) == false) {
-            return "field_similarity";
+            return FallbackReason.FIELD_SIMILARITY.key();
         }
         Field termsField = Reflect.declared(SynonymQuery.class, "terms");
         Object[] terms = termsField == null ? null : (Object[]) get(termsField, q);
@@ -1153,7 +1153,7 @@ public final class QueryEncoder {
         }
         nodes[0] += terms.length;
         if (nodes[0] > MAX_NODES) {
-            return "query_too_large";
+            return FallbackReason.QUERY_TOO_LARGE.key();
         }
         out.write(NODE_SYNONYM);
         writeBytes(out, q.getField().getBytes(StandardCharsets.UTF_8));
@@ -1257,7 +1257,7 @@ public final class QueryEncoder {
             TermInSetQuery ts = (TermInSetQuery) q;
             nodes[0] += (int) Math.min(Integer.MAX_VALUE, ts.getTermsCount());
             if (nodes[0] > MAX_NODES) {
-                return "query_too_large";
+                return FallbackReason.QUERY_TOO_LARGE.key();
             }
             out.write(NODE_DV_TERM_SET);
             writeBytes(out, ts.getField().getBytes(StandardCharsets.UTF_8));
@@ -1279,7 +1279,7 @@ public final class QueryEncoder {
             TermInSetQuery ts = (TermInSetQuery) q;
             nodes[0] += (int) Math.min(Integer.MAX_VALUE, ts.getTermsCount());
             if (nodes[0] > MAX_NODES) {
-                return "query_too_large";
+                return FallbackReason.QUERY_TOO_LARGE.key();
             }
             out.write(NODE_TERM_SET);
             writeBytes(out, ts.getField().getBytes(StandardCharsets.UTF_8));
@@ -1365,7 +1365,7 @@ public final class QueryEncoder {
                 compiled = fuzzyCompiled(fq);
             } catch (RuntimeException e) {
                 // TooComplexToDeterminize: Lucene's search throws it too.
-                return "fuzzy_automaton";
+                return FallbackReason.FUZZY_AUTOMATON.key();
             }
             field = fq.getField();
         } else {
