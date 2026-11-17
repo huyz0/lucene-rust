@@ -570,6 +570,7 @@ fn check_merge(name: &str) {
                     centroid: c.as_deref(),
                     vectors: v,
                     has_deletions: *del,
+                    live: None,
                 })
                 .collect();
             writer

@@ -619,7 +619,7 @@ impl<'p> Parser<'p> {
         if !split {
             let t = string(&self.discard_escape_char(&text_image)?);
             first_query = self.get_field_query(field, &t, false)?;
-            self.add_multi_term_clauses(clauses, first_query.clone());
+            self.add_clause(clauses, CONJ_NONE, MOD_NONE, first_query.clone())?;
         }
         Ok(first_query)
     }
@@ -668,39 +668,6 @@ impl<'p> Parser<'p> {
         };
         clauses.push((occur, q));
         Ok(())
-    }
-
-    /// `addMultiTermClauses(clauses, q)`.
-    fn add_multi_term_clauses(
-        &self,
-        clauses: &mut Vec<(Occur, ParsedQuery)>,
-        q: Option<ParsedQuery>,
-    ) {
-        let Some(q) = q else { return };
-        let all_nested_term_queries = match &q {
-            ParsedQuery::Boolean(b) => b
-                .clauses
-                .iter()
-                .all(|(_, c)| matches!(c, ParsedQuery::Term(_))),
-            _ => false,
-        };
-        if all_nested_term_queries {
-            if let ParsedQuery::Boolean(b) = q {
-                clauses.extend(b.clauses);
-            }
-            return;
-        }
-        let occur = if self.cfg.operator == Operator::Or {
-            Occur::Should
-        } else {
-            Occur::Must
-        };
-        match q {
-            ParsedQuery::Boolean(b) => {
-                clauses.extend(b.clauses.into_iter().map(|(_, c)| (occur, c)));
-            }
-            other => clauses.push((occur, other)),
-        }
     }
 
     /// `QueryParserBase.getFieldQuery(field, queryText, quoted)`
@@ -1028,7 +995,29 @@ impl<'p> Parser<'p> {
         if clauses.is_empty() {
             return Ok(None);
         }
-        self.get_multi_field_query(clauses)
+        if max_terms > 1 {
+            self.get_multi_term_position_query(clauses)
+        } else {
+            self.get_multi_field_query(clauses)
+        }
+    }
+
+    /// `MultiFieldQueryParser.getMultiTermPositionQuery(positionGroups)`
+    /// (Lucene 10.6, #16446): the per-position groups of one analysed text
+    /// combine by the default operator, unlike field alternatives.
+    fn get_multi_term_position_query(
+        &self,
+        mut position_groups: Vec<ParsedQuery>,
+    ) -> PResult<Option<ParsedQuery>> {
+        if position_groups.len() <= 1 {
+            return Ok(position_groups.pop());
+        }
+        let occur = if self.cfg.operator == Operator::Or {
+            Occur::Should
+        } else {
+            Occur::Must
+        };
+        self.get_boolean_query(position_groups.into_iter().map(|q| (occur, q)).collect())
     }
 
     /// `ExtendableQueryParser.getFieldQuery`'s extension branch: `None`

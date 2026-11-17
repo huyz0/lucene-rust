@@ -4196,7 +4196,12 @@ type GroupFiles = Vec<(&'static str, Vec<u8>)>;
 /// One source's centroid (when visible), every vector it holds for a field,
 /// and whether it has deletions -- a [`scalar_quantized_vectors::QuantizedMergeSource`]'s
 /// owned parts.
-type OwnedQuantizedSource<'a> = (Option<&'a [f32]>, std::borrow::Cow<'a, [f32]>, bool);
+type OwnedQuantizedSource<'a> = (
+    Option<&'a [f32]>,
+    std::borrow::Cow<'a, [f32]>,
+    bool,
+    Option<Vec<bool>>,
+);
 
 /// One source's contribution to one merged vector field, resolved once and
 /// reused by both halves of [`merge_vector_group`] so the flat merge and the
@@ -4310,21 +4315,35 @@ fn merge_vector_group(
                     .flat
                     .float_vector_values(fs.original_field_number)?
                     .all_vectors()?;
+                let live = match source.live_docs {
+                    Some(live_docs) => {
+                        let values = group.flat.float_vector_values(fs.original_field_number)?;
+                        let mut flags =
+                            Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
+                        for ord in 0..values.size() {
+                            flags.push(live_docs.get_doc(values.ord_to_doc(ord)?));
+                        }
+                        Some(flags)
+                    }
+                    None => None,
+                };
                 owned.push((
                     group
                         .flat_quantized
                         .and_then(|q| q.centroid(fs.original_field_number)),
                     all,
                     source.live_docs.is_some(),
+                    live,
                 ));
             }
             let merge_sources: Vec<scalar_quantized_vectors::QuantizedMergeSource<'_>> = owned
                 .iter()
-                .map(|(centroid, vectors, has_deletions)| {
+                .map(|(centroid, vectors, has_deletions, live)| {
                     scalar_quantized_vectors::QuantizedMergeSource {
                         centroid: *centroid,
                         vectors,
                         has_deletions: *has_deletions,
+                        live: live.as_deref(),
                     }
                 })
                 .collect();
