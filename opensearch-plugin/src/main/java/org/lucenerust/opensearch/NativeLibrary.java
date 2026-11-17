@@ -29,7 +29,7 @@ import java.util.Locale;
  * UnsatisfiedLinkError} three calls later.
  */
 public final class NativeLibrary {
-    public static final String PATH_PROPERTY = "lucene_rust.library.path";
+    public static final String PATH_PROPERTY = "accelerated.library.path";
     public static final String LIBRARY_FILE = "liblucene_ffi.so";
 
     private static volatile String loaded;

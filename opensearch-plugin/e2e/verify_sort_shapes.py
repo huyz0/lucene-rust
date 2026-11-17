@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sort and search_after shapes that used to run on Lucene, against a stock node: each search is
 sent to both, the hits' ids, sort values and totals must be identical, and the plugin must report
-no new fallback for it (`fallbacks` in `GET _lucene_rust/stats`).
+no new fallback for it (`fallbacks` in `GET _plugins/accelerated/stats`).
 
     PLUGIN_URL=http://localhost:9200 STOCK_URL=http://localhost:9201 \\
         python3 opensearch-plugin/e2e/verify_sort_shapes.py [--docs 30000] [--only substring]
@@ -206,7 +206,7 @@ def digest(resp):
 
 
 def fallbacks(node):
-    st, r = node.req("GET", "/_plugins/lucene_rust/stats")
+    st, r = node.req("GET", "/_plugins/accelerated/stats")
     return dict(r.get("fallbacks", {})) if st == 200 else {}
 
 

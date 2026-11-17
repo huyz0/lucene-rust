@@ -95,7 +95,7 @@ def main():
         must("POST", "/beir/_forcemerge?max_num_segments=1")
         must("POST", "/beir/_refresh")
         print(f"# {ds}: {len(docs)} docs, {sum(len(d) for d in docs)} tokens, {len(queries)} queries, dim {dim}; indexed in {time.time() - t0:.0f} s")
-        before = must("GET", "/_plugins/lucene_rust/stats")
+        before = must("GET", "/_plugins/accelerated/stats")
 
         def maxsim(q, **extra):
             return {"max_sim": {"colbert": {"query_vectors": q, **extra}}}
@@ -133,7 +133,7 @@ def main():
                     nd.append(ndcg10(ids, rel))
                     rc.append(len(set(ids) & rel) / len(rel) if rel else 0.0)
             print(f"{name},{np.mean(nd):.4f},{np.mean(rc):.4f},{np.percentile(lat, 50):.2f},{np.percentile(lat, 95):.2f},{np.percentile(took, 50):.0f}")
-        after = must("GET", "/_plugins/lucene_rust/stats")
+        after = must("GET", "/_plugins/accelerated/stats")
         fb = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
               if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"# shard queries in Rust {after['accelerated_queries'] - before['accelerated_queries']}, fallbacks {fb}")

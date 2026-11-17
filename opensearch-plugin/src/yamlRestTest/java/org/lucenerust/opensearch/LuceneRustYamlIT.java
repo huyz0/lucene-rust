@@ -30,6 +30,6 @@ public class LuceneRustYamlIT extends OpenSearchClientYamlSuiteTestCase {
     /** The suite's own templates are wiped; the one routing every shape native is ours to keep. */
     @Override
     protected boolean preserveTemplatesUponCompletion() {
-        return Boolean.getBoolean("lucene_rust.preserve_templates");
+        return Boolean.getBoolean("accelerated.preserve_templates");
     }
 }

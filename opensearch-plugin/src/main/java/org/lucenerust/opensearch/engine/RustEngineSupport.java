@@ -270,7 +270,7 @@ public final class RustEngineSupport {
      * never tuned. On GloVe-100 (390k vectors, 4 segments) a 0.95 target ran IVF 1.9x faster than its
      * calibrated default (0.968 recall where the default over-reached to 0.988) and picked an HNSW
      * candidate count of 200; every target was met on held-out queries. See {@code
-     * GET /_plugins/lucene_rust/stats}, {@code knn_recall}, for what each tuner measured.
+     * GET /_plugins/accelerated/stats}, {@code knn_recall}, for what each tuner measured.
      */
     public static final Setting<Float> KNN_TARGET_RECALL = new Setting<>(
         "index.knn.target_recall",
@@ -356,7 +356,7 @@ public final class RustEngineSupport {
     );
 
     /**
-     * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
+     * Test-only: a document with a {@code __accelerated_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
     public static final Setting<Boolean> FAULT_INJECTION = Setting.boolSetting(

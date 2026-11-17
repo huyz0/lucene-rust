@@ -290,7 +290,7 @@ def engines():
     out = {}
     for _, port, _ in NODES:
         try:
-            r = urllib.request.urlopen(f"http://localhost:{port}/_plugins/lucene_rust/stats", timeout=10)
+            r = urllib.request.urlopen(f"http://localhost:{port}/_plugins/accelerated/stats", timeout=10)
             out[port] = json.load(r)["engines"]
         except Exception:
             out[port] = None
@@ -329,9 +329,9 @@ def main():
           f"F2: legacy moved onto the accelerated engine on every node: {e}")
     s = req("GET", "/legacy/_settings?flat_settings=true")["legacy"]["settings"]
     check(not any(k.startswith("index.engine.") for k in s), f"F2: legacy carries no plugin setting: {s}")
-    before = sum(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] for _ in [0])
+    before = sum(req("GET", "/_plugins/accelerated/stats")["accelerated_queries"] for _ in [0])
     req("POST", "/legacy/_search", {"query": {"match": {"body": "alpha"}}})
-    check(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] >= before, "F2: the plugin serves searches")
+    check(req("GET", "/_plugins/accelerated/stats")["accelerated_queries"] >= before, "F2: the plugin serves searches")
     churn(model, "legacy", 3, 1000)
     model.verify("legacy", "F2 after writes")
 

@@ -194,7 +194,7 @@ def main():
     except (RuntimeError, OSError, KeyError):
         segs = None
     try:
-        plugin_stats = req("GET", "/_plugins/lucene_rust/stats")
+        plugin_stats = req("GET", "/_plugins/accelerated/stats")
     except (RuntimeError, OSError):
         plugin_stats = None
     print(f"{label}: streamed {stream} in {stream_s:.1f}s, cpu {stream_cpu:.1f}s, {len(records)} searches", flush=True)

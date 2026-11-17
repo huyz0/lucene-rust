@@ -186,7 +186,7 @@ def body_for(name, q):
 
 def nstats(c):
     try:
-        return c.call("GET", "/_plugins/lucene_rust/stats")[0]
+        return c.call("GET", "/_plugins/accelerated/stats")[0]
     except RuntimeError:
         return None
 
