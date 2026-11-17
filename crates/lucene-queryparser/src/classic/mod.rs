@@ -139,7 +139,7 @@ impl std::error::Error for QueryParserError {}
 
 /// The methods of `QueryParserBase` a subclass overrides to build its own
 /// queries, as `QueryStringQueryParser` does in OpenSearch. Set with
-/// [`QueryParser::with_overrides`]: each method is then called where
+/// [`QueryParser::parse_with_overrides`]: each method is then called where
 /// `QueryParserBase` (or `MultiFieldQueryParser`) builds that query, with
 /// the field as the grammar names it (`None` for a clause with no field),
 /// and what it returns stands for the query. A clause's own boost, `^n`, is
@@ -219,8 +219,6 @@ pub trait Overrides: Send + Sync {
 /// `QueryParser`: a default field, an analyzer, and the settings of
 /// `QueryParserBase` and `QueryBuilder`.
 pub struct QueryParser {
-    /// A subclass's overrides of the query building, if any.
-    overrides: Option<Arc<dyn Overrides>>,
     /// `None` for a `MultiFieldQueryParser`, whose clauses with no field of
     /// their own go to every one of `fields`.
     field: Option<String>,
@@ -281,7 +279,6 @@ impl QueryParser {
 
     fn with_field(field: Option<String>, analyzer: Arc<Analyzer>) -> Self {
         QueryParser {
-            overrides: None,
             field,
             analyzer,
             fields: Vec::new(),
@@ -306,13 +303,6 @@ impl QueryParser {
             date_resolution: None,
             field_date_resolutions: HashMap::new(),
         }
-    }
-
-    /// The parser as a subclass that overrides `QueryParserBase`'s query
-    /// building makes it: see [`Overrides`].
-    pub fn with_overrides(mut self, overrides: Arc<dyn Overrides>) -> Self {
-        self.overrides = Some(overrides);
-        self
     }
 
     /// The parser as `ExtendableQueryParser` makes it: a field query
@@ -550,6 +540,21 @@ impl QueryParser {
     /// # Errors
     /// The `ParseException`, or a runtime exception a query constructor
     /// threw (an invalid regular expression, a negative slop).
+    pub fn parse_with_overrides(
+        &self,
+        query: &str,
+        overrides: &dyn Overrides,
+    ) -> Result<ParsedQuery, QueryParserError> {
+        let mut p = parser::Parser::new(self, query);
+        p.set_overrides(overrides);
+        let mut q = self.parse_top(&mut p, self.field.as_deref(), query)?;
+        if self.complex_phrase_in_order.is_some() {
+            self.resolve_phrases(&mut q)?;
+        }
+        Ok(q)
+    }
+
+    /// `parse(query)`, with a subclass's [`Overrides`].
     pub fn parse(&self, query: &str) -> Result<ParsedQuery, QueryParserError> {
         let mut p = parser::Parser::new(self, query);
         let mut q = self.parse_top(&mut p, self.field.as_deref(), query)?;

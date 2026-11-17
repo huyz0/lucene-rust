@@ -252,11 +252,11 @@ impl Overrides for Named {
 }
 
 fn named() -> QueryParser {
-    QueryParser::new("f", standard()).with_overrides(Arc::new(Named))
+    QueryParser::new("f", standard())
 }
 
 fn reasons(p: &QueryParser, q: &str) -> String {
-    match p.parse(q) {
+    match p.parse_with_overrides(q, &Named) {
         Ok(ParsedQuery::MatchNoDocs(s)) => s,
         Ok(other) => format!("{other:?}"),
         Err(e) => e.to_string(),
@@ -283,7 +283,7 @@ fn overrides_build_each_leaf() {
 fn overrides_without_a_field_see_none() {
     let p = named();
     assert_eq!(reasons(&p, "b"), "field Some(\"f\") b false");
-    let m = QueryParser::multi_field(&["x"], standard()).with_overrides(Arc::new(Named));
+    let m = QueryParser::multi_field(&["x"], standard());
     assert_eq!(reasons(&m, "b"), "field None b false");
     assert_eq!(reasons(&m, "b~"), "bare None ~ b");
 }
@@ -368,10 +368,13 @@ impl Overrides for Failing {
 
 #[test]
 fn an_override_error_is_the_parsers_own() {
-    let parse_error = QueryParser::new("f", standard()).with_overrides(Arc::new(Failing(true)));
-    let e = parse_error.parse("a").expect_err("fails");
+    let p = QueryParser::new("f", standard());
+    let e = p
+        .parse_with_overrides("a", &Failing(true))
+        .expect_err("fails");
     assert!(e.is_parse_exception(), "{e}");
-    let other = QueryParser::new("f", standard()).with_overrides(Arc::new(Failing(false)));
-    let e = other.parse("a").expect_err("fails");
+    let e = p
+        .parse_with_overrides("a", &Failing(false))
+        .expect_err("fails");
     assert!(!e.is_parse_exception(), "{e}");
 }
