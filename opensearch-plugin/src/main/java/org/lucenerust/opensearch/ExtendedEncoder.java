@@ -166,7 +166,7 @@ final class ExtendedEncoder {
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
                 if (f == null) {
-                    return "extended_reflect";
+                    return FallbackReason.EXTENDED_REFLECT.key();
                 }
                 return toParent((ToParentBlockJoinQuery) f.get(os), out, child);
             }
@@ -194,7 +194,7 @@ final class ExtendedEncoder {
             }
             return NOT_EXTENDED;
         } catch (ReflectiveOperationException | ClassCastException e) {
-            return "extended_reflect";
+            return FallbackReason.EXTENDED_REFLECT.key();
         }
     }
 
@@ -207,11 +207,11 @@ final class ExtendedEncoder {
         Field parentsF = Reflect.declared(ToParentBlockJoinQuery.class, "parentsFilter");
         Field modeF = Reflect.declared(ToParentBlockJoinQuery.class, "scoreMode");
         if (parentsF == null || modeF == null) {
-            return "extended_reflect";
+            return FallbackReason.EXTENDED_REFLECT.key();
         }
         Query parents = parentsQuery((BitSetProducer) parentsF.get(q));
         if (parents == null) {
-            return "join_parents";
+            return FallbackReason.JOIN_PARENTS.key();
         }
         out.write(NODE_TO_PARENT);
         out.write((byte) ((ScoreMode) modeF.get(q)).ordinal());
@@ -229,7 +229,7 @@ final class ExtendedEncoder {
     private static String join(org.lucenerust.opensearch.join.DeferredJoinQuery q, ByteArrayOutputStream out, Child child)
         throws ReflectiveOperationException {
         if (q.from() == null || q.to() == null) {
-            return "join_unrewritten";
+            return FallbackReason.JOIN_UNREWRITTEN.key();
         }
         out.write(NODE_JOIN);
         writeString(out, q.joinField());
@@ -247,11 +247,11 @@ final class ExtendedEncoder {
         throws ReflectiveOperationException {
         Field parentsF = Reflect.declared(ToChildBlockJoinQuery.class, "parentsFilter");
         if (parentsF == null) {
-            return "extended_reflect";
+            return FallbackReason.EXTENDED_REFLECT.key();
         }
         Query parents = parentsQuery((BitSetProducer) parentsF.get(q));
         if (parents == null) {
-            return "join_parents";
+            return FallbackReason.JOIN_PARENTS.key();
         }
         out.write(NODE_TO_CHILD);
         String reason = child.node(parents);
@@ -283,7 +283,7 @@ final class ExtendedEncoder {
         if (c == SpanTermQuery.class) {
             Term t = ((SpanTermQuery) q).getTerm();
             if (fieldOk.test(t.field()) == false) {
-                return "field_similarity";
+                return FallbackReason.FIELD_SIMILARITY.key();
             }
             out.write(0);
             writeString(out, t.field());
@@ -319,7 +319,7 @@ final class ExtendedEncoder {
             Field pre = Reflect.declared(SpanNotQuery.class, "pre");
             Field post = Reflect.declared(SpanNotQuery.class, "post");
             if (pre == null || post == null) {
-                return "extended_reflect";
+                return FallbackReason.EXTENDED_REFLECT.key();
             }
             out.write(5);
             writeInt(out, pre.getInt(n));
@@ -339,7 +339,7 @@ final class ExtendedEncoder {
         if (c == FieldMaskingSpanQuery.class) {
             FieldMaskingSpanQuery m = (FieldMaskingSpanQuery) q;
             if (fieldOk.test(m.getField()) == false) {
-                return "field_similarity";
+                return FallbackReason.FIELD_SIMILARITY.key();
             }
             out.write(8);
             writeString(out, m.getField());
@@ -356,7 +356,7 @@ final class ExtendedEncoder {
             writeString(out, q.getField());
             return null;
         }
-        return "span_" + c.getSimpleName();
+        return FallbackReason.SPAN_ANY.key() + c.getSimpleName();
     }
 
     private static String spans(SpanQuery[] clauses, ByteArrayOutputStream out, Predicate<String> fieldOk)
@@ -382,7 +382,7 @@ final class ExtendedEncoder {
         Field sourceF = Reflect.declared(IntervalQuery.class, "intervalsSource");
         Field scoringF = Reflect.declared(IntervalQuery.class, "scoreFunction");
         if (fieldF == null || sourceF == null || scoringF == null) {
-            return "extended_reflect";
+            return FallbackReason.EXTENDED_REFLECT.key();
         }
         Object scoring = scoringF.get(q);
         out.write(NODE_INTERVAL);
@@ -396,7 +396,7 @@ final class ExtendedEncoder {
             writeInt(out, Float.floatToIntBits(floatField(scoring, "pivot")));
             writeInt(out, Float.floatToIntBits(floatField(scoring, "a")));
         } else {
-            return "interval_scoring";
+            return FallbackReason.INTERVAL_SCORING.key();
         }
         return source((IntervalsSource) sourceF.get(q), out);
     }
@@ -428,7 +428,7 @@ final class ExtendedEncoder {
             return why != null ? why : source((IntervalsSource) field(s, "in"), out);
         }
         if (name.startsWith(INTERVALS) == false) {
-            return "interval_" + s.getClass().getSimpleName();
+            return FallbackReason.INTERVAL_ANY.key() + s.getClass().getSimpleName();
         }
         switch (name.substring(INTERVALS.length())) {
             case "TermIntervalsSource" -> {
@@ -454,7 +454,7 @@ final class ExtendedEncoder {
                 if (count > MAX_REPEATS) {
                     // The native decoder's bound (the clause limit), which Lucene's own
                     // deduplication of equal clauses never passes under OpenSearch's limit.
-                    return "interval_repeating_count";
+                    return FallbackReason.INTERVAL_REPEATING_COUNT.key();
                 }
                 out.write(5);
                 writeInt(out, count);
@@ -524,7 +524,7 @@ final class ExtendedEncoder {
                 return automaton((CompiledAutomaton) field(s, "automaton"), out, "interval_automaton");
             }
             default -> {
-                return "interval_" + s.getClass().getSimpleName();
+                return FallbackReason.INTERVAL_ANY.key() + s.getClass().getSimpleName();
             }
         }
     }
@@ -612,7 +612,7 @@ final class ExtendedEncoder {
             String f = (String) field(fw, "field");
             // BM25F is BM25's own: a field the searcher scores otherwise is not native.
             if (fieldOk.test(f) == false || (fieldOk instanceof SimilarityEncoder s && s.isDefault(f) == false)) {
-                return "field_similarity";
+                return FallbackReason.FIELD_SIMILARITY.key();
             }
             writeString(out, f);
             writeInt(out, Float.floatToIntBits((float) field(fw, "weight")));
@@ -657,7 +657,7 @@ final class ExtendedEncoder {
      */
     private static String substring(RustWildcardQuery q, ByteArrayOutputStream out) {
         if (q.nativePattern() == false) {
-            return "substring_regexp_flags";
+            return FallbackReason.SUBSTRING_REGEXP_FLAGS.key();
         }
         out.write(NODE_SUBSTRING);
         writeString(out, q.field());
@@ -685,7 +685,7 @@ final class ExtendedEncoder {
     private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out, Child child) {
         AnalyzerSpec.Spec spec = AnalyzerSpec.cached(q.analyzer(), q.field());
         if (spec.ok() == false) {
-            return "pattern_phrase_" + spec.reason();
+            return FallbackReason.PATTERN_PHRASE_ANY.key() + spec.reason();
         }
         if (q.positions() == null) {
             // Slop or a prefix: the native side runs the phrase over each candidate message.
@@ -739,7 +739,7 @@ final class ExtendedEncoder {
         }
         KnnScoringScriptEngine.Native spec = ((KnnScoringScriptEngine.KnnLeafFactory) builder).nativeSpec();
         if (spec == null) {
-            return "script_score_hammingbit";
+            return FallbackReason.SCRIPT_SCORE_HAMMINGBIT.key();
         }
         out.write(NODE_KNN_SCORE);
         String reason = child.node((Query) field(q, "subQuery"));
@@ -806,7 +806,7 @@ final class ExtendedEncoder {
             return expressionScore(q, (ScoreScript.LeafFactory) field(q, "scriptBuilder"), out, child, "script_score_script");
         }
         if (script == null || "painless".equals(script.getLang()) == false) {
-            return "script_score_script";
+            return FallbackReason.SCRIPT_SCORE_SCRIPT.key();
         }
         PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), FIELD_TYPES.get());
         if (c == null) {
@@ -890,7 +890,7 @@ final class ExtendedEncoder {
         Object wrapped = wrappedExpression(field(q, "filterScript"));
         if (wrapped != null) {
             if (((ScoreScript.LeafFactory) wrapped).needs_score()) {
-                return "script_query_script";
+                return FallbackReason.SCRIPT_QUERY_SCRIPT.key();
             }
             ByteArrayOutputStream spec = new ByteArrayOutputStream();
             String why = expressionSpec(wrapped, PainlessScore.FILTER, "", 0, spec, "script_query_script");
@@ -902,7 +902,7 @@ final class ExtendedEncoder {
             return null;
         }
         if (script == null || "painless".equals(script.getLang()) == false) {
-            return "script_query_script";
+            return FallbackReason.SCRIPT_QUERY_SCRIPT.key();
         }
         Object prepared = painless(script, PainlessScore.FILTER, "script_query");
         if (prepared instanceof String reason) {
@@ -932,12 +932,12 @@ final class ExtendedEncoder {
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
-            return "sort_script";
+            return FallbackReason.SORT_SCRIPT.key();
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
-            return "sort_script_options";
+            return FallbackReason.SORT_SCRIPT_OPTIONS.key();
         }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), context, "sort_script");
         if (prepared instanceof String reason) {
@@ -954,7 +954,7 @@ final class ExtendedEncoder {
      */
     static String painlessAggregation(AggregationScript.LeafFactory factory, ByteArrayOutputStream out) {
         if (factory == null || factory.needs_score()) {
-            return "aggregation_script_score";
+            return FallbackReason.AGGREGATION_SCRIPT_SCORE.key();
         }
         if (factory instanceof JsScripts.Leaf js) {
             return jsSpec(out, js, PainlessScore.AGGREGATION, "aggregation_script");
@@ -964,12 +964,12 @@ final class ExtendedEncoder {
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
-            return "aggregation_script";
+            return FallbackReason.AGGREGATION_SCRIPT.key();
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
-            return "aggregation_script_options";
+            return FallbackReason.AGGREGATION_SCRIPT_OPTIONS.key();
         }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
         if (prepared instanceof String reason) {
@@ -993,12 +993,12 @@ final class ExtendedEncoder {
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
-            return "covering_script";
+            return FallbackReason.COVERING_SCRIPT.key();
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
-            return "covering_options";
+            return FallbackReason.COVERING_OPTIONS.key();
         }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
         if (prepared instanceof String reason) {
@@ -1015,17 +1015,17 @@ final class ExtendedEncoder {
     private static String painlessInterval(IntervalFilterScript script, ByteArrayOutputStream out) {
         String source = PainlessScore.sourceOf(script);
         if (source == null) {
-            return "interval_script";
+            return FallbackReason.INTERVAL_SCRIPT.key();
         }
         if (PainlessScore.compiledWithDefaults(source) == false) {
-            return "interval_options";
+            return FallbackReason.INTERVAL_OPTIONS.key();
         }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
         if (prepared instanceof String reason) {
             return reason;
         }
         if (((Painless) prepared).names().length != 0) {
-            return "interval_painless";
+            return FallbackReason.INTERVAL_PAINLESS.key();
         }
         painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runInterval(script));
         return null;
@@ -1158,13 +1158,13 @@ final class ExtendedEncoder {
             if ((kinds[i] == PainlessScore.DATE || kinds[i] == PainlessScore.DATE_NANOS) && ExtendedScripts.on() == false) {
                 // Dates reach the script as ZonedDateTime through `def` calls: 2 to 5 times slower than
                 // OpenSearch's own Painless on a whole-index scan.
-                return "script_date_values";
+                return FallbackReason.SCRIPT_DATE_VALUES.key();
             }
         }
         if (context == PainlessScore.SORT_WITH_SCORE && ExtendedScripts.on() == false) {
             // A sort script that reads the score is evaluated one hit at a time through the interpreter:
             // 1.5 to 2 times slower than OpenSearch's own compiled Painless.
-            return "script_sort_score";
+            return FallbackReason.SCRIPT_SORT_SCORE.key();
         }
         // The whole script checked before anything runs: one the native runtime would not run
         // exactly as Painless does stays in Java, never tried natively first.
@@ -1325,7 +1325,7 @@ final class ExtendedEncoder {
         }
         if (context != PainlessScore.AGGREGATION && context != PainlessScore.TERMS_SET && ExtendedScripts.on() == false) {
             // One value read per document costs more here than in Lucene's expression engine.
-            return "script_expression_per_document";
+            return FallbackReason.SCRIPT_EXPRESSION_PER_DOCUMENT.key();
         }
         try {
             Object expr = field(factory, "exprScript");
@@ -1549,7 +1549,7 @@ final class ExtendedEncoder {
             Object data = field(f, "indexFieldData");
             byte[] numeric = scoreNumeric(data);
             if (numeric == null) {
-                return "function_score_field_data";
+                return FallbackReason.FUNCTION_SCORE_FIELD_DATA.key();
             }
             Double missing = (Double) field(f, "missing");
             FieldValueFactorFunction.Modifier modifier = (FieldValueFactorFunction.Modifier) field(f, "modifier");
@@ -1577,7 +1577,7 @@ final class ExtendedEncoder {
             if (dataClass.equals("org.opensearch.index.mapper.IdFieldMapper$IdFieldType$1$1")) {
                 if (ExtendedScripts.on() == false) {
                     // The stored `_id` of every scored document is decompressed: twice stock's time.
-                    return "random_score_id";
+                    return FallbackReason.RANDOM_SCORE_ID.key();
                 }
                 out.write(3);
                 return null;
@@ -1587,7 +1587,7 @@ final class ExtendedEncoder {
             } else if ((numeric = scoreNumeric(data)) != null) {
                 out.write(2);
             } else {
-                return "function_score_field_data";
+                return FallbackReason.FUNCTION_SCORE_FIELD_DATA.key();
             }
             writeString(out, ((IndexFieldData<?>) data).getFieldName());
             if (numeric != null) {
@@ -1599,11 +1599,11 @@ final class ExtendedEncoder {
             Object data = field(f, "fieldData");
             byte[] numeric = scoreNumeric(data);
             if (numeric == null) {
-                return "function_score_field_data";
+                return FallbackReason.FUNCTION_SCORE_FIELD_DATA.key();
             }
             byte decay = decayKind(f);
             if (decay < 0) {
-                return "function_score_decay";
+                return FallbackReason.FUNCTION_SCORE_DECAY.key();
             }
             byte m = multiValueMode(f);
             out.write(4);
@@ -1619,12 +1619,12 @@ final class ExtendedEncoder {
         if (name.equals(FUNCTIONS + "DecayFunctionBuilder$GeoFieldDataScoreFunction")) {
             byte decay = decayKind(f);
             if (decay < 0) {
-                return "function_score_decay";
+                return FallbackReason.FUNCTION_SCORE_DECAY.key();
             }
             org.opensearch.common.geo.GeoPoint origin = (org.opensearch.common.geo.GeoPoint) field(f, "origin");
             Object data = field(f, "fieldData");
             if (data == null || data.getClass().getName().equals(LAT_LON_FIELD_DATA) == false) {
-                return "function_score_field_data";
+                return FallbackReason.FUNCTION_SCORE_FIELD_DATA.key();
             }
             out.write(6);
             out.write(decay);
@@ -1642,7 +1642,7 @@ final class ExtendedEncoder {
             if (factory instanceof JsScripts.Leaf js) {
                 Object prepared = js(js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
                 if (prepared instanceof String) {
-                    return "function_score_script";
+                    return FallbackReason.FUNCTION_SCORE_SCRIPT.key();
                 }
                 out.write(5);
                 jsSpec(out, (Js) prepared, (String) field(f, "indexName"), (int) field(f, "shardId"));
@@ -1662,20 +1662,20 @@ final class ExtendedEncoder {
                 return null;
             }
             if (script == null || "painless".equals(script.getLang()) == false) {
-                return "function_score_script";
+                return FallbackReason.FUNCTION_SCORE_SCRIPT.key();
             }
             Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
             if (prepared instanceof String why) {
-                return "script_date_values".equals(why) ? why : "function_score_script";
+                return FallbackReason.SCRIPT_DATE_VALUES.key().equals(why) ? why : FallbackReason.FUNCTION_SCORE_SCRIPT.key();
             }
             out.write(5);
             painlessScoreSpec(out, (Painless) prepared, factory, (String) field(f, "indexName"), (int) field(f, "shardId"), (org.opensearch.Version) field(f, "indexVersion"));
             return null;
         }
         if (name.endsWith("ScriptScoreFunction")) {
-            return "function_score_script";
+            return FallbackReason.FUNCTION_SCORE_SCRIPT.key();
         }
-        return "function_score_" + f.getClass().getSimpleName();
+        return FallbackReason.FUNCTION_SCORE_ANY.key() + f.getClass().getSimpleName();
     }
 
     /** The {@code geo_point} field data a geo decay reads: {@code LatLonPointDVLeafFieldData}'s index side. */

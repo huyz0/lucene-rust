@@ -165,7 +165,7 @@ public final class SortEncoder {
     ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
-            return new Encoded(null, "sort_keys");
+            return new Encoded(null, FallbackReason.SORT_KEYS.key());
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(fields.length);
@@ -173,11 +173,11 @@ public final class SortEncoder {
             SortField f = unwrap(key);
             byte type = type(f);
             if (type < 0) {
-                return new Encoded(null, "sort_" + f.getClass().getSimpleName() + "_" + f.getType() + customReason(f));
+                return new Encoded(null, FallbackReason.SORT_ANY.key() + f.getClass().getSimpleName() + "_" + f.getType() + customReason(f));
             }
             if (f.getOptimizeSortWithIndexedData() == false) {
                 // The native comparator always skips with points; this one was told not to.
-                return new Encoded(null, "sort_unoptimized");
+                return new Encoded(null, FallbackReason.SORT_UNOPTIMIZED.key());
             }
             if (type == GEO) {
                 String reason = geoKey(f, out);
@@ -256,7 +256,7 @@ public final class SortEncoder {
             out.write(0);
         } else {
             if (after.fields == null || after.fields.length != fields.length) {
-                return new Encoded(null, "search_after_fields");
+                return new Encoded(null, FallbackReason.SEARCH_AFTER_FIELDS.key());
             }
             out.write(1);
             writeInt(out, after.doc);
@@ -272,12 +272,12 @@ public final class SortEncoder {
                         writeInt(out, b.length);
                         out.write(b.bytes, b.offset, b.length);
                     } else {
-                        return new Encoded(null, "search_after_type");
+                        return new Encoded(null, FallbackReason.SEARCH_AFTER_TYPE.key());
                     }
                     continue;
                 }
                 if (after.fields[i] == null) {
-                    return new Encoded(null, "search_after_null");
+                    return new Encoded(null, FallbackReason.SEARCH_AFTER_NULL.key());
                 }
                 SortField key = unwrap(fields[i]);
                 long bits = comparable(type(key), after.fields[i]);
@@ -357,10 +357,10 @@ public final class SortEncoder {
             try {
                 parts = nestedParts(geo.nested());
             } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
-                return "sort_geo_nested";
+                return FallbackReason.SORT_GEO_NESTED.key();
             }
             if (parts instanceof String) {
-                return "sort_geo_nested";
+                return FallbackReason.SORT_GEO_NESTED.key();
             }
         }
         byte flags = (byte) ((f.getReverse() ? REVERSE : 0) | mode | (parts != null ? NESTED_KEY : 0));
@@ -511,10 +511,10 @@ public final class SortEncoder {
     private static String scriptKey(SortField key, SortField f, ByteArrayOutputStream out) {
         try {
             if (NESTED == null || NESTED.get(f.getComparatorSource()) != null) {
-                return "sort_script_nested";
+                return FallbackReason.SORT_SCRIPT_NESTED.key();
             }
         } catch (ReflectiveOperationException e) {
-            return "sort_script_nested";
+            return FallbackReason.SORT_SCRIPT_NESTED.key();
         }
         out.write(SCRIPT);
         out.write(key == f && f.getReverse() ? REVERSE : 0);
@@ -560,7 +560,7 @@ public final class SortEncoder {
             boolean own = type == HALF_FLOAT || type == UNSIGNED_LONG;
             boolean skipping = SKIPPING.getBoolean(src);
             if (skipping == false && own == false) {
-                return "noskip";
+                return FallbackReason.NOSKIP.key();
             }
             Object nested = NESTED.get(src);
             byte[] parents = null;
@@ -578,7 +578,7 @@ public final class SortEncoder {
             }
             Field data = Reflect.declared(src.getClass(), "indexFieldData");
             if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
-                return "data";
+                return FallbackReason.DATA.key();
             }
             boolean ownType = switch (ifd.getNumericType()) {
                 case LONG, DATE -> type == LONG;
@@ -590,7 +590,7 @@ public final class SortEncoder {
                 default -> false;
             };
             if (ownType == false) {
-                return "type_" + ifd.getNumericType();
+                return FallbackReason.TYPE_ANY.key() + ifd.getNumericType();
             }
             // A scaled_float reports DOUBLE but stores its value times the scaling factor as a long:
             // the comparator's values (and the sort values it reports) are the scaled doubles, which
@@ -599,7 +599,7 @@ public final class SortEncoder {
             if (type == DOUBLE && ifd.getClass().getName().contains("ScaledFloat")) {
                 Field factor = Reflect.declared(ifd.getClass(), "scalingFactor");
                 if (factor == null) {
-                    return "scaled_float";
+                    return FallbackReason.SCALED_FLOAT.key();
                 }
                 inverseScale = 1d / factor.getDouble(ifd);
                 type = SCALED_FLOAT;
@@ -607,7 +607,7 @@ public final class SortEncoder {
             if (type == LONG) {
                 Field converter = Reflect.declared(src.getClass(), "converter");
                 if (converter == null || converter.get(src) != null) {
-                    return "converter";
+                    return FallbackReason.CONVERTER.key();
                 }
             }
             byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
@@ -620,7 +620,7 @@ public final class SortEncoder {
                 default -> -1;
             };
             if (flags < 0) {
-                return "mode_" + ((Enum<?>) SORT_MODE.get(src)).name() + (nested != null ? "_nested" : "");
+                return FallbackReason.MODE_ANY.key() + ((Enum<?>) SORT_MODE.get(src)).name() + (nested != null ? "_nested" : "");
             }
             if (nested != null) {
                 flags |= NESTED_KEY;
@@ -634,7 +634,7 @@ public final class SortEncoder {
             boolean unlike = inverseScale == 0 && (nested != null);
             return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren, unlike, inverseScale);
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
-            return "error";
+            return FallbackReason.ERROR.key();
         }
     }
 
@@ -646,17 +646,17 @@ public final class SortEncoder {
         // XFieldComparatorSource.Nested: the root documents' BitSetProducer (the query it wraps),
         // the inner query, the searcher that rewrites it, max_children.
         if (!(nested instanceof IndexFieldData.XFieldComparatorSource.Nested n)) {
-            return "nested";
+            return FallbackReason.NESTED.key();
         }
         Object producer = NativeAggregationTree.get(n, "rootFilter");
         org.apache.lucene.search.IndexSearcher searcher = (org.apache.lucene.search.IndexSearcher) NativeAggregationTree.get(n, "searcher");
         if (!(NativeAggregationTree.get(producer, "query") instanceof org.apache.lucene.search.Query parentQuery)) {
-            return "nested_parents";
+            return FallbackReason.NESTED_PARENTS.key();
         }
         byte[] parents = QueryEncoder.encode(searcher.rewrite(parentQuery), field -> true).blob();
         byte[] children = QueryEncoder.encode(searcher.rewrite(n.getInnerQuery()), field -> true).blob();
         if (parents == null || children == null) {
-            return "nested_query";
+            return FallbackReason.NESTED_QUERY.key();
         }
         int maxChildren = n.getNestedSort() != null ? n.getNestedSort().getMaxChildren() : Integer.MAX_VALUE;
         return new Object[] { parents, children, maxChildren };

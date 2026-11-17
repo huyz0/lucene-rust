@@ -159,7 +159,7 @@ public final class NativeReaders {
         IndexReader reader = segmentsOf(searched);
         IndexReader base = baseOf(reader);
         if (base == null) {
-            return new Acquired(0, "reader_not_standard");
+            return new Acquired(0, FallbackReason.READER_NOT_STANDARD.key());
         }
         Acquired opened = acquireBase(base);
         if (base == reader || opened.handle() == 0) {
@@ -171,7 +171,7 @@ public final class NativeReaders {
     private Acquired acquireBase(IndexReader reader) {
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
-            return new Acquired(0, "reader_uncacheable");
+            return new Acquired(0, FallbackReason.READER_UNCACHEABLE.key());
         }
         IndexReader.CacheKey key = helper.getKey();
         Acquired cached = byReader.get(key);
@@ -190,7 +190,7 @@ public final class NativeReaders {
                 if (a.handle() != 0) {
                     close(a.handle());
                 }
-                return new Acquired(0, "reader_closed");
+                return new Acquired(0, FallbackReason.READER_CLOSED.key());
             }
             return a;
         });
@@ -262,7 +262,7 @@ public final class NativeReaders {
     private Acquired acquireView(IndexReader reader, IndexReader base, long baseHandle) {
         IndexReader.CacheHelper helper = base.getReaderCacheHelper();
         if (helper == null) {
-            return new Acquired(0, "reader_uncacheable");
+            return new Acquired(0, FallbackReason.READER_UNCACHEABLE.key());
         }
         Object viewOrReason = viewOf(reader, base);
         if (viewOrReason instanceof String reason) {
@@ -280,7 +280,7 @@ public final class NativeReaders {
             if (opened.handle() != 0 && mine.remove(view.key(), opened)) {
                 close(opened.handle());
             }
-            return new Acquired(0, "reader_closed");
+            return new Acquired(0, FallbackReason.READER_CLOSED.key());
         }
         return opened;
     }
@@ -346,7 +346,7 @@ public final class NativeReaders {
         int rc = NativeSearch.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
-            return new Acquired(0, "native_open_failed");
+            return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
         }
         open.incrementAndGet();
         return new Acquired(out[0], null);
@@ -361,7 +361,7 @@ public final class NativeReaders {
         List<LeafReaderContext> outer = reader.leaves();
         List<LeafReaderContext> inner = base.leaves();
         if (outer.size() != inner.size()) {
-            return "reader_not_standard";
+            return FallbackReason.READER_NOT_STANDARD.key();
         }
         String[][] hidden = new String[outer.size()][];
         long[][] live = new long[outer.size()][];
@@ -379,24 +379,24 @@ public final class NativeReaders {
             Set<String> shownMasked = new java.util.HashSet<>();
             for (LeafReader layer = top; layer != bottom;) {
                 if (viewLeaves.contains(layer.getClass().getName()) == false) {
-                    return "reader_not_standard";
+                    return FallbackReason.READER_NOT_STANDARD.key();
                 }
                 Masking masking = maskedFields(layer, bottom);
                 if (masking == null) {
-                    return "reader_not_standard";
+                    return FallbackReason.READER_NOT_STANDARD.key();
                 }
                 maskedHere.addAll(masking.hidden());
                 for (java.util.Map.Entry<String, Object> e : masking.shown().entrySet()) {
                     Object earlier = masks.putIfAbsent(e.getKey(), e.getValue());
                     if (earlier != null && earlier != e.getValue() && sameMask(e.getKey(), earlier, e.getValue()) == false) {
                         // Two leaves of one reader masking one field differently: one native function cannot stand in for both.
-                        return "reader_not_standard";
+                        return FallbackReason.READER_NOT_STANDARD.key();
                     }
                     shownMasked.add(e.getKey());
                 }
                 layer = ((FilterLeafReader) layer).getDelegate();
                 if (layer instanceof FilterLeafReader == false && layer != bottom) {
-                    return "reader_not_standard";
+                    return FallbackReason.READER_NOT_STANDARD.key();
                 }
             }
             FieldInfos shown = top.getFieldInfos();
@@ -411,17 +411,17 @@ public final class NativeReaders {
                     // Its stored values and masked doc values remain; the plugin's field info for it
                     // says it is indexed no more, which the native view does as well.
                     if (seen == null || seen.getDocValuesType() != fi.getDocValuesType()) {
-                        return "reader_not_standard";
+                        return FallbackReason.READER_NOT_STANDARD.key();
                     }
                 } else if (seen == null) {
                     gone.add(fi.name);
                 } else if (sameShape(fi, seen) == false) {
-                    return "reader_not_standard";
+                    return FallbackReason.READER_NOT_STANDARD.key();
                 }
             }
             for (FieldInfo fi : shown) {
                 if (all.fieldInfo(fi.name) == null) {
-                    return "reader_not_standard";
+                    return FallbackReason.READER_NOT_STANDARD.key();
                 }
             }
             java.util.Collections.sort(gone);
@@ -588,11 +588,11 @@ public final class NativeReaders {
 
     private Acquired openFor(IndexReader reader) {
         if (!(reader instanceof DirectoryReader dr)) {
-            return new Acquired(0, "reader_not_directory");
+            return new Acquired(0, FallbackReason.READER_NOT_DIRECTORY.key());
         }
         DirectoryReader unwrapped = FilterDirectoryReader.unwrap(dr);
         if (!(unwrapped instanceof StandardDirectoryReader sdr)) {
-            return new Acquired(0, "reader_not_standard");
+            return new Acquired(0, FallbackReason.READER_NOT_STANDARD.key());
         }
         List<LeafReaderContext> leaves = reader.leaves();
         SegmentInfos infos = sdr.getSegmentInfos().clone();
@@ -604,24 +604,24 @@ public final class NativeReaders {
             for (FieldInfo fi : leaf.getFieldInfos()) {
                 String format = fi.getAttribute(POSTINGS_FORMAT_ATTRIBUTE);
                 if (format != null && SUPPORTED_POSTINGS_FORMATS.contains(format) == false) {
-                    return new Acquired(0, "postings_format");
+                    return new Acquired(0, FallbackReason.POSTINGS_FORMAT.key());
                 }
             }
             SegmentCommitInfo sci = org.opensearch.common.lucene.Lucene.segmentReader(leaf).getSegmentInfo();
             infos.add(sci);
             maxDocs[i] = leaf.maxDoc();
             if (NativeStores.refusal(sci.info.dir) != null) {
-                return new Acquired(0, "directory_not_native");
+                return new Acquired(0, FallbackReason.DIRECTORY_NOT_NATIVE.key());
             }
             Path p = NativeStores.path(sci.info.dir);
             if (path != null && path.equals(p) == false) {
-                return new Acquired(0, "directory_mixed");
+                return new Acquired(0, FallbackReason.DIRECTORY_MIXED.key());
             }
             path = p;
         }
         if (path == null) {
             if (NativeStores.refusal(sdr.directory()) != null) {
-                return new Acquired(0, "directory_not_native");
+                return new Acquired(0, FallbackReason.DIRECTORY_NOT_NATIVE.key());
             }
             path = NativeStores.path(sdr.directory());
         }
@@ -634,7 +634,7 @@ public final class NativeReaders {
             infoBytes = buf.toArrayCopy();
         } catch (IOException e) {
             logger.warn("lucene-rust: serializing SegmentInfos failed", e);
-            return new Acquired(0, "segment_infos_write");
+            return new Acquired(0, FallbackReason.SEGMENT_INFOS_WRITE.key());
         }
         byte[] pathBytes = RustEncryptedDirectory.nativePath(path).getBytes(StandardCharsets.UTF_8);
         long[][] live = new long[leaves.size()][];
@@ -651,7 +651,7 @@ public final class NativeReaders {
         }
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());
-            return new Acquired(0, "native_open_failed");
+            return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
         }
         long handle = out[0];
         open.incrementAndGet();

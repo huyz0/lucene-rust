@@ -425,7 +425,7 @@ public final class AnalyzerSpec {
                 sb.append('\n');
             }
         } catch (IOException | RuntimeException ex) {
-            return "analysis_synonyms";
+            return FallbackReason.ANALYSIS_SYNONYMS.key();
         }
         c.name = name;
         c.arg("synonyms", c.writer.resource(sb.toString()))
@@ -685,7 +685,7 @@ public final class AnalyzerSpec {
             if (m == null) {
                 m = noArgs(o.getClass());
                 if (m == null) {
-                    return "analysis_" + o.getClass().getSimpleName();
+                    return FallbackReason.ANALYSIS_ANY.key() + o.getClass().getSimpleName();
                 }
             }
             Component c = new Component(this);
@@ -916,7 +916,7 @@ public final class AnalyzerSpec {
         });
         map("pattern.PatternTokenizer", (o, c) -> {
             String p = plainPattern(((Matcher) read(o, "matcher")).pattern());
-            if (p == null) return "analysis_pattern_flags";
+            if (p == null) return FallbackReason.ANALYSIS_PATTERN_FLAGS.key();
             c.name = "pattern";
             c.arg("pattern", p).arg("group", readInt(o, "group"));
             return null;
@@ -935,7 +935,7 @@ public final class AnalyzerSpec {
                 for (Object t : set) {
                     String tag = new String((char[]) t);
                     if (tag.isEmpty() || tag.chars().anyMatch(ch -> ch == ',' || Character.isWhitespace(ch))) {
-                        return "analysis_words";
+                        return FallbackReason.ANALYSIS_WORDS.key();
                     }
                     tags.add(tag);
                 }
@@ -947,7 +947,7 @@ public final class AnalyzerSpec {
         });
         map("pattern.PatternReplaceCharFilter", (o, c) -> {
             String p = plainPattern((Pattern) read(o, "pattern"));
-            if (p == null) return "analysis_pattern_flags";
+            if (p == null) return FallbackReason.ANALYSIS_PATTERN_FLAGS.key();
             c.name = "patternReplace";
             c.arg("pattern", p).arg("replacement", (String) read(o, "replacement"));
             return null;
@@ -970,7 +970,7 @@ public final class AnalyzerSpec {
                         rules.append("\"\n");
                     }
                 } catch (IOException ex) {
-                    return "analysis_reflect";
+                    return FallbackReason.ANALYSIS_REFLECT.key();
                 }
             }
             c.name = "mapping";
@@ -992,7 +992,7 @@ public final class AnalyzerSpec {
         });
         map("snowball.SnowballFilter", (o, c) -> {
             String stemmer = read(o, "stemmer").getClass().getSimpleName();
-            if (stemmer.endsWith("Stemmer") == false) return "analysis_snowball";
+            if (stemmer.endsWith("Stemmer") == false) return FallbackReason.ANALYSIS_SNOWBALL.key();
             c.name = "snowballPorter";
             c.arg("language", stemmer.substring(0, stemmer.length() - "Stemmer".length()));
             return null;
@@ -1013,13 +1013,13 @@ public final class AnalyzerSpec {
         });
         map("reverse.ReverseStringFilter", (o, c) -> {
             if ((char) read(o, "marker") != (char) read(null, o.getClass(), "NOMARKER")) {
-                return "analysis_reverse_marker";
+                return FallbackReason.ANALYSIS_REVERSE_MARKER.key();
             }
             c.name = "reverseString";
             return null;
         });
         map("shingle.ShingleFilter", (o, c) -> {
-            if ("shingle".equals(read(o, "tokenType")) == false) return "analysis_shingle_type";
+            if ("shingle".equals(read(o, "tokenType")) == false) return FallbackReason.ANALYSIS_SHINGLE_TYPE.key();
             c.name = "shingle";
             c.arg("minShingleSize", readInt(o, "minShingleSize"))
                 .arg("maxShingleSize", readInt(o, "maxShingleSize"))
@@ -1080,12 +1080,12 @@ public final class AnalyzerSpec {
                             || (stem.isEmpty() == false && stem.charAt(stem.length() - 1) <= ' ')
                             || (word + stem).indexOf('\n') >= 0
                             || (word + stem).indexOf('\r') >= 0) {
-                            return "analysis_stemmer_override";
+                            return FallbackReason.ANALYSIS_STEMMER_OVERRIDE.key();
                         }
                         lines.append(word).append('\t').append(stem).append('\n');
                     }
                 } catch (IOException ex) {
-                    return "analysis_reflect";
+                    return FallbackReason.ANALYSIS_REFLECT.key();
                 }
             }
             c.name = "stemmerOverride";
@@ -1096,7 +1096,7 @@ public final class AnalyzerSpec {
             Dictionary d = (Dictionary) read(read(o, "stemmer"), "dictionary");
             HunspellFiles files = c.writer.hunspell(d);
             if (files == null) {
-                return "analysis_hunspell";
+                return FallbackReason.ANALYSIS_HUNSPELL.key();
             }
             StringJoiner dics = new StringJoiner(",");
             for (byte[] dic : files.dictionaries()) {
@@ -1126,7 +1126,7 @@ public final class AnalyzerSpec {
         });
         map("pattern.PatternReplaceFilter", (o, c) -> {
             String p = plainPattern(((Matcher) read(o, "m")).pattern());
-            if (p == null) return "analysis_pattern_flags";
+            if (p == null) return FallbackReason.ANALYSIS_PATTERN_FLAGS.key();
             c.name = "patternReplace";
             c.arg("pattern", p)
                 .arg("replacement", (String) read(o, "replacement"))
@@ -1150,7 +1150,7 @@ public final class AnalyzerSpec {
             String types = null;
             if (table != defaults && java.util.Arrays.equals(table, defaults) == false) {
                 types = typeRules(table, defaults.length);
-                if (types == null) return "analysis_word_delimiter_types";
+                if (types == null) return FallbackReason.ANALYSIS_WORD_DELIMITER_TYPES.key();
             }
             int flags = readInt(o, "flags");
             c.name = graph ? "wordDelimiterGraph" : "wordDelimiter";
@@ -1169,7 +1169,7 @@ public final class AnalyzerSpec {
                 "stemEnglishPossessive",
                 "ignoreKeywords" };
             int known = graph ? 10 : 9;
-            if ((flags & ~((1 << known) - 1)) != 0) return "analysis_word_delimiter_flags";
+            if ((flags & ~((1 << known) - 1)) != 0) return FallbackReason.ANALYSIS_WORD_DELIMITER_FLAGS.key();
             for (int i = 0; i < known; i++) {
                 c.arg(names[i], (flags & (1 << i)) != 0 ? 1 : 0);
             }
@@ -1246,7 +1246,7 @@ public final class AnalyzerSpec {
             Set<String> ignore = (Set<String>) read(o, "ignore");
             if (ignore != null && ignore.isEmpty() == false) {
                 String items = items(ignore);
-                if (items == null) return "analysis_words";
+                if (items == null) return FallbackReason.ANALYSIS_WORDS.key();
                 c.arg("ignore", items);
             }
             c.arg("synFlagsMask", readInt(o, "synFlagsMask"));
@@ -1261,7 +1261,7 @@ public final class AnalyzerSpec {
                     words.add(new String((char[]) w));
                 }
                 String items = items(words);
-                if (items == null) return "analysis_words";
+                if (items == null) return FallbackReason.ANALYSIS_WORDS.key();
                 c.arg("keep", items).arg("keepIgnoreCase", flag(ignoreCase(keep)));
             }
             @SuppressWarnings("unchecked")
@@ -1272,7 +1272,7 @@ public final class AnalyzerSpec {
                     prefixes.add(new String(w));
                 }
                 String items = items(prefixes);
-                if (items == null) return "analysis_words";
+                if (items == null) return FallbackReason.ANALYSIS_WORDS.key();
                 c.arg("okPrefix", items);
             }
             c.arg("onlyFirstWord", flag(readBool(o, "onlyFirstWord")))
@@ -1295,7 +1295,7 @@ public final class AnalyzerSpec {
             c.name = "patternCaptureGroup";
             for (int i = 0; i < matchers.length; i++) {
                 String p = plainPattern(matchers[i].pattern());
-                if (p == null) return "analysis_pattern_flags";
+                if (p == null) return FallbackReason.ANALYSIS_PATTERN_FLAGS.key();
                 c.arg(i == 0 ? "pattern" : "pattern" + i, p);
             }
             c.arg("preserve_original", flag(readBool(o, "preserveOriginal")));
@@ -1342,7 +1342,7 @@ public final class AnalyzerSpec {
         // ---- kuromoji and nori (OpenSearch's analysis-kuromoji and analysis-nori) ----
         map("ja.JapaneseTokenizer", (o, c) -> {
             Object v = read(o, "viterbi");
-            if (bundledDictionaries(v, "ja") == false) return "analysis_japanese_dictionary";
+            if (bundledDictionaries(v, "ja") == false) return FallbackReason.ANALYSIS_JAPANESE_DICTIONARY.key();
             boolean search = readBool(v, "searchMode");
             c.name = "japanese";
             c.arg("mode", readBool(v, "extendedMode") ? "EXTENDED" : search ? "SEARCH" : "NORMAL")
@@ -1360,9 +1360,9 @@ public final class AnalyzerSpec {
                 try {
                     text = japaneseUserDictionary(user);
                 } catch (IOException e) {
-                    return "analysis_reflect";
+                    return FallbackReason.ANALYSIS_REFLECT.key();
                 }
-                if (text == null) return "analysis_japanese_user_dictionary";
+                if (text == null) return FallbackReason.ANALYSIS_JAPANESE_USER_DICTIONARY.key();
                 c.arg("userDictionary", c.writer.resource(text));
             }
             return null;
@@ -1396,7 +1396,7 @@ public final class AnalyzerSpec {
         });
         map("ko.KoreanTokenizer", (o, c) -> {
             Object v = read(o, "viterbi");
-            if (bundledDictionaries(v, "ko") == false) return "analysis_korean_dictionary";
+            if (bundledDictionaries(v, "ko") == false) return FallbackReason.ANALYSIS_KOREAN_DICTIONARY.key();
             c.name = "korean";
             c.arg("decompoundMode", ((Enum<?>) read(v, "mode")).name())
                 .arg("outputUnknownUnigrams", flag(readBool(v, "outputUnknownUnigrams")))
@@ -1407,9 +1407,9 @@ public final class AnalyzerSpec {
                 try {
                     text = koreanUserDictionary(user, read(v, "characterDefinition"));
                 } catch (IOException | ReflectiveOperationException e) {
-                    return "analysis_reflect";
+                    return FallbackReason.ANALYSIS_REFLECT.key();
                 }
-                if (text == null) return "analysis_korean_user_dictionary";
+                if (text == null) return FallbackReason.ANALYSIS_KOREAN_USER_DICTIONARY.key();
                 c.arg("userDictionary", c.writer.resource(text));
             }
             return null;

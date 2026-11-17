@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.highlight;
 
+import org.lucenerust.opensearch.FallbackReason;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
@@ -86,7 +87,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         final long handle;
         String fallback;
         /** Why an analyzer the request needs is not described, for {@code STATUS_NEEDS_ANALYZER}. */
-        String undescribed = "highlight_analyzer";
+        String undescribed = FallbackReason.HIGHLIGHT_ANALYZER.key();
         /** The query matches nothing in the field: every hit's highlight is empty. */
         boolean noop;
 
@@ -149,7 +150,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
             logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
-            prepared.fallback = "highlight_native_error";
+            prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
             stats.fallback(prepared.fallback);
             return super.highlight(fieldContext);
         }
@@ -233,16 +234,16 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         boolean extended = ExtendedHighlighting.on(fieldContext);
         // A realtime view adds the writer's buffers as leaves the native reader does not hold.
         if (extended == false && LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
-            return new Prepared(null, 0, "highlight_live_view");
+            return new Prepared(null, 0, FallbackReason.HIGHLIGHT_LIVE_VIEW.key());
         }
         // Opened here when the query phase did not (a query it ran on Lucene): the hits were
         // searched on this reader, so later searches of it read through the same handle.
         long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
-            return new Prepared(null, 0, "highlight_reader");
+            return new Prepared(null, 0, FallbackReason.HIGHLIGHT_READER.key());
         }
         if (extended == false && fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
-            return new Prepared(null, 0, "highlight_derived_field");
+            return new Prepared(null, 0, FallbackReason.HIGHLIGHT_DERIVED_FIELD.key());
         }
         // A realtime view adds the writer's buffers as leaves after the reader's: the handle that
         // reads them as segments numbers the hits' documents as the view does.
@@ -250,7 +251,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         if (liveReader != null) {
             handle = liveReader.view().fullReader(handle);
             if (handle == 0) {
-                return new Prepared(null, 0, "highlight_live_view");
+                return new Prepared(null, 0, FallbackReason.HIGHLIGHT_LIVE_VIEW.key());
             }
         }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
@@ -266,7 +267,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         // no-match summary cuts at a word boundary of that locale on every path.
         boolean thai = "th".equals(locale.getLanguage());
         if (thai && extended == false) {
-            return new Prepared(null, 0, "highlight_locale");
+            return new Prepared(null, 0, FallbackReason.HIGHLIGHT_LOCALE.key());
         }
         if (thai) {
             ThaiWords.install();
@@ -289,7 +290,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
                 default:
                     if (extended == false) {
                         // OpenSearch refuses it; its highlighter says so.
-                        return new Prepared(null, 0, "highlight_boundary_scanner");
+                        return new Prepared(null, 0, FallbackReason.HIGHLIGHT_BOUNDARY_SCANNER.key());
                     }
                     throw new IllegalArgumentException("Invalid boundary scanner type: " + type);
             }
@@ -325,7 +326,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
                 specFields.add(f);
                 specs.add(described.blob());
             } else if (undescribed == null) {
-                undescribed = "highlight_" + described.reason();
+                undescribed = FallbackReason.HIGHLIGHT_ANY.key() + described.reason();
             }
         }
         if (offsetSource == OffsetSource.ANALYSIS && specFields.contains(fieldContext.fieldName) == false) {
