@@ -223,6 +223,18 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  dv_range)
+    # The pair (DvRangeMicro.java / micro_dv_range.rs): doc-values range
+    # queries (NUMERIC, SORTED_NUMERIC, SORTED ordinals) counted over the
+    # value-facets corpus.
+    MAIN=DvRangeMicro
+    SRC=benchmarks/micro/java/DvRangeMicro.java
+    EXTRA_SRC="benchmarks/micro/java/ValueFacetsMicro.java benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/value-facets}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   ssdv_facets)
     # The pair (SsdvFacetsMicro.java / micro_ssdv_facets.rs): the
     # sorted-set reader state, SortedSetDocValuesFacetCounts (plain,

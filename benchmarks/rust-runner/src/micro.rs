@@ -65,6 +65,7 @@ mod micro_sandbox;
 mod micro_snowball;
 mod micro_spatial_extras;
 mod micro_spell;
+mod micro_dv_range;
 mod micro_ssdv_facets;
 mod micro_stmerge;
 mod micro_stphrase;
@@ -2261,6 +2262,12 @@ fn main() {
                 .nth(2)
                 .expect("value_facets needs the ValueFacetsMicro corpus directory");
             micro_value_facets::bench_value_facets(warmup, measure, &index);
+        }
+        "dv_range" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("dv_range needs the ValueFacetsMicro corpus directory");
+            micro_dv_range::bench_dv_range(warmup, measure, &index);
         }
         "ssdv_facets" => {
             let index = std::env::args()
