@@ -1635,7 +1635,11 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSorted {
-            cur: DvCursor::open(self, e.ords.disi.backing(data), DocsRegion::numeric(&e.ords))?,
+            cur: DvCursor::open(
+                self,
+                e.ords.disi.backing(data),
+                DocsRegion::numeric(&e.ords),
+            )?,
             ords: NumericReader::new(data, &e.ords),
             terms: TermsDict::open(data, &e.terms)?,
             ord: -1,
@@ -1690,12 +1694,20 @@ impl LeafReader for SegmentReader {
         };
         let (docs, ords, terms) = match &e.kind {
             SortedSetKind::Single(s) => (
-                DvCursor::open(self, s.ords.disi.backing(data), DocsRegion::numeric(&s.ords))?,
+                DvCursor::open(
+                    self,
+                    s.ords.disi.backing(data),
+                    DocsRegion::numeric(&s.ords),
+                )?,
                 SetOrds::Single(NumericReader::new(data, &s.ords)),
                 &s.terms,
             ),
             SortedSetKind::Multi { ords, terms } => (
-                DvCursor::open(self, ords.numeric.disi.backing(data), DocsRegion::multi(ords))?,
+                DvCursor::open(
+                    self,
+                    ords.numeric.disi.backing(data),
+                    DocsRegion::multi(ords),
+                )?,
                 SetOrds::Multi(SortedNumericReader::new(data, ords)),
                 terms,
             ),

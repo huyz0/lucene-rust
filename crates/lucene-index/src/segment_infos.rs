@@ -703,7 +703,11 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
             }
             for _ in 0..num_overlay_fields {
                 let field_number = input.read_be_i32()?;
-                let base_gen = check_generation("overlay baseGen", input.read_be_u64()? as i64, &segment_name)?;
+                let base_gen = check_generation(
+                    "overlay baseGen",
+                    input.read_be_u64()? as i64,
+                    &segment_name,
+                )?;
                 let num_deltas = input.read_be_i32()?;
                 if num_deltas < 0 || num_deltas as usize > input.remaining() {
                     return Err(Error::InvalidDocValuesFieldCount(num_deltas, segment_name));
@@ -981,7 +985,10 @@ pub fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
 /// a segment carries overlays, which only that format can record; otherwise
 /// [`VERSION_86`], which every Lucene 10 reads.
 fn write_version(segment_infos: &SegmentInfos) -> i32 {
-    let overlays = segment_infos.segments.iter().any(|s| !s.dv_overlays.is_empty());
+    let overlays = segment_infos
+        .segments
+        .iter()
+        .any(|s| !s.dv_overlays.is_empty());
     if segment_infos.format_version >= VERSION_10_6 || overlays {
         VERSION_10_6
     } else {

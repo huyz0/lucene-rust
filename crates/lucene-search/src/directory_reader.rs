@@ -2090,7 +2090,10 @@ impl SegmentReader {
             &only,
         );
         debug_assert!(parsed.is_ok(), "parsing buffered doc values: {parsed:?}");
-        let (_, meta) = parsed.ok()?;
+        let (_, mut meta) = parsed.ok()?;
+        if let Some(dvp) = encoded.dvp {
+            meta.attach_disi(doc_values::DisiBytes::new(Arc::new(Input::Owned(dvp))));
+        }
         Some(DocValuesGeneration {
             field_number,
             meta: Arc::new(meta),
@@ -2651,7 +2654,9 @@ impl SegmentReader {
                     Some(DocValuesField::SortedNumeric(e)) => numeric(&e.numeric, data),
                     Some(DocValuesField::SortedSet(e)) => match &e.kind {
                         doc_values::SortedSetKind::Single(sorted) => numeric(&sorted.ords, data),
-                        doc_values::SortedSetKind::Multi { ords, .. } => numeric(&ords.numeric, data),
+                        doc_values::SortedSetKind::Multi { ords, .. } => {
+                            numeric(&ords.numeric, data)
+                        }
                     },
                 };
                 (data, o, l, d)

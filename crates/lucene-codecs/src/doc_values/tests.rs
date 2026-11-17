@@ -555,7 +555,13 @@ fn interval_bytes(levels: &[SkipIndexLevelInterval]) -> Vec<u8> {
 
 fn dvs_bytes(id: &[u8; ID_LENGTH], intervals_body: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    codec_util::write_index_header(&mut out, SKIP_INDEX_META_CODEC, VERSION_WRITE_DEFAULT, id, "");
+    codec_util::write_index_header(
+        &mut out,
+        SKIP_INDEX_META_CODEC,
+        VERSION_WRITE_DEFAULT,
+        id,
+        "",
+    );
     out.extend_from_slice(intervals_body);
     codec_util::write_footer(&mut out);
     out
@@ -1015,7 +1021,13 @@ fn parse_skip_index_decodes_multi_level_intervals() {
 
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_WRITE_DEFAULT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1046,7 +1058,13 @@ fn parse_skip_index_rejects_zero_level_count() {
     let body = vec![0u8]; // level count 0 is invalid (must be 1..=4)
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_WRITE_DEFAULT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1071,7 +1089,13 @@ fn parse_skip_index_rejects_level_count_above_max() {
     let body = vec![SKIP_INDEX_MAX_LEVEL + 1];
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_WRITE_DEFAULT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1098,7 +1122,13 @@ fn parse_skip_index_rejects_truncated_level_body() {
     body.extend_from_slice(&[0u8; 10]);
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_WRITE_DEFAULT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -5267,4 +5297,92 @@ fn cursor_readers_agree_with_the_one_shot_decoders() {
             "doc {doc}"
         );
     }
+}
+
+/// Format version 3 (Lucene 10.6): the sparse fields' `IndexedDISI` is in a
+/// `.dvp` file, and every field reads back the same as from version 2.
+#[test]
+fn version_3_keeps_sparse_presence_in_a_dvp_file_and_reads_back_like_version_2() {
+    let id = [7u8; ID_LENGTH];
+    let numeric: Vec<(i32, i64)> = (0..5000)
+        .step_by(7)
+        .map(|d| (d, i64::from(d) * 3))
+        .collect();
+    let binary: Vec<(i32, Vec<u8>)> = (0..5000)
+        .step_by(11)
+        .map(|d| (d, d.to_string().into_bytes()))
+        .collect();
+    let multi: Vec<(i32, Vec<i64>)> = (0..5000)
+        .step_by(13)
+        .map(|d| (d, vec![i64::from(d), i64::from(d) + 1]))
+        .collect();
+    let fields = [
+        DenseField::SparseNumeric(0, &numeric),
+        DenseField::SparseBinary(1, &binary),
+        DenseField::SparseSortedNumeric(2, &multi),
+    ];
+    let mut infos = field_infos_with(&[0, 1, 2]);
+    infos.fields[1].doc_values_type = DocValuesType::Binary;
+    infos.fields[2].doc_values_type = DocValuesType::SortedNumeric;
+    let write = |v3: bool| {
+        write_fields_with_format_files(
+            &fields,
+            &[],
+            5000,
+            &id,
+            "",
+            Lucene90DocValuesFormat::default().with_disi_file(v3),
+        )
+        .unwrap()
+    };
+    let v2 = write(false);
+    let v3 = write(true);
+    assert!(v2.dvp.is_none());
+    let dvp = v3.dvp.expect("version 3 writes a .dvp");
+    assert!(v3.dvd.len() < v2.dvd.len(), "the DISI left the .dvd");
+
+    let (ver2, meta2) = parse_meta(&v2.dvm, &id, "", &infos).unwrap();
+    let (ver3, mut meta3) = parse_meta(&v3.dvm, &id, "", &infos).unwrap();
+    assert_eq!((ver2, ver3), (2, 3));
+    assert!(!has_disi_file(ver2) && has_disi_file(ver3));
+    check_disi_header_footer(&dvp, &id, "", ver3).unwrap();
+    assert!(check_disi_header_footer(&dvp, &id, "", 2).is_err());
+    check_data_header_footer(&v3.dvd, &id, "").unwrap();
+
+    // Before the `.dvp` is attached a sparse read fails instead of reading `.dvd`.
+    assert!(numeric_value(&v3.dvd, meta3.numeric_entry(0).unwrap(), 7).is_err());
+    meta3.attach_disi(DisiBytes::new(std::sync::Arc::new(dvp)));
+
+    for doc in 0..5000 {
+        assert_eq!(
+            numeric_value(&v2.dvd, meta2.numeric_entry(0).unwrap(), doc).unwrap(),
+            numeric_value(&v3.dvd, meta3.numeric_entry(0).unwrap(), doc).unwrap(),
+            "numeric doc {doc}"
+        );
+        assert_eq!(
+            binary_value(&v2.dvd, meta2.binary_entry(1).unwrap(), doc).unwrap(),
+            binary_value(&v3.dvd, meta3.binary_entry(1).unwrap(), doc).unwrap(),
+            "binary doc {doc}"
+        );
+        assert_eq!(
+            sorted_numeric_values(&v2.dvd, meta2.sorted_numeric_entry(2).unwrap(), doc).unwrap(),
+            sorted_numeric_values(&v3.dvd, meta3.sorted_numeric_entry(2).unwrap(), doc).unwrap(),
+            "sorted numeric doc {doc}"
+        );
+    }
+    let mut reader = NumericReader::new(&v3.dvd, meta3.numeric_entry(0).unwrap());
+    assert_eq!(reader.value(14).unwrap(), Some(42));
+    assert_eq!(reader.value(15).unwrap(), None);
+}
+
+#[test]
+fn the_tuple_writers_refuse_a_format_that_needs_a_dvp() {
+    let id = [1u8; ID_LENGTH];
+    let numeric = [(1i32, 5i64)];
+    let fields = [DenseField::SparseNumeric(0, &numeric)];
+    let format = Lucene90DocValuesFormat::default().with_disi_file(true);
+    assert!(matches!(
+        write_fields_with_format(&fields, &[], 4, &id, "", format),
+        Err(WriteError::DisiFileNotReturned)
+    ));
 }

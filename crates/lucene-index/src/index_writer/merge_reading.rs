@@ -621,6 +621,7 @@ impl IndexingConfig {
             postings_formats: self.postings_formats.clone(),
             doc_values_formats: self.doc_values_formats.clone(),
             default_doc_values_format: self.resolved_default_doc_values_format(),
+            index_format: self.index_format,
             default_postings_format: self.default_postings_format,
             stored_fields_lz4_high_compression: self.merge_lz4_high_compression
                 && !(self.merge_lz4_hc_non_force

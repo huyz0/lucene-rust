@@ -509,8 +509,7 @@ fn open_doc_values(
         let only = FieldInfos {
             fields: vec![field.clone()],
         };
-        let (version, mut meta) =
-            doc_values::parse_meta(&meta_bytes, &segment_id, &suffix, &only)?;
+        let (version, mut meta) = doc_values::parse_meta(&meta_bytes, &segment_id, &suffix, &only)?;
         if doc_values::has_disi_file(version) {
             let disi_name =
                 field_updates::generation_file_name(segment_name, gen, &per_field, "dvp");

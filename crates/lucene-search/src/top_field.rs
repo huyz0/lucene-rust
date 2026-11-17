@@ -2393,9 +2393,7 @@ impl<'a> WithValue<'a> {
         let region = usize::try_from(e.docs_with_field_offset)
             .ok()
             .zip(usize::try_from(e.docs_with_field_length).ok())
-            .and_then(|(start, len)| {
-                e.disi.backing(data).get(start..start.checked_add(len)?)
-            });
+            .and_then(|(start, len)| e.disi.backing(data).get(start..start.checked_add(len)?));
         match region {
             Some(region) => WithValue::Disi {
                 region,
