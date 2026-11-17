@@ -1,6 +1,6 @@
 {
  "org/lucenerust/opensearch/AnalyzerSpec.java": 1274,
- "org/lucenerust/opensearch/ExtendedEncoder.java": 1452,
+ "org/lucenerust/opensearch/ExtendedEncoder.java": 1437,
  "org/lucenerust/opensearch/ExtendedEncoder.java#expressionSpec": 141,
  "org/lucenerust/opensearch/ExtendedEncoder.java#function": 144,
  "org/lucenerust/opensearch/ExtendedEncoder.java#source": 111,
@@ -11,9 +11,7 @@
  "org/lucenerust/opensearch/NativeSearch.java": 1066,
  "org/lucenerust/opensearch/NativeSearch.java#openReaderView@2": 108,
  "org/lucenerust/opensearch/NativeSignificantTerms.java#read@2": 104,
- "org/lucenerust/opensearch/QueryEncoder.java": 1125,
  "org/lucenerust/opensearch/QueryEncoder.java#highlightNode": 105,
- "org/lucenerust/opensearch/QueryEncoder.java#node": 312,
  "org/lucenerust/opensearch/RestStatsAction.java#prepareRequest": 129,
  "org/lucenerust/opensearch/SortEncoder.java#encode@6": 146,
  "org/lucenerust/opensearch/SortEncoder.java#modeOrReason": 102,
