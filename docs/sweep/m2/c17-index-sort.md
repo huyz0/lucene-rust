@@ -434,8 +434,8 @@ dense-only in the multi-field path and a sparse one is
 
 ### What the sort costs per document
 
-`benchmarks/rust-runner`'s `index-bench` gained `LUCENE_RUST_INDEX_SORT` (0/1/2
-tiers) and `LUCENE_RUST_DOC_VALUES_ONLY` -- the latter is the honest control:
+`benchmarks/rust-runner`'s `index-bench` gained `ACCELERATED_INDEX_SORT` (0/1/2
+tiers) and `ACCELERATED_DOC_VALUES_ONLY` -- the latter is the honest control:
 it writes the *same* two NUMERIC doc-values columns and does not sort, so the
 delta is the sort rather than the columns it is defined over. 50 000 documents
 x 40 tokens, postings + norms, one core, `--release`.
@@ -452,7 +452,7 @@ x 40 tokens, postings + norms, one core, `--release`.
 **The sort is free at this scale**, and the baseline lands exactly on c3/c7's
 20-21 µs/doc.
 
-**One flush of all 50 000 documents** (`LUCENE_RUST_RAM_BUFFER_MB=4096`, so the
+**One flush of all 50 000 documents** (`ACCELERATED_RAM_BUFFER_MB=4096`, so the
 permutation is over the whole corpus at once rather than per RAM-buffer batch),
 five interleaved pairs:
 

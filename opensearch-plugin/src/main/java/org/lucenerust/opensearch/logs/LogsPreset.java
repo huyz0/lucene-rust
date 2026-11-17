@@ -80,7 +80,7 @@ public final class LogsPreset implements ClusterStateListener {
         ) {
             return ComponentTemplate.parse(p);
         } catch (IOException e) {
-            throw new UncheckedIOException("lucene-rust: cannot read the component template [" + name + "]", e);
+            throw new UncheckedIOException("accelerated-search: cannot read the component template [" + name + "]", e);
         }
     }
 
@@ -120,12 +120,12 @@ public final class LogsPreset implements ClusterStateListener {
         }
         String name = names.get(i);
         PutComponentTemplateAction.Request request = new PutComponentTemplateAction.Request(name).componentTemplate(templates.get(name))
-            .cause("lucene-rust logs preset");
+            .cause("accelerated-search logs preset");
         // As the node itself, not as whichever request's user triggered this state change.
         ThreadContext.StoredContext restore = client.threadPool().getThreadContext().stashContext();
         try {
             client.execute(PutComponentTemplateAction.INSTANCE, request, ActionListener.wrap(r -> put(names, i + 1), e -> {
-                logger.warn("lucene-rust: cannot put the component template [" + name + "]", e);
+                logger.warn("accelerated-search: cannot put the component template [" + name + "]", e);
                 failed.add(name);
                 put(names, i + 1);
             }));

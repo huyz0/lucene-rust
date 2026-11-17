@@ -35,7 +35,7 @@ public final class HighlightRouting {
             f.setAccessible(true);
             return f;
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.warn("lucene-rust: highlighting stays on OpenSearch's highlighters: {}", e.toString());
+            logger.warn("accelerated-search: highlighting stays on OpenSearch's highlighters: {}", e.toString());
             return null;
         }
     }

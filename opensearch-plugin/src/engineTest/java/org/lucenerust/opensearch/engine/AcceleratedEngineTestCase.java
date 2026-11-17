@@ -185,7 +185,7 @@ import static org.hamcrest.Matchers.notNullValue;
 import static org.mockito.Mockito.mock;
 
 @SuppressWarnings({ "deprecation", "try", "unchecked", "rawtypes", "cast", "static", "fallthrough", "this-escape", "removal" }) // derived code, linted upstream
-public abstract class RustEngineTestCase extends OpenSearchTestCase {
+public abstract class AcceleratedEngineTestCase extends OpenSearchTestCase {
     static {
         org.lucenerust.opensearch.NativeLibrary.load(java.nio.file.Path.of("."));
     }
@@ -201,8 +201,8 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
     protected Store store;
     protected Store storeReplica;
 
-    protected RustEngine engine;
-    protected RustEngine replicaEngine;
+    protected AcceleratedEngine engine;
+    protected AcceleratedEngine replicaEngine;
 
     protected IndexSettings defaultSettings;
     protected String codecName;
@@ -613,15 +613,15 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return new TranslogHandler(xContentRegistry(), indexSettings, engine);
     }
 
-    protected RustEngine createEngine(Store store, Path translogPath) throws IOException {
+    protected AcceleratedEngine createEngine(Store store, Path translogPath) throws IOException {
         return createEngine(defaultSettings, store, translogPath, newMergePolicy(), null);
     }
 
-    protected RustEngine createEngine(Store store, Path translogPath, LongSupplier globalCheckpointSupplier) throws IOException {
+    protected AcceleratedEngine createEngine(Store store, Path translogPath, LongSupplier globalCheckpointSupplier) throws IOException {
         return createEngine(defaultSettings, store, translogPath, newMergePolicy(), null, null, globalCheckpointSupplier);
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         Store store,
         Path translogPath,
         BiFunction<Long, Long, LocalCheckpointTracker> localCheckpointTrackerSupplier
@@ -629,7 +629,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return createEngine(defaultSettings, store, translogPath, newMergePolicy(), null, localCheckpointTrackerSupplier, null);
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         Store store,
         Path translogPath,
         BiFunction<Long, Long, LocalCheckpointTracker> localCheckpointTrackerSupplier,
@@ -647,13 +647,13 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         );
     }
 
-    protected RustEngine createEngine(IndexSettings indexSettings, Store store, Path translogPath, MergePolicy mergePolicy)
+    protected AcceleratedEngine createEngine(IndexSettings indexSettings, Store store, Path translogPath, MergePolicy mergePolicy)
         throws IOException {
         return createEngine(indexSettings, store, translogPath, mergePolicy, null);
 
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         IndexSettings indexSettings,
         Store store,
         Path translogPath,
@@ -663,7 +663,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return createEngine(indexSettings, store, translogPath, mergePolicy, indexWriterFactory, null, null);
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         IndexSettings indexSettings,
         Store store,
         Path translogPath,
@@ -685,7 +685,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         );
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         IndexSettings indexSettings,
         Store store,
         Path translogPath,
@@ -708,7 +708,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         );
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         IndexSettings indexSettings,
         Store store,
         Path translogPath,
@@ -723,11 +723,11 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return createEngine(indexWriterFactory, localCheckpointTrackerSupplier, seqNoForOperation, config);
     }
 
-    protected RustEngine createEngine(EngineConfig config) throws IOException {
+    protected AcceleratedEngine createEngine(EngineConfig config) throws IOException {
         return createEngine(null, null, null, config);
     }
 
-    protected RustEngine createEngineForWrapper(
+    protected AcceleratedEngine createEngineForWrapper(
         EngineConfig config,
         CheckedFunction<DirectoryReader, DirectoryReader, IOException> readerWrapper
     ) throws IOException {
@@ -745,7 +745,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
 
         }
 
-        RustEngine internalEngine = new RustEngine(config) {
+        AcceleratedEngine internalEngine = new AcceleratedEngine(config) {
             @Override
             public Searcher acquireSearcher(String source, SearcherScope scope, Function<Searcher, Searcher> wrapper)
                 throws EngineException {
@@ -764,7 +764,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return internalEngine;
     }
 
-    protected RustEngine createEngine(
+    protected AcceleratedEngine createEngine(
         @Nullable IndexWriterFactory indexWriterFactory,
         @Nullable BiFunction<Long, Long, LocalCheckpointTracker> localCheckpointTrackerSupplier,
         @Nullable ToLongBiFunction<Engine, Engine.Operation> seqNoForOperation,
@@ -783,14 +783,14 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
             store.associateIndexWithNewTranslog(translogUuid);
 
         }
-        RustEngine internalEngine = createInternalEngine(indexWriterFactory, localCheckpointTrackerSupplier, seqNoForOperation, config);
+        AcceleratedEngine internalEngine = createInternalEngine(indexWriterFactory, localCheckpointTrackerSupplier, seqNoForOperation, config);
         translogHandler = createTranslogHandler(config.getIndexSettings(), internalEngine);
         internalEngine.translogManager().recoverFromTranslog(translogHandler, internalEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
         return internalEngine;
     }
 
-    public static RustEngine createEngine(EngineConfig engineConfig, int maxDocs) {
-        return new RustEngine(engineConfig, maxDocs, LocalCheckpointTracker::new, TranslogEventListener.NOOP_TRANSLOG_EVENT_LISTENER);
+    public static AcceleratedEngine createEngine(EngineConfig engineConfig, int maxDocs) {
+        return new AcceleratedEngine(engineConfig, maxDocs, LocalCheckpointTracker::new, TranslogEventListener.NOOP_TRANSLOG_EVENT_LISTENER);
     }
 
     @FunctionalInterface
@@ -803,19 +803,19 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
      * Generate a new sequence number and return it. Only works on InternalEngines
      */
     public static long generateNewSeqNo(final Engine engine) {
-        assert engine instanceof RustEngine : "expected RustEngine, got: " + engine.getClass();
-        RustEngine internalEngine = (RustEngine) engine;
+        assert engine instanceof AcceleratedEngine : "expected AcceleratedEngine, got: " + engine.getClass();
+        AcceleratedEngine internalEngine = (AcceleratedEngine) engine;
         return internalEngine.getLocalCheckpointTracker().generateSeqNo();
     }
 
-    public static RustEngine createInternalEngine(
+    public static AcceleratedEngine createInternalEngine(
         @Nullable final IndexWriterFactory indexWriterFactory,
         @Nullable final BiFunction<Long, Long, LocalCheckpointTracker> localCheckpointTrackerSupplier,
         @Nullable final ToLongBiFunction<Engine, Engine.Operation> seqNoForOperation,
         final EngineConfig config
     ) {
         if (localCheckpointTrackerSupplier == null) {
-            return new RustTestEngine(config) {
+            return new AcceleratedTestEngine(config) {
 
                 @Override
                 protected long doGenerateSeqNoForOperation(final Operation operation) {
@@ -825,7 +825,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
                 }
             };
         } else {
-            return new RustTestEngine(config, IndexWriter.MAX_DOCS, localCheckpointTrackerSupplier) {
+            return new AcceleratedTestEngine(config, IndexWriter.MAX_DOCS, localCheckpointTrackerSupplier) {
 
                 @Override
                 protected long doGenerateSeqNoForOperation(final Operation operation) {
@@ -1162,11 +1162,11 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return new Engine.Delete(id, newUid(id), seqNo, 1, version, null, REPLICA, startTime, SequenceNumbers.UNASSIGNED_SEQ_NO, 0);
     }
 
-    protected static void assertVisibleCount(RustEngine engine, int numDocs) throws IOException {
+    protected static void assertVisibleCount(AcceleratedEngine engine, int numDocs) throws IOException {
         assertVisibleCount(engine, numDocs, true);
     }
 
-    protected static void assertVisibleCount(RustEngine engine, int numDocs, boolean refresh) throws IOException {
+    protected static void assertVisibleCount(AcceleratedEngine engine, int numDocs, boolean refresh) throws IOException {
         if (refresh) {
             engine.refresh("test");
         }
@@ -1279,7 +1279,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
                     case INDEX:
                         operations.add(
                             new Engine.Index(
-                                RustEngineTestCase.newUid(doc),
+                                AcceleratedEngineTestCase.newUid(doc),
                                 doc,
                                 seqNo,
                                 primaryTerm.get(),
@@ -1298,7 +1298,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
                         operations.add(
                             new Engine.Delete(
                                 EngineTestAccess.id(doc),
-                                RustEngineTestCase.newUid(doc),
+                                AcceleratedEngineTestCase.newUid(doc),
                                 seqNo,
                                 primaryTerm.get(),
                                 i,
@@ -1330,7 +1330,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
 
     public static void assertOpsOnReplica(
         final List<Engine.Operation> ops,
-        final RustEngine replicaEngine,
+        final AcceleratedEngine replicaEngine,
         boolean shuffleOps,
         final Logger logger
     ) throws IOException {
@@ -1403,7 +1403,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         }
     }
 
-    public static void concurrentlyApplyOps(List<Engine.Operation> ops, RustEngine engine) throws InterruptedException {
+    public static void concurrentlyApplyOps(List<Engine.Operation> ops, AcceleratedEngine engine) throws InterruptedException {
         Thread[] thread = new Thread[randomIntBetween(3, 5)];
         CountDownLatch startGun = new CountDownLatch(thread.length);
         AtomicInteger offset = new AtomicInteger(-1);
@@ -1548,11 +1548,11 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
      * Asserts the provided engine has a consistent document history between translog and Lucene index.
      */
     public static void assertConsistentHistoryBetweenTranslogAndLuceneIndex(Engine engine) throws IOException {
-        if (engine instanceof RustEngine == false) {
+        if (engine instanceof AcceleratedEngine == false) {
             return;
         }
         final List<Translog.Operation> translogOps = new ArrayList<>();
-        try (Translog.Snapshot snapshot = RustEngineTestCase.getTranslog(engine).newSnapshot()) {
+        try (Translog.Snapshot snapshot = AcceleratedEngineTestCase.getTranslog(engine).newSnapshot()) {
             Translog.Operation op;
             while ((op = snapshot.next()) != null) {
                 translogOps.add(op);
@@ -1560,14 +1560,14 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         }
         final Map<Long, Translog.Operation> luceneOps = readAllOperationsInLucene(engine).stream()
             .collect(Collectors.toMap(Translog.Operation::seqNo, Function.identity()));
-        final long maxSeqNo = ((RustEngine) engine).getLocalCheckpointTracker().getMaxSeqNo();
+        final long maxSeqNo = ((AcceleratedEngine) engine).getLocalCheckpointTracker().getMaxSeqNo();
         for (Translog.Operation op : translogOps) {
             assertThat("translog operation [" + op + "] > max_seq_no[" + maxSeqNo + "]", op.seqNo(), lessThanOrEqualTo(maxSeqNo));
         }
         for (Translog.Operation op : luceneOps.values()) {
             assertThat("lucene operation [" + op + "] > max_seq_no[" + maxSeqNo + "]", op.seqNo(), lessThanOrEqualTo(maxSeqNo));
         }
-        final long globalCheckpoint = RustEngineTestCase.getTranslog(engine).getLastSyncedGlobalCheckpoint();
+        final long globalCheckpoint = AcceleratedEngineTestCase.getTranslog(engine).getLastSyncedGlobalCheckpoint();
         final long retainedOps = engine.config().getIndexSettings().getSoftDeleteRetentionOperations();
         final long seqNoForRecovery;
         if (engine.config().getIndexSettings().isSoftDeleteEnabled()) {
@@ -1625,7 +1625,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
     }
 
     public static void assertAtMostOneLuceneDocumentPerSequenceNumber(Engine engine) throws IOException {
-        if (engine instanceof RustEngine) {
+        if (engine instanceof AcceleratedEngine) {
             try {
                 engine.refresh("test");
                 try (Engine.Searcher searcher = engine.acquireSearcher("test")) {
@@ -1748,7 +1748,7 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
      * Exposes a translog associated with the given engine for testing purpose.
      */
     public static Translog getTranslog(Engine engine) {
-        assert engine instanceof RustEngine || engine instanceof NRTReplicationEngine
+        assert engine instanceof AcceleratedEngine || engine instanceof NRTReplicationEngine
             : "only InternalEngines or NRTReplicationEngines have translogs, got: " + engine.getClass();
         engine.ensureOpen();
         TranslogManager translogManager = engine.translogManager();
@@ -1764,13 +1764,13 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
      * @param seqNo the sequence number that the checkpoint must advance to before this method returns
      * @throws InterruptedException if the thread was interrupted while blocking on the condition
      */
-    public static void waitForOpsToComplete(RustEngine engine, long seqNo) throws InterruptedException {
+    public static void waitForOpsToComplete(AcceleratedEngine engine, long seqNo) throws InterruptedException {
         engine.getLocalCheckpointTracker().waitForProcessedOpsToComplete(seqNo);
     }
 
     public static boolean hasSnapshottedCommits(Engine engine) {
-        assert engine instanceof RustEngine : "only InternalEngines have snapshotted commits, got: " + engine.getClass();
-        RustEngine internalEngine = (RustEngine) engine;
+        assert engine instanceof AcceleratedEngine : "only InternalEngines have snapshotted commits, got: " + engine.getClass();
+        AcceleratedEngine internalEngine = (AcceleratedEngine) engine;
         return internalEngine.hasSnapshottedCommits();
     }
 
@@ -1810,12 +1810,12 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
      * Returns the number of times a version was looked up either from version map or from the index.
      */
     public static long getNumVersionLookups(Engine engine) {
-        return ((RustEngine) engine).getNumVersionLookups();
+        return ((AcceleratedEngine) engine).getNumVersionLookups();
     }
 
     public static long getInFlightDocCount(Engine engine) {
-        if (engine instanceof RustEngine) {
-            return ((RustEngine) engine).getInFlightDocCount();
+        if (engine instanceof AcceleratedEngine) {
+            return ((AcceleratedEngine) engine).getInFlightDocCount();
         } else {
             return 0;
         }

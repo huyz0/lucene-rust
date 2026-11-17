@@ -158,7 +158,7 @@ final class NativeSelfTestSimilarity {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, Compare withSimilarity) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-similarity");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-similarity");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;

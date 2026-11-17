@@ -3,7 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
-import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
 import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -815,15 +815,15 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             return null;
         }
         Settings settings = context.getIndexSettings().getSettings();
-        float recall = RustEngineSupport.KNN_TARGET_RECALL.get(settings);
+        float recall = AcceleratedEngineSupport.KNN_TARGET_RECALL.get(settings);
         if (recall <= 0f) {
             return null;
         }
         String key = context.index().getUUID() + "/" + context.getShardId() + "/" + fieldName;
         return new KnnTopVectorQuery.RecallTarget(
             recall,
-            RustEngineSupport.KNN_RECALL_SAMPLE_RATE.get(settings),
-            RustEngineSupport.KNN_RECALL_CHECK_BUDGET.get(settings),
+            AcceleratedEngineSupport.KNN_RECALL_SAMPLE_RATE.get(settings),
+            AcceleratedEngineSupport.KNN_RECALL_CHECK_BUDGET.get(settings),
             key
         );
     }

@@ -153,7 +153,7 @@ final class NativePercentiles {
                 }
                 int count = in.getInt();
                 if (count < 0 || (long) count * Double.BYTES > in.remaining()) {
-                    throw new IllegalStateException("lucene-rust: " + count + " HDR percentiles values");
+                    throw new IllegalStateException("accelerated-search: " + count + " HDR percentiles values");
                 }
                 // AbstractHDRPercentilesAggregator.getExistingOrNewHistogram, then collect's recordValue.
                 DoubleHistogram state = new DoubleHistogram(digits);
@@ -164,7 +164,7 @@ final class NativePercentiles {
                     }
                 } catch (ArrayIndexOutOfBoundsException e) {
                     // A negative value, which the Java aggregator's histogram refuses as well.
-                    throw new JavaRefuses("lucene-rust: an HDR histogram refused a value", e);
+                    throw new JavaRefuses("accelerated-search: an HDR histogram refused a value", e);
                 }
                 out.add(
                     ranks
@@ -247,7 +247,7 @@ final class NativePercentiles {
             double[] tempMean = (double[]) TEMP_MEAN.get(state);
             double[] tempWeight = (double[]) TEMP_WEIGHT.get(state);
             if (last < 0 || last > mean.length || temp < 0 || temp > tempMean.length) {
-                throw new IllegalStateException("lucene-rust: a t-digest of " + last + " and " + temp + " centroids");
+                throw new IllegalStateException("accelerated-search: a t-digest of " + last + " and " + temp + " centroids");
             }
             for (int c = 0; c < last; c++) {
                 mean[c] = in.getDouble();

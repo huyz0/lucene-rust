@@ -32,7 +32,7 @@ import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 
 /**
- * {@link RustAdaptiveDocValuesFormat}'s reader: Lucene90's producer for everything, except the
+ * {@link AcceleratedAdaptiveDocValuesFormat}'s reader: Lucene90's producer for everything, except the
  * NUMERIC and SORTED_NUMERIC fields whose value array is adaptive blocks, and the SORTED and SORTED_SET
  * fields whose ordinals are, which this class decodes (their term dictionaries stay Lucene90's).
  *
@@ -43,7 +43,7 @@ import org.apache.lucene.util.packed.DirectMonotonicReader;
  * since every read of an adaptive field comes here. This class walks the same {@code .dvm} to find
  * them ({@link #readFields}), mirroring {@code Lucene90DocValuesProducer.readFields}.
  */
-final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
+final class AcceleratedAdaptiveDocValuesProducer extends DocValuesProducer {
     /** {@code ADAPTIVE_TABLE_SIZE} in {@code doc_values.rs}. */
     static final int ADAPTIVE_TABLE_SIZE = -1000;
     /** {@code ADAPTIVE_ZONES_TABLE_SIZE} in {@code doc_values.rs}. */
@@ -94,7 +94,7 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
     private final int maxDoc;
     private final boolean owner;
 
-    RustAdaptiveDocValuesProducer(SegmentReadState state, DocValuesProducer delegate) throws IOException {
+    AcceleratedAdaptiveDocValuesProducer(SegmentReadState state, DocValuesProducer delegate) throws IOException {
         this.delegate = delegate;
         this.maxDoc = state.segmentInfo.maxDoc();
         this.numerics = new HashMap<>();
@@ -137,7 +137,7 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
         this.data = in;
     }
 
-    private RustAdaptiveDocValuesProducer(RustAdaptiveDocValuesProducer of, DocValuesProducer delegate) {
+    private AcceleratedAdaptiveDocValuesProducer(AcceleratedAdaptiveDocValuesProducer of, DocValuesProducer delegate) {
         this.delegate = delegate;
         this.numerics = of.numerics;
         this.sortedNumerics = of.sortedNumerics;
@@ -358,7 +358,7 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
 
     @Override
     public DocValuesProducer getMergeInstance() {
-        return new RustAdaptiveDocValuesProducer(this, delegate.getMergeInstance());
+        return new AcceleratedAdaptiveDocValuesProducer(this, delegate.getMergeInstance());
     }
 
     @Override

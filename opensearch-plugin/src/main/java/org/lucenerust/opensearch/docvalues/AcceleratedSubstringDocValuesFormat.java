@@ -43,11 +43,11 @@ import org.apache.lucene.util.packed.DirectMonotonicReader;
  * <p>Java never writes the format: a Java merge writes its own codec's formats, plain BINARY, which
  * the field's queries read alike.
  */
-public final class RustSubstringDocValuesFormat extends DocValuesFormat {
+public final class AcceleratedSubstringDocValuesFormat extends DocValuesFormat {
     /** {@code Lucene90DocValuesFormat::RUST_SUBSTRING_NAME} in {@code doc_values.rs}. */
     public static final String NAME = "Substring90";
 
-    public RustSubstringDocValuesFormat() {
+    public AcceleratedSubstringDocValuesFormat() {
         super(NAME);
     }
 

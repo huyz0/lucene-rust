@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""knn_vector through the lucene-rust plugin on one OpenSearch node: HNSW
+"""knn_vector through the accelerated-search plugin on one OpenSearch node: HNSW
 (`lucene` engine) against IVF (`extended` engine, `method: ivf`).
 
 For each mapping the base vectors are bulk-loaded (refresh off, one shard),
@@ -72,7 +72,7 @@ def main():
     _, gt_k, gt = read_bin(f"{prefix}.gt.ibin", "i")
     nq = min(int(opt("--queries", "1000")), nq_all - WARMUP)
 
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     nodectl.run(NODE[0], "plugin", NODE[1], heap="2g", wait=False)

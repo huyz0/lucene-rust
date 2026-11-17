@@ -130,7 +130,7 @@ final class NativeSelfTestLeaves {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-leaves");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-leaves");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;
@@ -374,7 +374,7 @@ final class NativeSelfTestLeaves {
     private static void termStates(Random r, IndexSearcher searcher, DirectoryReader reader, NativeReaders readers, BiConsumer<Boolean, String> check)
         throws Exception {
         Term t = new Term("body", word(r));
-        Path other = Files.createTempDirectory("lucene-rust-selftest-states");
+        Path other = Files.createTempDirectory("accelerated-search-selftest-states");
         try (FSDirectory d = FSDirectory.open(other); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             w.addDocument(doc(r, 0));
             try (DirectoryReader o = DirectoryReader.open(w)) {

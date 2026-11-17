@@ -158,7 +158,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         byte[][] out = new byte[1][];
         int rc = NativeAnalysis.highlightPlain(prepared.request, values, noMatchSize, summary, prepared.waitForPos, out);
         if (rc != NativeBridge.OK) {
-            logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
             prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
@@ -178,7 +178,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             throw HighlightErrors.thrown(b, true);
         }
         if (status != STATUS_FRAGMENTS) {
-            throw new IllegalStateException("lucene-rust: plain highlight status " + status);
+            throw new IllegalStateException("accelerated-search: plain highlight status " + status);
         }
         int count = b.getInt();
         ArrayList<Fragment> fragsList = new ArrayList<>(count);

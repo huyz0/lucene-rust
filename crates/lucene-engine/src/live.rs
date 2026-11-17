@@ -777,7 +777,7 @@ pub fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
 /// Indexing threads write a chunk once a buffer has this many documents
 /// past its chunks, while lean searches come, so searches rarely wait on
 /// one; the warmer writes only a tail no indexing thread cut lately.
-/// `LUCENE_RUST_LIVE_INLINE_CHUNK` overrides it, 0 leaving chunks to the
+/// `ACCELERATED_LIVE_INLINE_CHUNK` overrides it, 0 leaving chunks to the
 /// warmer.
 pub const INLINE_CHUNK_DOCS: i32 = 1024;
 
@@ -791,7 +791,7 @@ pub const INLINE_QUIET_MS: u64 = 20;
 pub fn inline_chunk_docs() -> Option<i32> {
     static N: OnceLock<Option<i32>> = OnceLock::new();
     *N.get_or_init(|| {
-        let n = std::env::var("LUCENE_RUST_LIVE_INLINE_CHUNK")
+        let n = std::env::var("ACCELERATED_LIVE_INLINE_CHUNK")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(INLINE_CHUNK_DOCS);

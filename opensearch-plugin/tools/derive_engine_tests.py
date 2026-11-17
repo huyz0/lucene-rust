@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Derives RustEngineTests -- OpenSearch's own InternalEngineTests, run on RustEngine.
+"""Derives AcceleratedEngineTests -- OpenSearch's own InternalEngineTests, run on AcceleratedEngine.
 
 The engine tests are OpenSearch's specification of an engine's contracts: versioning and
 optimistic concurrency, sequence numbers and checkpoints, translog recovery, history, commits.
-RustEngine is InternalEngine with the writer swapped (derive_engine.py), so the same tests apply
+AcceleratedEngine is InternalEngine with the writer swapped (derive_engine.py), so the same tests apply
 to it, rewritten to construct it: EngineTestCase and InternalTestEngine (from the test framework's
 sources) and InternalEngineTests (from the server's test sources, pinned by tag) are copied into
-the plugin's package with InternalEngine replaced by RustEngine.
+the plugin's package with InternalEngine replaced by AcceleratedEngine.
 
 Tests that exercise what the Rust engine does not have -- Lucene's IndexWriter itself (a custom
 IndexWriter or merge policy injected to fail, IndexWriter infoStream, merge scheduling), or index
@@ -35,18 +35,18 @@ NOTICE = """/*
 SKIPPED: dict[str, str] = {
     "testLookupVersionWithPrunedAwayIds": "builds a Lucene IndexWriter with OpenSearch's PrunePostingsMergePolicy by hand",
     # Refused configurations.
-    "testCriteriaBasedGrouping": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testDoesNotAllowGroupingCriteriaUpdate": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testAllowGroupingCriteriaUpdateWithTombstone": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabled": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabledWithFilterWrapper": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithAppend": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithUpdate": "context-aware segments are refused (RustEngineSupport.checkSupported)",
-    "testSegmentFileSizesAccumulatesAllFilesIncludingDuplicateExtensions": "index.optimize_doc_id_lookup.fuzzy_set.enabled is refused (RustEngineSupport.checkSupported)",
-    "testSegmentsWithIndexSort": "index sorting is refused (RustEngineSupport.checkSupported)",
-    "testSegmentsWithNestedFieldIndexSort": "index sorting is refused (RustEngineSupport.checkSupported)",
-    "testSegmentsWithNestedFieldIndexSortWithMerge": "index sorting is refused (RustEngineSupport.checkSupported)",
-    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort": "index sorting is refused (RustEngineSupport.checkSupported)",
+    "testCriteriaBasedGrouping": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testDoesNotAllowGroupingCriteriaUpdate": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testAllowGroupingCriteriaUpdateWithTombstone": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabled": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabledWithFilterWrapper": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithAppend": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithUpdate": "context-aware segments are refused (AcceleratedEngineSupport.checkSupported)",
+    "testSegmentFileSizesAccumulatesAllFilesIncludingDuplicateExtensions": "index.optimize_doc_id_lookup.fuzzy_set.enabled is refused (AcceleratedEngineSupport.checkSupported)",
+    "testSegmentsWithIndexSort": "index sorting is refused (AcceleratedEngineSupport.checkSupported)",
+    "testSegmentsWithNestedFieldIndexSort": "index sorting is refused (AcceleratedEngineSupport.checkSupported)",
+    "testSegmentsWithNestedFieldIndexSortWithMerge": "index sorting is refused (AcceleratedEngineSupport.checkSupported)",
+    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort": "index sorting is refused (AcceleratedEngineSupport.checkSupported)",
     # Failure injection through Java's writer or directory.
     "testHandleDocumentFailure": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
     "testDeleteFailureDocAlreadyDeleted": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
@@ -80,10 +80,10 @@ def filesystem_stores(text: str) -> str:
 
 
 def rename(text: str) -> str:
-    text = re.sub(r"\bInternalEngineTests\b", "RustEngineTests", text)
-    text = re.sub(r"\bInternalTestEngine\b", "RustTestEngine", text)
-    text = re.sub(r"\bEngineTestCase\b", "RustEngineTestCase", text)
-    text = re.sub(r"\bInternalEngine\b", "RustEngine", text)
+    text = re.sub(r"\bInternalEngineTests\b", "AcceleratedEngineTests", text)
+    text = re.sub(r"\bInternalTestEngine\b", "AcceleratedTestEngine", text)
+    text = re.sub(r"\bEngineTestCase\b", "AcceleratedEngineTestCase", text)
+    text = re.sub(r"\bInternalEngine\b", "AcceleratedEngine", text)
     return text
 
 
@@ -109,7 +109,7 @@ def drop_create_writer_overrides(p: Patcher) -> None:
 def derive_test_case(src: str) -> str:
     p = Patcher(filesystem_stores(reach_package_private(rename(relocate(src)))))
     drop_create_writer_overrides(p)
-    # The Rust engine writes the default codec only (RustEngineSupport.checkSupported); the
+    # The Rust engine writes the default codec only (AcceleratedEngineSupport.checkSupported); the
     # framework would otherwise pick Lucene's randomized test codec.
     p.regex(
         r"        String name = Codec\.getDefault\(\)\.getName\(\);\n.*?            codecName = \"default\";\n        \}\n",
@@ -117,8 +117,8 @@ def derive_test_case(src: str) -> str:
     )
     # The plugin loads liblucene_ffi in its constructor; the tests have no plugin.
     p.sub(
-        "public abstract class RustEngineTestCase extends OpenSearchTestCase {\n",
-        "public abstract class RustEngineTestCase extends OpenSearchTestCase {\n"
+        "public abstract class AcceleratedEngineTestCase extends OpenSearchTestCase {\n",
+        "public abstract class AcceleratedEngineTestCase extends OpenSearchTestCase {\n"
         "    static {\n"
         "        org.lucenerust.opensearch.NativeLibrary.load(java.nio.file.Path.of(\".\"));\n"
         "    }\n\n",
@@ -163,7 +163,7 @@ def reach_line(text: str) -> str:
 
 # Oracles that model when the engine commits. InternalEngine commits on flush only; the Rust
 # engine also commits on every refresh that has something to show ("Refresh is a commit",
-# RustIndexWriter), and such a commit is a recovery point like any other: on restart,
+# AcceleratedIndexWriter), and such a commit is a recovery point like any other: on restart,
 # trimUnsafeCommits rolls back to the newest commit whose max_seq_no is at or below the global
 # checkpoint, refresh commits included. A test that lists the commits it made must list those
 # too, or it expects the restart to land on an older commit than the engine's.
@@ -186,7 +186,7 @@ COMMIT_MODEL: dict[str, tuple[str, str]] = {
     "testRebuildLocalCheckpointTrackerAndVersionMap": (
         """            EngineConfig config = config(defaultSettings, store, translogPath, NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get);
             final List<DocIdSeqNoAndSource> docs;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 List<Engine.Operation> flushedOperations = new ArrayList<>();
                 for (Engine.Operation op : operations) {
                     flushedOperations.add(op);
@@ -225,7 +225,7 @@ COMMIT_MODEL: dict[str, tuple[str, str]] = {
                 new NoneCircuitBreakerService()
             );
             final List<DocIdSeqNoAndSource> docs;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 recordedGeneration.set(store.readLastCommittedSegmentsInfo().getGeneration());
                 recording.set(true);
                 for (Engine.Operation op : operations) {
@@ -261,9 +261,9 @@ def main() -> None:
     tests, framework, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     engine = framework / "org/opensearch/index/engine"
     out.mkdir(parents=True, exist_ok=True)
-    (out / "RustEngineTestCase.java").write_text(derive_test_case((engine / "EngineTestCase.java").read_text()))
-    (out / "RustTestEngine.java").write_text(derive_test_engine((engine / "InternalTestEngine.java").read_text()))
-    (out / "RustEngineTests.java").write_text(derive_tests((tests / "InternalEngineTests.java").read_text()))
+    (out / "AcceleratedEngineTestCase.java").write_text(derive_test_case((engine / "EngineTestCase.java").read_text()))
+    (out / "AcceleratedTestEngine.java").write_text(derive_test_engine((engine / "InternalTestEngine.java").read_text()))
+    (out / "AcceleratedEngineTests.java").write_text(derive_tests((tests / "InternalEngineTests.java").read_text()))
     # Server test helpers, verbatim in their own packages (test code shares one class loader).
     root = out
     for _ in PACKAGE.split("."):

@@ -428,7 +428,7 @@ def compare_stats(failures):
 
 def main():
     keep = "--keep" in sys.argv
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

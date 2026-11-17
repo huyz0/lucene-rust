@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * The plugin's indexing path in one JVM, split into its stages, against Lucene's {@link IndexWriter}
  * on the same documents: {@code encode} ({@link DocumentEncoder} alone), {@code prepare} (encode plus
- * the native decode and analysis, outside the writer's lock), {@code rust} ({@link RustIndexWriter},
+ * the native decode and analysis, outside the writer's lock), {@code rust} ({@link AcceleratedIndexWriter},
  * end to end with a final commit) and {@code lucene}; {@code rust-refresh} and {@code lucene-refresh}
  * also open a near-real-time view every {@code -Drefresh.ms} (default 1000, OpenSearch's default
  * {@code refresh_interval}) while indexing and print the refresh times. Both writers are set up as
@@ -176,7 +176,7 @@ public final class IndexingBench {
             try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig(analyzer))) {
                 empty.commit();
             }
-            RustIndexWriter rust = null;
+            AcceleratedIndexWriter rust = null;
             IndexWriter lucene = null;
             DocumentEncoder encoder = null;
             boolean refresh = mode.endsWith("-refresh");
@@ -199,7 +199,7 @@ public final class IndexingBench {
                         .setMaxFullFlushMergeWaitMillis(mergeOnFlush)
                 );
             } else {
-                rust = RustIndexWriter.open(
+                rust = AcceleratedIndexWriter.open(
                     dir,
                     root,
                     256,
@@ -229,13 +229,13 @@ public final class IndexingBench {
                 rust.setMergePolicy(tiered);
                 rust.setMergeScheduler(7, 2, true, Double.POSITIVE_INFINITY);
                 rust.setMergeOnFlush(mergeOnFlush, false);
-                var f = RustIndexWriter.class.getDeclaredField("encoder");
+                var f = AcceleratedIndexWriter.class.getDeclaredField("encoder");
                 f.setAccessible(true);
                 encoder = (DocumentEncoder) f.get(rust);
             }
             AtomicInteger next = new AtomicInteger();
             Throwable[] failure = new Throwable[1];
-            final RustIndexWriter rw = rust;
+            final AcceleratedIndexWriter rw = rust;
             final IndexWriter lw = lucene;
             final DocumentEncoder enc = encoder;
             long t0 = System.nanoTime();

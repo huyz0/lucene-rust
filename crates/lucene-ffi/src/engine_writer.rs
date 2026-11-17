@@ -1,4 +1,4 @@
-//! The writer the OpenSearch plugin's `RustEngine` indexes through, over
+//! The writer the OpenSearch plugin's `AcceleratedEngine` indexes through, over
 //! [`lucene_engine::writer`]: the directory a shard's writer opens over,
 //! the JVM upcalls, and the `extern "C"` entry points, which read the
 //! caller's memory and call [`lucene_engine::writer_ops`].
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
 }
 
 /// How much lower than a search's an indexing thread's scheduling priority
-/// is, as a nice increment, unless `LUCENE_RUST_INDEX_NICE` says otherwise
+/// is, as a nice increment, unless `ACCELERATED_INDEX_NICE` says otherwise
 /// (0 leaves it).
 const INDEX_NICE: i32 = 5;
 
@@ -210,7 +210,7 @@ pub(crate) fn yield_to_searches() {
         thread_local!(static LOWERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
         static NICE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
         let nice = *NICE.get_or_init(|| {
-            std::env::var("LUCENE_RUST_INDEX_NICE")
+            std::env::var("ACCELERATED_INDEX_NICE")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(INDEX_NICE)

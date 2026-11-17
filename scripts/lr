@@ -50,8 +50,8 @@ doctor() {
     echo "  disk free    $(df -BG --output=avail "${NODE_HOME:-$HOME}" 2>/dev/null | tail -1 | tr -d ' ') under ${NODE_HOME:-$HOME/os-native} (a debug build needs ~40 GB, nodes ~2 GB)"
     if [[ -x "${NODE_HOME:-$HOME/os-native}/stock/bin/opensearch" ]]; then echo "  tarball      cached"; else echo "  tarball      not downloaded yet (nodectl.py fetches it, 1.1 GB)"; fi
     if lib=$(native_lib); then echo "  library      $lib"; else echo "  library      not built (scripts/lr build)"; fi
-    ls opensearch-plugin/build/distributions/lucene-rust-*.zip >/dev/null 2>&1 \
-        && echo "  plugin zip   $(ls opensearch-plugin/build/distributions/lucene-rust-*.zip)" || echo "  plugin zip   not built (scripts/lr build)"
+    ls opensearch-plugin/build/distributions/accelerated-search-*.zip >/dev/null 2>&1 \
+        && echo "  plugin zip   $(ls opensearch-plugin/build/distributions/accelerated-search-*.zip)" || echo "  plugin zip   not built (scripts/lr build)"
     [[ -f /sys/fs/cgroup/cgroup.controllers || -d /sys/fs/cgroup/memory ]] \
         && echo "  cgroups      memory limits available (MEM_LIMIT, as root)" || echo "  cgroups      none: MEM_LIMIT is ignored"
     command -v docker >/dev/null 2>&1 && echo "  docker       present, and not used by anything here"

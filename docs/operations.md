@@ -1,4 +1,4 @@
-# Operating the lucene-rust plugin
+# Operating the accelerated-search plugin
 
 For whoever installs and runs the plugin on an OpenSearch 3.9.0 cluster:
 install, configure, watch, upgrade and roll back. What the plugin does and does
@@ -25,8 +25,8 @@ each platform it was built with, plus `LICENSE` and `NOTICE`.
 On every node:
 
 ```
-bin/opensearch-plugin install file:///path/to/lucene-rust-0.1.0.zip
-echo '--enable-native-access=ALL-UNNAMED' > config/jvm.options.d/lucene-rust.options
+bin/opensearch-plugin install file:///path/to/accelerated-search-0.1.0.zip
+echo '--enable-native-access=ALL-UNNAMED' > config/jvm.options.d/accelerated-search.options
 ```
 
 then restart the node (a rolling restart for a running cluster: see
@@ -90,10 +90,10 @@ which the plugin zip leaves out to stay small. Opt a node in per language:
 
 ```
 scripts/make-data-packs.sh /tmp/packs     # kuromoji/ nori/ smartcn/ morfologik/ stempel/
-cp -r /tmp/packs/kuromoji "$OPENSEARCH_PATH_CONF/lucene-rust/packs/"
+cp -r /tmp/packs/kuromoji "$OPENSEARCH_PATH_CONF/accelerated-search/packs/"
 ```
 
-The plugin reads `<config>/lucene-rust/packs/<pack>/` first, then the
+The plugin reads `<config>/accelerated-search/packs/<pack>/` first, then the
 plugin's own `packs/` (a zip built with `gradle bundlePlugin -PdataPacks`
 carries all of them, about 21 MB). Restart the node after adding a pack. A
 tokenizer whose pack is missing is not registered (OpenSearch builds every
@@ -210,11 +210,11 @@ A native search never fails a request OpenSearch could answer. A native
 failure is logged and counted, and the search runs again on OpenSearch's path:
 
 ```
-lucene-rust: native search failed (<status>), re-running on Lucene: <message>
-lucene-rust: native sorted search failed (<status>), ...
-lucene-rust: native aggregation failed (<status>), ...
-lucene-rust: native stored fields failed (<status>), reading with Lucene: <message>
-lucene-rust: native reader open failed for [<path>] (<status>): <message>
+accelerated-search: native search failed (<status>), re-running on Lucene: <message>
+accelerated-search: native sorted search failed (<status>), ...
+accelerated-search: native aggregation failed (<status>), ...
+accelerated-search: native stored fields failed (<status>), reading with Lucene: <message>
+accelerated-search: native reader open failed for [<path>] (<status>): <message>
 ```
 
 `<status>` is the FFI status code:
@@ -319,7 +319,7 @@ no data conversion. OpenSearch's engine opens them as they are.
    Indices that only inherited `indices.engine.accelerated.default` carry no setting
    and need nothing. Nor do indices that never used the accelerated engine.
 4. **Remove the plugin.** Rolling restart onto nodes without it
-   (`bin/opensearch-plugin remove lucene-rust`, and remove the JVM option).
+   (`bin/opensearch-plugin remove accelerated-search`, and remove the JVM option).
 
 A full-cluster restart can replace steps 3 and 4: stop every node, remove the
 plugin, start them all. OpenSearch archives unknown index settings

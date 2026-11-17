@@ -41,7 +41,7 @@ import org.apache.lucene.util.IOUtils;
 
 /**
  * Lucene 10.5.1's {@code Lucene103BlockTreeTermsReader} for the {@code ZstdTerms104} terms
- * dictionary the Rust engine writes ({@link RustZstd104PostingsFormat}): the same files and blocks,
+ * dictionary the Rust engine writes ({@link AcceleratedZstd104PostingsFormat}): the same files and blocks,
  * under their own header names, with blocks that may be zstd blocks ({@link ZstdTermBlocks}) and
  * each field's {@code .tmd} record ending with its zstd dictionary ({@link ZstdTermsDictionary}).
  * Only those changes are made to Lucene's reader classes in this package. {@code blocktree.rs}

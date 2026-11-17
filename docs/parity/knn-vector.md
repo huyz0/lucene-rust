@@ -1,7 +1,7 @@
 # knn_vector -- the k-NN plugin's vector field and knn query
 
 [Index](../parity.md). Not a Lucene module: OpenSearch's k-NN plugin
-(3.9.0.0) owns `knn_vector` and `knn`; the lucene-rust plugin serves both
+(3.9.0.0) owns `knn_vector` and `knn`; the accelerated-search plugin serves both
 itself, on Lucene's vector formats, searched in Rust. Plan and stages:
 `/mnt/project-files/plan/knn-vector-native.md` in the project notes.
 

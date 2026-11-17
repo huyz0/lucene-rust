@@ -85,8 +85,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * exception: it is thrown once, and every later call throws {@link AlreadyClosedException} carrying
  * it, which is how the engine knows to fail the shard.
  */
-final class RustIndexWriter implements DocumentIndexWriter {
-    private static final Logger LOGGER = LogManager.getLogger(RustIndexWriter.class);
+final class AcceleratedIndexWriter implements DocumentIndexWriter {
+    private static final Logger LOGGER = LogManager.getLogger(AcceleratedIndexWriter.class);
 
     private final Directory directory;
     private final long handle;
@@ -103,7 +103,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private final ReentrantReadWriteLock indexing = new ReentrantReadWriteLock();
     /** Guards {@link #accounted}. */
     private final Object accounting = new Object();
-    private final Map<Long, RustIndexCommit> commits = new HashMap<>();
+    private final Map<Long, AcceleratedIndexCommit> commits = new HashMap<>();
     private final AtomicLong docsSinceCommit = new AtomicLong();
 
     private volatile Throwable tragic;
@@ -150,7 +150,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
-    private RustIndexWriter(
+    private AcceleratedIndexWriter(
         Directory directory,
         long handle,
         Analyzer analyzer,
@@ -201,7 +201,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * order, and {@code parentField} (when not null) marks each block's last document, as
      * {@code IndexWriterConfig.setIndexSort} and {@code setParentField} have it.
      */
-    static RustIndexWriter open(
+    static AcceleratedIndexWriter open(
         Directory directory,
         Path indexPath,
         double ramBufferMb,
@@ -229,10 +229,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         installCommitDataUpcall();
-        RustMergeScheduler.installUpcall();
+        AcceleratedMergeScheduler.installUpcall();
         long[] out = new long[1];
         int status = NativeWriter.writerOpen(
-            org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
+            org.lucenerust.opensearch.store.AcceleratedEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
             sparse,
@@ -252,7 +252,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (status != NativeBridge.OK) {
             throw new IOException("cannot open the accelerated writer at [" + indexPath + "]: " + NativeBridge.lastError());
         }
-        RustIndexWriter w = new RustIndexWriter(
+        AcceleratedIndexWriter w = new AcceleratedIndexWriter(
             directory,
             out[0],
             analyzer,
@@ -676,7 +676,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /** The writer committing on this thread, for {@link #commitDataUpcall}. */
-    private static final ThreadLocal<RustIndexWriter> COMMITTING = new ThreadLocal<>();
+    private static final ThreadLocal<AcceleratedIndexWriter> COMMITTING = new ThreadLocal<>();
     /** The running commit's data, for {@link #commitDataUpcall} to read; under {@link #lock}. */
     private Iterable<Map.Entry<String, String>> committingData;
     /** What evaluating the live commit data threw during the running commit; under {@link #lock}. */
@@ -692,14 +692,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
         try {
             MethodHandle target = MethodHandles.lookup()
                 .findStatic(
-                    RustIndexWriter.class,
+                    AcceleratedIndexWriter.class,
                     "commitDataUpcall",
                     MethodType.methodType(int.class, long.class, MemorySegment.class, long.class, MemorySegment.class)
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
             if (NativeWriter.setCommitDataUpcall(stub) != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the commit-data upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the commit-data upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
         } catch (ReflectiveOperationException e) {
@@ -715,7 +715,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      */
     @SuppressWarnings("restricted") // the segments are the native caller's, sized by its contract
     private static int commitDataUpcall(long context, MemorySegment out, long cap, MemorySegment outLen) {
-        RustIndexWriter w = COMMITTING.get();
+        AcceleratedIndexWriter w = COMMITTING.get();
         if (w == null || w.handle != context) {
             return NativeWriter.COMMIT_DATA_FAILED;
         }
@@ -941,19 +941,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
         }
         check(status, "listing commits");
         List<IndexCommit> list = new ArrayList<>(len[0]);
-        Map<Long, RustIndexCommit> live = new HashMap<>();
+        Map<Long, AcceleratedIndexCommit> live = new HashMap<>();
         for (int i = 0; i < len[0]; i++) {
             long gen = gens[i];
-            RustIndexCommit c = commits.get(gen);
+            AcceleratedIndexCommit c = commits.get(gen);
             if (c == null) {
-                c = new RustIndexCommit(directory, gen);
+                c = new AcceleratedIndexCommit(directory, gen);
             }
             live.put(gen, c);
             list.add(c);
         }
         commits.clear();
         commits.putAll(live);
-        RustIndexCommit newest = (RustIndexCommit) list.get(list.size() - 1);
+        AcceleratedIndexCommit newest = (AcceleratedIndexCommit) list.get(list.size() - 1);
         latestGeneration = newest.getGeneration();
         lastCommitMaxDoc = newest.segmentInfos().totalMaxDoc();
         if (deletionPolicy == null) {
@@ -1083,7 +1083,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             byte[][] blob = new byte[1][];
             if (NativeLive.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
                 if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("lucene-rust: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
+                    LOGGER.debug("accelerated-search: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
                 }
                 return null;
             }
@@ -1111,7 +1111,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             try {
                 old.decRef();
             } catch (IOException e) {
-                LOGGER.warn("lucene-rust: closing a realtime search's view failed", e);
+                LOGGER.warn("accelerated-search: closing a realtime search's view failed", e);
             }
         }
     }
@@ -1290,7 +1290,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void setMergedSegmentWarmer(IndexWriter.IndexReaderWarmer warmer) {
         synchronized (lock) {
             ensureOpen();
-            RustMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
+            AcceleratedMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
         }
     }
 
@@ -1374,8 +1374,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 if (nativeClosed == false) {
                     nativeClosed = true;
                     NativeWriter.writerClose(handle);
-                    RustMergeScheduler.detach(handle);
-                    RustMergedSegmentWarmer.remove(handle);
+                    AcceleratedMergeScheduler.detach(handle);
+                    AcceleratedMergedSegmentWarmer.remove(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();
@@ -1452,14 +1452,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /** A commit point as {@code IndexDeletionPolicy} sees it; its {@code segments_N} is read lazily. */
-    static final class RustIndexCommit extends IndexCommit {
+    static final class AcceleratedIndexCommit extends IndexCommit {
         private final Directory directory;
         private final long generation;
         private final String segmentsFileName;
         private SegmentInfos infos;
         private boolean deleted;
 
-        RustIndexCommit(Directory directory, long generation) {
+        AcceleratedIndexCommit(Directory directory, long generation) {
             this.directory = directory;
             this.generation = generation;
             this.segmentsFileName = org.apache.lucene.index.IndexFileNames.fileNameFromGeneration(
@@ -1522,7 +1522,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
         @Override
         public String toString() {
-            return "RustIndexCommit(" + segmentsFileName + ")";
+            return "AcceleratedIndexCommit(" + segmentsFileName + ")";
         }
     }
 }

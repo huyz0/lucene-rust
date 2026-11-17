@@ -878,10 +878,10 @@ public final class AnalyzerSpec {
             c.arg("jvmBreaker", "true");
             return null;
         });
-        // The plugin's rust_* tokenizers (RustAnalysis) run Rust on the Java side too, so the chain
+        // The plugin's rust_* tokenizers (AcceleratedAnalysis) run Rust on the Java side too, so the chain
         // runs natively as is: the Rust factory by its SPI name and arguments.
-        MAPPERS.put(RustTokenizer.class.getName(), (o, c) -> {
-            RustTokenizer t = (RustTokenizer) o;
+        MAPPERS.put(AcceleratedTokenizer.class.getName(), (o, c) -> {
+            AcceleratedTokenizer t = (AcceleratedTokenizer) o;
             c.name = t.spi;
             t.args.forEach(c::arg);
             return null;

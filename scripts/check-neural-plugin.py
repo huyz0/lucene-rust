@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""neural-search's model-backed half through the lucene-rust plugin against stock.
+"""neural-search's model-backed half through the accelerated-search plugin against stock.
 
-Starts a node of the pinned OpenSearch image with the lucene-rust plugin (the
+Starts a node of the pinned OpenSearch image with the accelerated-search plugin (the
 bundled plugins removed) and, unless --stock names a running one, a stock node
 with k-NN, neural-search and ml-commons. Both deploy the same fixtures/ml
 models, which this script serves over HTTP, run the same calls and the answers
@@ -945,7 +945,7 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--only", help="comma-separated sections to run (default: all)")
     a = ap.parse_args()
-    zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips_dir:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

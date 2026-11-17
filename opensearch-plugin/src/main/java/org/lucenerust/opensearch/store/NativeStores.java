@@ -16,11 +16,11 @@ import org.apache.lucene.store.FilterDirectory;
  * shard's files itself, so a directory that changes the bytes on their way to disk -- an encrypting
  * or compressing store type from another plugin -- must not be bypassed: the engine would write
  * plaintext beside it, or fail to read it. Only directories whose bytes on disk are what Lucene
- * wrote, and {@link RustEncryptedDirectory} (whose format the engine reads and writes too), pass.
+ * wrote, and {@link AcceleratedEncryptedDirectory} (whose format the engine reads and writes too), pass.
  */
 public final class NativeStores {
     /** Store types ({@code index.store.type}) the native engine can serve. */
-    public static final Set<String> STORE_TYPES = Set.of("", "fs", "hybridfs", "mmapfs", "niofs", "simplefs", RustEncryptedDirectoryFactory.TYPE);
+    public static final Set<String> STORE_TYPES = Set.of("", "fs", "hybridfs", "mmapfs", "niofs", "simplefs", AcceleratedEncryptedDirectoryFactory.TYPE);
 
     private NativeStores() {}
 
@@ -45,7 +45,7 @@ public final class NativeStores {
         Directory d = dir;
         boolean encrypted = false;
         while (d instanceof FilterDirectory f) {
-            if (f instanceof RustEncryptedDirectory) {
+            if (f instanceof AcceleratedEncryptedDirectory) {
                 if (encrypted) {
                     return "the store is encrypted twice";
                 }

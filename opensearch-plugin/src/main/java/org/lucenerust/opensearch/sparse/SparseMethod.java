@@ -141,7 +141,7 @@ public final class SparseMethod {
             throw new MapperParsingException(sb.toString());
         }
         if (ENGINE_NATIVE.equalsIgnoreCase(engine)) {
-            throw new MapperParsingException("[" + ENGINE_FIELD + "]: the native engine is not supported by the lucene-rust engine");
+            throw new MapperParsingException("[" + ENGINE_FIELD + "]: the native engine is not supported by the accelerated-search engine");
         }
         if (DEFAULT_FORWARD_INDEX.equals(forwardIndex()) == false) {
             throw new MapperParsingException("[" + FORWARD_INDEX + "]: " + forwardIndex() + " is only supported with the native engine");

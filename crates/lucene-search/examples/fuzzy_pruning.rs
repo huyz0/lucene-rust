@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn terms_dir() -> PathBuf {
-    match std::env::var_os("LUCENE_RUST_BENCH_TERMS_INDEX") {
+    match std::env::var_os("ACCELERATED_BENCH_TERMS_INDEX") {
         Some(p) => PathBuf::from(p),
         None => Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../benchmarks/.corpus/terms1m")

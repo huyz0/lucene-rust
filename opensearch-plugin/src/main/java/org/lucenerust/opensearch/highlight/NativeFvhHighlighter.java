@@ -96,7 +96,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
                 x.setAccessible(true);
             }
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.error("lucene-rust: the fast vector highlighter's field query cannot be read: {}", e.toString());
+            logger.error("accelerated-search: the fast vector highlighter's field query cannot be read: {}", e.toString());
             accessError = e.toString();
             f = new Field[8];
         }
@@ -183,7 +183,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
             out
         );
         if (rc != NativeBridge.OK) {
-            logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
             prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
@@ -202,7 +202,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
             throw HighlightErrors.thrown(b, false);
         }
         if (status != STATUS_FRAGMENTS) {
-            throw new IllegalStateException("lucene-rust: fvh highlight status " + status);
+            throw new IllegalStateException("accelerated-search: fvh highlight status " + status);
         }
         int count = b.getInt();
         if (count == 0) {
@@ -267,7 +267,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         }
         if (FIELD_MATCH == null) {
             // Lucene's FieldQuery changed under this build: a broken install, not a request to hand over.
-            throw new IllegalStateException("lucene-rust: the fast vector highlighter's field query cannot be read: " + FIELD_ACCESS_ERROR);
+            throw new IllegalStateException("accelerated-search: the fast vector highlighter's field query cannot be read: " + FIELD_ACCESS_ERROR);
         }
         // A realtime view adds the writer's buffers as leaves the native reader does not hold.
         if (extended == false && LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
@@ -363,7 +363,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         try {
             writeFieldQuery(out, fieldQuery);
         } catch (IllegalAccessException e) {
-            throw new IllegalStateException("lucene-rust: the fast vector highlighter's field query cannot be read", e);
+            throw new IllegalStateException("accelerated-search: the fast vector highlighter's field query cannot be read", e);
         }
         if (numberOfFragments == 0) {
             out.write(0);

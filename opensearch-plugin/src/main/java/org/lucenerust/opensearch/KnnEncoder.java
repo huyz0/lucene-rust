@@ -175,7 +175,7 @@ final class KnnEncoder {
         }
         if (rc != NativeBridge.OK) {
             // As every native search does: a failure falls back to Lucene rather than failing the query.
-            logger.debug("lucene-rust: [knn] native search failed ({}): {}", rc, NativeBridge.lastError());
+            logger.debug("accelerated-search: [knn] native search failed ({}): {}", rc, NativeBridge.lastError());
             return null;
         }
         ScoreDoc[] hits = new ScoreDoc[count[0]];

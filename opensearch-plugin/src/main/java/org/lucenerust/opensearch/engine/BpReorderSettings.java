@@ -114,7 +114,7 @@ public final class BpReorderSettings {
         return List.of(ENABLED, FIELDS, MIN_DOC_FREQ, MAX_DOC_FREQ, MIN_PARTITION_SIZE, MAX_ITERS, RAM_BUDGET, MIN_MERGE_DOCS, MIN_MERGE_RATIO);
     }
 
-    /** The values {@link RustIndexWriter#setBpReorder} sends, as one comparable record. */
+    /** The values {@link AcceleratedIndexWriter#setBpReorder} sends, as one comparable record. */
     record Values(
         boolean enabled,
         List<String> fields,

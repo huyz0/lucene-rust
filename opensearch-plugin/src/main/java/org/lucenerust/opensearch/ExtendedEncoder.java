@@ -60,7 +60,7 @@ import org.opensearch.search.MultiValueMode;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.lucenerust.opensearch.patterntext.PatternPhraseQuery;
-import org.lucenerust.opensearch.substring.RustWildcardQuery;
+import org.lucenerust.opensearch.substring.AcceleratedWildcardQuery;
 import org.apache.lucene.search.MultiPhraseQuery;
 import org.apache.lucene.search.PhraseQuery;
 import java.io.ByteArrayOutputStream;
@@ -160,7 +160,7 @@ final class ExtendedEncoder {
             if (q instanceof PatternPhraseQuery pp) {
                 return patternPhrase(pp, out, child);
             }
-            if (q instanceof RustWildcardQuery rw) {
+            if (q instanceof AcceleratedWildcardQuery rw) {
                 return substring(rw, out);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
@@ -651,11 +651,11 @@ final class ExtendedEncoder {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * {@link RustWildcardQuery}: its field, kind, case flag and pattern, as {@code NODE_SUBSTRING} in
+     * {@link AcceleratedWildcardQuery}: its field, kind, case flag and pattern, as {@code NODE_SUBSTRING} in
      * {@code crates/lucene-engine/src/queries.rs} reads them. A regexp with other than {@code
      * RegExp.ALL} syntax runs in Java.
      */
-    private static String substring(RustWildcardQuery q, ByteArrayOutputStream out) {
+    private static String substring(AcceleratedWildcardQuery q, ByteArrayOutputStream out) {
         if (q.nativePattern() == false) {
             return FallbackReason.SUBSTRING_REGEXP_FLAGS.key();
         }

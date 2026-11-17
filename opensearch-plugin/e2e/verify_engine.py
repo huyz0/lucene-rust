@@ -1343,7 +1343,7 @@ def encrypted(container):
                   "printf '%s %s\\n' \"$(head -c4 \"$f\")\" \"$f\"; done")
         out = nodectl.exec_(container, script, errors="replace").stdout.splitlines()
         # Commit metadata (segments_N, .si) stays plaintext: OpenSearch's gateway reads it without
-        # the store's directory (RustEncryptedDirectory.isCommitMetadata).
+        # the store's directory (AcceleratedEncryptedDirectory.isCommitMetadata).
         def commit(line):
             name = line.rsplit("/", 1)[-1]
             return "segments_" in name or name.endswith(".si") or name.startswith("corrupted_")

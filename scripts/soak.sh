@@ -38,7 +38,7 @@ prepare() {
     D=target/opensearch-dist/$OS
     mkdir -p $D/modules && cp -r "$SOAK_DIR/dist39/lib" $D/lib && cp -r "$SOAK_DIR/dist39/modules/lang-painless" $D/modules/
     gradle --no-daemon -q -p opensearch-plugin bundlePlugin -PcargoProfile=release
-    ZIP=$(ls opensearch-plugin/build/distributions/lucene-rust-*.zip)
+    ZIP=$(ls opensearch-plugin/build/distributions/accelerated-search-*.zip)
     cp -r "$SOAK_DIR/dist39" "$SOAK_DIR/dist39p"
     rm -rf "$SOAK_DIR/dist39p/plugins/opensearch-knn"   # the plugin serves k-NN itself (engine `extended`)
     JAVA_HOME="$SOAK_DIR/dist39p/jdk" "$SOAK_DIR/dist39p/bin/opensearch-plugin" install --batch "file://$PWD/$ZIP"

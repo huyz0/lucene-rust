@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""knn_vector and knn through the lucene-rust plugin against the stock k-NN plugin.
+"""knn_vector and knn through the accelerated-search plugin against the stock k-NN plugin.
 
 Starts two nodes of the pinned OpenSearch image: one with the lucene-rust
 plugin (the bundled plugins removed; the plugin serves knn_vector itself) and
@@ -1279,7 +1279,7 @@ def script_check(failures):
 
 def main():
     keep = "--keep" in sys.argv
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

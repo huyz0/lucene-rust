@@ -505,7 +505,7 @@ index.store.encrypted.key_cache_ttl: 5m    # how long a revoked key keeps workin
   - The native read path declines any store directory that changes bytes on
     disk.
 - **FIPS:** the plugin built with `gradle -Pfips bundlePlugin` produces
-  `lucene-rust-fips-*.zip`, which contains:
+  `accelerated-search-fips-*.zip`, which contains:
   - the native library built against AWS-LC's FIPS module
     (`scripts/build-fips.sh --ffi`);
   - the Amazon Corretto Crypto Provider's FIPS build, the same AWS-LC

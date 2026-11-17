@@ -54,7 +54,7 @@ import org.opensearch.index.merge.OnGoingMerge;
  * OpenSearch's scheduler, the native scheduler never stalls indexing threads; the engine throttles
  * indexing when merges fall behind.
  */
-public class RustMergeScheduler implements Closeable {
+public class AcceleratedMergeScheduler implements Closeable {
 
     protected final Logger logger;
     private final MergeSchedulerConfig config;
@@ -64,17 +64,17 @@ public class RustMergeScheduler implements Closeable {
     private final Set<OnGoingMerge> readOnlyOnGoingMerges = Collections.unmodifiableSet(onGoingMerges);
     /** The running merges by native merge id. */
     private final Map<Long, NativeMerge> running = new ConcurrentHashMap<>();
-    private volatile RustIndexWriter writer;
+    private volatile AcceleratedIndexWriter writer;
 
-    protected RustMergeScheduler(ShardId shardId, IndexSettings indexSettings, MergedSegmentTransferTracker mergedSegmentTransferTracker) {
+    protected AcceleratedMergeScheduler(ShardId shardId, IndexSettings indexSettings, MergedSegmentTransferTracker mergedSegmentTransferTracker) {
         this.config = indexSettings.getMergeSchedulerConfig();
         this.mergedSegmentTransferTracker = mergedSegmentTransferTracker;
         this.logger = Loggers.getLogger(getClass(), shardId);
     }
 
     /** Starts hearing {@code writer}'s merges. */
-    void attach(RustIndexWriter writer) {
-        RustMergeScheduler previous = SCHEDULERS.put(writer.handle(), this);
+    void attach(AcceleratedIndexWriter writer) {
+        AcceleratedMergeScheduler previous = SCHEDULERS.put(writer.handle(), this);
         assert previous == null || previous == this : "two schedulers for one writer";
         this.writer = writer;
     }
@@ -98,7 +98,7 @@ public class RustMergeScheduler implements Closeable {
     protected void handleMergeException(Throwable exc) {}
 
     public MergeStats stats() {
-        RustIndexWriter w = writer;
+        AcceleratedIndexWriter w = writer;
         double rate = Double.POSITIVE_INFINITY;
         if (config.isAutoThrottle() && w != null) {
             rate = w.mergeIoRateMbPerSec();
@@ -108,12 +108,12 @@ public class RustMergeScheduler implements Closeable {
         return mergeStats;
     }
 
-    /** The scheduler's settings are pushed to the native writer by {@code RustEngineSupport.refreshMergeScheduler}. */
+    /** The scheduler's settings are pushed to the native writer by {@code AcceleratedEngineSupport.refreshMergeScheduler}. */
     public void refreshConfig() {}
 
     @Override
     public void close() {
-        RustIndexWriter w = writer;
+        AcceleratedIndexWriter w = writer;
         if (w != null) {
             SCHEDULERS.remove(w.handle(), this);
         }
@@ -169,7 +169,7 @@ public class RustMergeScheduler implements Closeable {
     // ---- the merge upcall ----
 
     /** The scheduler hearing each open writer's merges, by writer handle. */
-    private static final Map<Long, RustMergeScheduler> SCHEDULERS = new ConcurrentHashMap<>();
+    private static final Map<Long, AcceleratedMergeScheduler> SCHEDULERS = new ConcurrentHashMap<>();
     private static boolean upcallInstalled;
 
     /** Stops reporting the merges of the writer {@code handle} names, once it is closed. */
@@ -186,7 +186,7 @@ public class RustMergeScheduler implements Closeable {
         try {
             MethodHandle target = MethodHandles.lookup()
                 .findStatic(
-                    RustMergeScheduler.class,
+                    AcceleratedMergeScheduler.class,
                     "mergeUpcall",
                     MethodType.methodType(
                         void.class,
@@ -224,7 +224,7 @@ public class RustMergeScheduler implements Closeable {
             );
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
             if (NativeWriter.setMergeUpcall(stub) != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the merge upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the merge upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
         } catch (ReflectiveOperationException e) {
@@ -253,7 +253,7 @@ public class RustMergeScheduler implements Closeable {
         MemorySegment failure,
         long failureLen
     ) {
-        RustMergeScheduler scheduler = SCHEDULERS.get(handle);
+        AcceleratedMergeScheduler scheduler = SCHEDULERS.get(handle);
         if (scheduler == null) {
             return;
         }

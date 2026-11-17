@@ -73,7 +73,7 @@ final class NativeComposite {
         // (FilterRewriteOptimizationContext): faster than reading every document.
         // Both early-terminating paths below are slower shapes: native only under
         // `accelerated_shapes: all`.
-        boolean allShapes = RustQueryPhaseSearcher.allShapes(ctx);
+        boolean allShapes = AcceleratedQueryPhaseSearcher.allShapes(ctx);
         Object rewrite = get(agg, "filterRewriteOptimizationContext");
         if (allShapes == false && rewrite != null && Boolean.TRUE.equals(get(rewrite, "canOptimize"))) {
             return null;

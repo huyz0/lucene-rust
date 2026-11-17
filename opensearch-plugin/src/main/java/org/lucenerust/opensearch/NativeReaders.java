@@ -23,7 +23,7 @@ import org.apache.lucene.store.ByteBuffersIndexOutput;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.Bits;
 import org.lucenerust.opensearch.store.NativeStores;
-import org.lucenerust.opensearch.store.RustEncryptedDirectory;
+import org.lucenerust.opensearch.store.AcceleratedEncryptedDirectory;
 import org.apache.lucene.util.FixedBitSet;
 
 import java.io.IOException;
@@ -345,7 +345,7 @@ public final class NativeReaders {
             : new NativeSearch.Masking(view.masks().keySet().toArray(new String[0]), new Masker(view.masks()));
         int rc = NativeSearch.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
         if (rc != NativeBridge.OK) {
-            logger.warn("lucene-rust: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
             return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
         }
         open.incrementAndGet();
@@ -575,7 +575,7 @@ public final class NativeReaders {
         if (rc == NativeBridge.OK) {
             open.decrementAndGet();
         } else {
-            logger.warn("lucene-rust: closing native reader failed ({}): {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: closing native reader failed ({}): {}", rc, NativeBridge.lastError());
         }
     }
 
@@ -633,10 +633,10 @@ public final class NativeReaders {
             }
             infoBytes = buf.toArrayCopy();
         } catch (IOException e) {
-            logger.warn("lucene-rust: serializing SegmentInfos failed", e);
+            logger.warn("accelerated-search: serializing SegmentInfos failed", e);
             return new Acquired(0, FallbackReason.SEGMENT_INFOS_WRITE.key());
         }
-        byte[] pathBytes = RustEncryptedDirectory.nativePath(path).getBytes(StandardCharsets.UTF_8);
+        byte[] pathBytes = AcceleratedEncryptedDirectory.nativePath(path).getBytes(StandardCharsets.UTF_8);
         long[][] live = new long[leaves.size()][];
         for (int i = 0; i < leaves.size(); i++) {
             Bits bits = leaves.get(i).reader().getLiveDocs();
@@ -650,7 +650,7 @@ public final class NativeReaders {
             rc = NativeSearch.openReader(pathBytes, infoBytes, infos.getGeneration(), 0, maxDocs, live, out);
         }
         if (rc != NativeBridge.OK) {
-            logger.warn("lucene-rust: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());
             return new Acquired(0, FallbackReason.NATIVE_OPEN_FAILED.key());
         }
         long handle = out[0];

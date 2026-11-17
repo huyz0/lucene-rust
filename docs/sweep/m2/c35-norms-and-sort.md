@@ -485,13 +485,13 @@ merge fills with a per-source key column.
 
     Time, `benchmarks/rust-runner`'s `index-bench`, 50 000 documents x 40
     tokens, one indexed field, release build inside the container, three runs
-    each (a new `LUCENE_RUST_OMIT_NORMS` arm is the control, alongside the
-    existing `LUCENE_RUST_INDEX_SORT`/`LUCENE_RUST_VECTOR_DIM` knobs):
+    each (a new `ACCELERATED_OMIT_NORMS` arm is the control, alongside the
+    existing `ACCELERATED_INDEX_SORT`/`ACCELERATED_VECTOR_DIM` knobs):
 
     | arm | us/doc (3 runs) | median |
     |---|---|---|
     | norms on (the new default) | 19.87 / 19.84 / 19.85 | **19.85** |
-    | `LUCENE_RUST_OMIT_NORMS=1` | 19.19 / 19.45 / 19.00 | **19.19** |
+    | `ACCELERATED_OMIT_NORMS=1` | 19.19 / 19.45 / 19.00 | **19.19** |
 
     **+0.65 us/doc, +3.4%**, for one normed field on a 40-token body -- and
     still below the ~21.5 us/doc baseline the ledger records. The cost is the

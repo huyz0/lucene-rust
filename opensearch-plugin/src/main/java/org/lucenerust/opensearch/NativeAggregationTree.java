@@ -300,7 +300,7 @@ public final class NativeAggregationTree {
                     StreamInput sketch = StreamInput.wrap(in.array(), in.arrayOffset() + in.position(), len);
                     counts = AbstractHyperLogLogPlusPlus.readFrom(sketch, BigArrays.NON_RECYCLING_INSTANCE);
                 } catch (IOException e) {
-                    throw new IllegalStateException("lucene-rust: unreadable cardinality sketch", e);
+                    throw new IllegalStateException("accelerated-search: unreadable cardinality sketch", e);
                 }
                 in.position(in.position() + len);
                 out.add(CARDINALITY_CTOR.newInstance(agg.name(), counts, agg.metadata()));
