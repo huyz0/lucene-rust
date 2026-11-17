@@ -68,6 +68,9 @@ python3 scripts/check-dev-notes.py
 echo "gate: check-file-size (no source file over 3000 production lines grows)"
 python3 scripts/check-file-size.py
 
+echo "gate: check-java-size (no plugin Java file or method over its limit grows)"
+python3 scripts/check-java-size.py
+
 echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree)"
 python3 scripts/check-java-refs.py
 echo "gate: check-fallbacks (no new Lucene fallback reason)"
