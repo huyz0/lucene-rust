@@ -286,7 +286,7 @@ final class NativeHybrid {
                     int rc = NativeSearch.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
                     if (rc != NativeBridge.OK) {
                         NativeMemory.check(rc);
-                        return FallbackReason.NATIVE_ERROR.key();
+                        return FallbackReason.ACCELERATED_ERROR.key();
                     }
                     r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
                 }

@@ -804,6 +804,9 @@ jobs:
       # script change left un-run.
       - name: The derived engine tests match their generator
         run: ./scripts/check-derived-engine-tests.sh
+      # Likewise AcceleratedEngine and its copied helpers against derive_engine.py.
+      - name: The derived engine matches its generator
+        run: ./scripts/check-derived-engine.sh
       - name: OpenSearch's engine tests on the Rust engine
         run: ./scripts/opensearch-engine-tests.sh
       - name: The Rust engine on a real node, and the YAML suites on it

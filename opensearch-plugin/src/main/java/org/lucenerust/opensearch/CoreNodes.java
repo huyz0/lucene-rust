@@ -53,7 +53,7 @@ final class CoreNodes {
             (ps, w) -> ps.getNumDims() == 1 && ps.getBytesPerDim() == Long.BYTES && QueryEncoder.seqNoOnDocValues(w.cx(), ps.getField()),
             (ps, w) -> pointSetDocValues(w.cx(), ps, w.out(), w.fieldOk(), w.depth(), w.nodes()))
         .add(PointInSetQuery.class, (ps, w) -> pointSet(w.cx(), ps, w.out(), w.fieldOk(), w.depth(), w.nodes()))
-        .addWhen(Query.class, (q, w) -> wrapperRewrite(q) >= 0 && q.getClass().getPackageName().equals("org.apache.lucene.search"),
+        .addWhen(Query.class, (q, w) -> q.getClass().getPackageName().equals("org.apache.lucene.search") && wrapperRewrite(q) >= 0,
             (q, w) -> multiTermWrapper(w.cx(), q, w.out(), w.fieldOk(), w.depth(), w.nodes()))
         .addExact(MatchAllDocsQuery.class, (q, w) -> {
             w.out().write(QueryEncoder.NODE_MATCH_ALL);

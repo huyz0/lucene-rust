@@ -75,7 +75,7 @@ A request runs native when **all** of these hold:
   reader (see "Suggesters and highlighters" below). An index the k-NN plugin wrote with
   `index.knn: true`: its segments carry the plugin's own codec
   (`KNN9120Codec` from 2.19), which the native reader does not open
-  (`native_open_failed`, once per reader).
+  (`accelerated_open_failed`, once per reader).
 
 Totals follow OpenSearch's own shortcut (`shortcutTotalHitCount`): a
 `match_all` reports the reader's `numDocs`, and a `term` its document
@@ -240,7 +240,7 @@ Each fallback is counted by reason at `GET /_plugins/accelerated/stats`.
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
 | `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `ZstdTerms104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
-| `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
+| `accelerated_open_failed`, `accelerated_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
 ## Suggesters and highlighters
 

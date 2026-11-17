@@ -1,0 +1,62 @@
+{
+  "_comment": "What the plugin's forked and derived code tracks. `scripts/upstream-diff.py` reads this; update it with every OpenSearch bump.",
+  "opensearch": {
+    "version": "3.9.0",
+    "sources_jar": "https://repo1.maven.org/maven2/org/opensearch/opensearch/3.9.0/opensearch-3.9.0-sources.jar",
+    "sources_jar_sha256": "eb77911b062935c41513e29b6fb3c9da1aeceab7b33cefc85db864f0a8c42abf",
+    "lucene": "10.5.1",
+    "derived_by": "opensearch-plugin/tools/derive_engine.py (checked by scripts/check-derived-engine.sh)"
+  },
+  "forks": [
+    {
+      "name": "neural-search",
+      "plugin_dir": "neural",
+      "repo": "opensearch-project/neural-search",
+      "tag": "3.9.0.0",
+      "commit": null,
+      "roots": [
+        "src/main/java/org/opensearch/neuralsearch"
+      ],
+      "overrides": {
+        "NeuralSearchSettings.java": "src/main/java/org/opensearch/neuralsearch/settings/NeuralSearchSettings.java"
+      }
+    },
+    {
+      "name": "k-NN",
+      "plugin_dir": "knn",
+      "repo": "opensearch-project/k-NN",
+      "tag": "3.9.0.0",
+      "commit": null,
+      "roots": [
+        "src/main/java/org/opensearch/knn"
+      ]
+    },
+    {
+      "name": "sparse (neural-search)",
+      "plugin_dir": "sparse",
+      "repo": "opensearch-project/neural-search",
+      "tag": "3.9.0.0",
+      "commit": null,
+      "roots": [
+        "src/main/java/org/opensearch/neuralsearch/sparse"
+      ],
+      "overrides": {
+        "SparseAnnQueryBuilder.java": "src/main/java/org/opensearch/neuralsearch/sparse/query/SparseAnnQueryBuilder.java",
+        "SparseFieldUtils.java": "src/main/java/org/opensearch/neuralsearch/sparse/common/SparseFieldUtils.java"
+      }
+    },
+    {
+      "name": "ml-commons",
+      "plugin_dir": "ml",
+      "repo": "opensearch-project/ml-commons",
+      "tag": "3.9.0.0",
+      "commit": null,
+      "roots": [
+        "plugin/src/main/java/org/opensearch/ml/settings",
+        "plugin/src/main/java/org/opensearch/ml/utils",
+        "common/src/main/java/org/opensearch/ml/common"
+      ]
+    }
+  ],
+  "_note_commit": "The GitHub API is not reachable from the build sandboxes; raw files at the tag are. Fill `commit` from `git ls-remote --tags <repo> 3.9.0.0` when you have network access."
+}

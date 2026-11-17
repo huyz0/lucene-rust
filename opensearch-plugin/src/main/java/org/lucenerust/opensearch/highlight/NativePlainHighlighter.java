@@ -161,7 +161,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             logger.warn("accelerated-search: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
-            prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
+            prepared.fallback = FallbackReason.HIGHLIGHT_ACCELERATED_ERROR.key();
             stats.fallback(prepared.fallback);
             return super.highlight(fieldContext);
         }

@@ -151,7 +151,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/accelerated/stats`.
 | `postings_format` | is on an index with a postings field in a format the Rust reader does not decode (e.g. `completion`'s `Completion104`); every default format Lucene 9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`, `Lucene103`, `Lucene104`) is served natively since M8 T8.5 |
 | `intra_segment` | uses intra-segment concurrent search slices |
 | `reader_*`, `directory_*` | is on a remote-store or wrapped reader the plugin cannot see through |
-| `native_open_failed`, `native_error` | hit a native refusal or error; the node log has the message, and the request re-ran on OpenSearch's path |
+| `accelerated_open_failed`, `accelerated_error` | hit a native refusal or error; the node log has the message, and the request re-ran on OpenSearch's path |
 
 ## Not supported
 
@@ -162,7 +162,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/accelerated/stats`.
   (OpenSearch 3.x cannot open them either), non-default postings formats
   (`completion`: `postings_format`), and segments the k-NN plugin wrote with
   `index.knn: true`, which name the plugin's codec (`KNN9120Codec` from 2.19)
-  and fall back as `native_open_failed`. The accelerated engine writes `index.codec`
+  and fall back as `accelerated_open_failed`. The accelerated engine writes `index.codec`
   `default`, `lucene_default`, `best_compression`, and the bundled
   custom-codecs plugin's `zstd` and `zstd_no_dict` (with
   `index.codec.compression_level`) in that plugin's own format and codec names
