@@ -32,7 +32,7 @@ Every search the plugin sees is counted: `accelerated_queries`, or a fallback un
 its reason.
 
 ```
-GET /_plugins/lucene_rust/stats
+GET /_plugins/accelerated/stats
 ```
 
 `scripts/fallback-report.py [URL]` turns the counters of every node into
@@ -127,7 +127,7 @@ segment stats, scores on update-heavy indices until a force merge) is in
 
 ## Falls back, and why
 
-Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
+Each is a counter under `fallbacks` in `GET /_plugins/accelerated/stats`.
 
 | Reason | The request |
 |---|---|

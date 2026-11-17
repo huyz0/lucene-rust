@@ -25,7 +25,7 @@ as=()
 cd "$stage/tmp"
 "${as[@]}" "$java_bin" -ea -Xmx2g --add-opens=java.base/java.nio=ALL-UNNAMED \
     -Dtests.security.manager=false -Djava.io.tmpdir="$stage/tmp" \
-    -Dlucene_rust.library.path="$stage/cp/liblucene_ffi.so" \
+    -Daccelerated.library.path="$stage/cp/liblucene_ffi.so" \
     "$@" -cp "$stage/cp:$stage/cp/*" \
     org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.RustEngineTests \
     org.lucenerust.opensearch.engine.SeqNoLayoutTests \

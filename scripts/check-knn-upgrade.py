@@ -262,7 +262,7 @@ def write_into(cases, failures, live, rename=""):
 
 
 def fallbacks_since(before):
-    after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+    after = ck.req(NODE[1], "GET", "/_plugins/accelerated/stats")
     return after["accelerated_queries"] - before["accelerated_queries"], {
         k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
         if v != before.get("fallbacks", {}).get(k, 0)}
@@ -285,7 +285,7 @@ def main():
         stop()
         # The stock indexes in place inherit the Rust engine; the restored ones take OpenSearch's.
         start(image, "indices.engine.accelerated.default=true")
-        before = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+        before = ck.req(NODE[1], "GET", "/_plugins/accelerated/stats")
         green(failures, "stock indexes in place")
         n = read(cases, "", True, failures)
         restore("from-stock", failures, {"index.engine.accelerated": False})
@@ -298,7 +298,7 @@ def main():
         n += write_into(cases, failures, live, "restored-")
         m += sources(live, "", failures)
         ran, fell = fallbacks_since(before)
-        after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+        after = ck.req(NODE[1], "GET", "/_plugins/accelerated/stats")
         engines = after["engines"]
         fetched = after["fetch_nanos"]["accelerated_count"] - before["fetch_nanos"]["accelerated_count"]
         errors = after["accelerated_errors"] - before["accelerated_errors"]

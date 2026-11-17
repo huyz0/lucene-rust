@@ -253,7 +253,7 @@ def err_sig(resp):
 
 
 def native(node):
-    st, r = node.req("GET", "/_plugins/lucene_rust/stats")
+    st, r = node.req("GET", "/_plugins/accelerated/stats")
     return r.get("accelerated_queries") if st == 200 else None
 
 

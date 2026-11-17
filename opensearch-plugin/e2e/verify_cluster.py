@@ -104,7 +104,7 @@ def primary(index):
 
 
 def engines(node):
-    return must("GET", "/_plugins/lucene_rust/stats", node=node).get("engines", {})
+    return must("GET", "/_plugins/accelerated/stats", node=node).get("engines", {})
 
 
 WORDS = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu".split()
@@ -270,10 +270,10 @@ def main():
         sr.ops(300)
     sr.verify("segment replication (Java primary, replicas read natively)")
     replica = next(n for n, prim in copies("segrep").items() if not prim)
-    before = must("GET", "/_plugins/lucene_rust/stats", node=replica)["accelerated_queries"]
+    before = must("GET", "/_plugins/accelerated/stats", node=replica)["accelerated_queries"]
     must("POST", f"/segrep/_search?preference=_only_nodes:{replica}&request_cache=false",
          {"query": {"match": {"title": "alpha"}}})
-    after = must("GET", "/_plugins/lucene_rust/stats", node=replica)["accelerated_queries"]
+    after = must("GET", "/_plugins/accelerated/stats", node=replica)["accelerated_queries"]
     check(after > before, f"the replica on {replica} answered a match query natively: {before} -> {after}")
 
     # 8. Segment replication with a Rust primary: its replicas copy the Rust writer's segments.

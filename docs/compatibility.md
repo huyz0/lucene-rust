@@ -97,7 +97,7 @@ for the accelerated engine refuses those documents one by one.
 | `indices.aggregation_segment_cache.size` | 256 MB | a cap for opt-in indices |
 | `indices.fetch.accelerated_reader` | `true` | with the security plugin installed, stored fields are read natively beneath its field- and document-level security, which still filters and masks what is returned |
 | `indices.logs_preset.enabled` | `true` | registers component templates only |
-| `index.testing.fault_injection` | `false` | tests only: a document with a `__lucene_rust_panic` field panics the writer when on |
+| `index.testing.fault_injection` | `false` | tests only: a document with a `__accelerated_panic` field panics the writer when on |
 
 The k-NN settings (`index.knn*`, `knn.*` and the circuit breaker) equal stock k-NN's
 `KNNSettings` (checked against the source when they were added). ml-commons settings are registered under
@@ -127,7 +127,7 @@ update-heavy indices until a force merge (refresh is a commit, so deletes are re
 | ml-commons: models, connectors (HTTP, AWS SigV4, Google), agents (conversational, plan-execute-reflect, AG-UI), memory, MCP, remote and local ONNX/TorchScript inference | a port of ml-commons ([`ml-commons-remote.md`](ml-commons-remote.md), `parity/ml-commons.md`); same API names and setting keys. Not part of the 2026-11-15 differential sweep |
 | neural search, neural sparse, seismic | served by this plugin itself (`scripts/check-neural-plugin.py`, `check-sparse-plugin.py`); the bundled `neural-search` plugin registers a `QueryPhaseSearcher` of its own and OpenSearch allows one per node, so it is removed from a node that runs this plugin |
 | cross-cluster replication | leader: **same**. Follower: needs `opensearch-plugin/ccr/0001-configurable-follower-engine.patch` for `plugins.replication.follower.engine: delegate`; unpatched, a follower's index writes stock segments (an `extended` k-NN field cannot be followed) |
-| `GET /_plugins/lucene_rust/stats`, `_plugins/lucene_rust/*` | new endpoints; stock tools ignore them |
+| `GET /_plugins/accelerated/stats`, `_plugins/accelerated/*` | new endpoints; stock tools ignore them |
 | `_stats`, `_segments`, `_cat/segments` | **deviates**: `_segments` counts hard deletes only (soft deletes are not applied on the unwrapped reader, as on `NRTReplicationEngine` replicas); index-level `docs.count` and `docs.deleted` are exact |
 | segment replication | Rust primary, replicas run `NRTReplicationEngine`; the plugin needs one reflective write into `IndexModule` unless OpenSearch exposes `Engine#lastRefreshedCheckpoint` (upstream change prepared) |
 | remote-backed storage, searchable snapshots | **refused** by the engine |

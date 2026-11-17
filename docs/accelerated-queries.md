@@ -199,7 +199,7 @@ values.
 
 ## Falls back to Lucene
 
-Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
+Each fallback is counted by reason at `GET /_plugins/accelerated/stats`.
 
 | Reason | What it means |
 |---|---|

@@ -329,7 +329,7 @@ TRACE = os.environ.get("HL_TRACE") == "1"
 
 
 def fallbacks():
-    stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
+    stats = S.get(f"{PLUGIN}/_plugins/accelerated/stats").json()
     return {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k}
 
 
@@ -387,7 +387,7 @@ def check(size):
                     delta = {k: v - before.get(k, 0) for k, v in after.items() if v != before.get(k, 0)}
                     if delta:
                         print(f"FALLBACK {index} {qn} {delta}")
-    stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
+    stats = S.get(f"{PLUGIN}/_plugins/accelerated/stats").json()
     print(f"{rows - bad}/{rows} rows identical")
     print("accelerated_highlights", stats.get("accelerated_highlights"), "accelerated_errors", stats.get("accelerated_errors"))
     print("highlight fallbacks", {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k})

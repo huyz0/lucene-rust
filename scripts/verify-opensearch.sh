@@ -21,7 +21,7 @@
 # a tripped breaker.
 #
 # With --js the plugin is built with V8 (-Pjs) and the node serves
-# `"lang": "js"` scripts (lucene_rust.script.js.enabled), which the e2e
+# `"lang": "js"` scripts (script.js.enabled), which the e2e
 # checks against the same scripts in Painless.
 #
 #   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--js] [--keep]
@@ -65,7 +65,7 @@ if [[ $ENGINE == 1 ]]; then
     NODE_ENV=()
 fi
 if [[ $JS == 1 ]]; then
-    NODE_ENV+=(lucene_rust.script.js.enabled=true lucene_rust.script.js.timeout=1s)
+    NODE_ENV+=(script.js.enabled=true script.js.timeout=1s)
 fi
 start_node() { # name port variant [setting ...]; the e2e hunspell dictionary is on every node, stock ones too
     local n=$1 p=$2 v=$3; shift 3
@@ -129,7 +129,7 @@ if [[ $YAML == 1 && $status == 0 ]]; then
     done
     echo "yaml (lucene-rust): $(run_yaml "$PORT" "$work/rust")"
     echo "yaml (stock):       $(run_yaml "$((PORT + 2))" "$work/stock")"
-    stats=$(curl -s "localhost:${PORT}/_plugins/lucene_rust/stats")
+    stats=$(curl -s "localhost:${PORT}/_plugins/accelerated/stats")
     echo "yaml: plugin stats $stats"
     # Failures that are the plugin's design, each with its reason in the file. An entry that no
     # longer fails is an error: the list can only name tests that still differ.

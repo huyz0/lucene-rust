@@ -513,7 +513,7 @@ def realtime():
     create(rt, True, {"index.search.realtime.enabled": True, "index.search.realtime.max_staleness": "0ms"}, flat)
     create(ref, True, None, flat)
     wait_green(f"{rt},{ref}")
-    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    before = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     r = random.Random(11)
     queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}},
                {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
@@ -708,7 +708,7 @@ def realtime():
             same_views("realtime after a flush")
         if rnd == 1:
             must("POST", f"/{rt}/_refresh")
-    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    after = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     check(after - before >= 12 + 3 * (len(queries) + 1 + len(sorts)), f"realtime: live searches counted ({after - before})")
     # Updates and deletes of refreshed documents, and of buffered ones: the live search sees the
     # new versions only, as a refreshed index does.
@@ -718,7 +718,7 @@ def realtime():
         must("DELETE", f"/{idx}/_doc/r6")
         must("DELETE", f"/{idx}/_doc/r701")
     must("POST", f"/{ref}/_refresh")
-    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    before = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     for q in queries:
         a, b = scored(rt, q), scored(ref, q)
         check(a[0] == b[0], f"realtime after updates: total {q}: {a[0]} vs {b[0]}")
@@ -737,7 +737,7 @@ def realtime():
     check(took < 5, f"realtime: wait_for answered without a refresh ({took:.2f}s)")
     zebra = must("POST", f"/{rt}/_search?request_cache=false", {"query": {"match": {"body": "zebra"}}, "track_total_hits": True})
     check(zebra["hits"]["total"]["value"] == 21, f"realtime: wait_for writes are searchable ({zebra['hits']['total']})")
-    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    after = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     check(after - before >= 4 + len(queries) + 1 + len(sorts), f"realtime: searches after updates stay live ({after - before})")
     for idx in (rt, ref):
         must("DELETE", f"/{idx}")
@@ -854,7 +854,7 @@ def fault_containment():
         must("POST", f"/{idx}/_refresh")
     before_rust, before_peer = recoveries("fault_rust"), recoveries("fault_peer")
     java_before = must("GET", f"/{JAVA}/_count")["count"]
-    status, out = req("PUT", "/fault_rust/_doc/boom?routing=r", {"__lucene_rust_panic": 1, "n": 1})
+    status, out = req("PUT", "/fault_rust/_doc/boom?routing=r", {"__accelerated_panic": 1, "n": 1})
     check(status >= 500, f"the panicking write fails: {status} {json.dumps(out)[:300]}")
     check("panic" in json.dumps(out).lower(), f"the failure names the panic: {json.dumps(out)[:300]}")
     # The 5xx comes back before the shard is failed: the engine fails itself and
@@ -969,12 +969,12 @@ def unsupported():
     if all(n["settings"].get("indices.engine.accelerated.default", "true") == "true" for n in nodes):
         # The default: an index that says nothing is served by the accelerated engine, and stores no
         # setting, so a node without the plugin opens it as it is.
-        before = must("GET", "/_plugins/lucene_rust/stats")["engines"]["accelerated"]
+        before = must("GET", "/_plugins/accelerated/stats")["engines"]["accelerated"]
         must("PUT", "/inherited", {"settings": {"number_of_shards": 1, "number_of_replicas": 0}})
         wait_green("inherited")
         stored = must("GET", "/inherited/_settings?flat_settings=true")["inherited"]["settings"]
         check("index.engine.accelerated" not in stored, f"an inherited-default index stores no engine setting: {stored}")
-        after = must("GET", "/_plugins/lucene_rust/stats")["engines"]["accelerated"]
+        after = must("GET", "/_plugins/accelerated/stats")["engines"]["accelerated"]
         check(after > before, f"an inherited-default index is on the accelerated engine: {before} -> {after}")
         must("DELETE", "/inherited")
         # Only asked-for is strict: an index that merely inherits the node default and needs what
@@ -1069,9 +1069,9 @@ def derived_source(container):
         ids = {"ids": [f"d{i}" for i in range(0, 3000, 151)]}
         check(strip(must("POST", f"/{java}/_mget", ids)) == strip(must("POST", f"/{rust}/_mget", ids)), f"{label}: mget")
 
-    before = must("GET", "/_plugins/lucene_rust/stats").get("accelerated_doc_values", 0)
+    before = must("GET", "/_plugins/accelerated/stats").get("accelerated_doc_values", 0)
     same("derived source")
-    after = must("GET", "/_plugins/lucene_rust/stats").get("accelerated_doc_values", 0)
+    after = must("GET", "/_plugins/accelerated/stats").get("accelerated_doc_values", 0)
     check(after > before, f"derived source: doc values read natively: {before} -> {after}")
     # Updates (partial ones read the derived _source), deletes, then a realtime get from the translog.
     for idx in (java, rust):
@@ -1109,7 +1109,7 @@ def derived_source(container):
                                             "index.engine.accelerated": False, "index.derived_source.enabled": True},
                                "mappings": DS_MAPPING})
     wait_green(f"{rt},ds_rt_java")
-    live_before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    live_before = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     r = random.Random(9)
     lines = []
     for i in range(400):
@@ -1125,7 +1125,7 @@ def derived_source(container):
         b = must("POST", f"/{rt}/_search?request_cache=false", q)
         check(strip(a["hits"]) == strip(b["hits"]),
               f"derived source realtime: {json.dumps(q)[:120]}: {json.dumps(strip(a['hits']))[:300]} vs {json.dumps(strip(b['hits']))[:300]}")
-    live = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    live = must("GET", "/_plugins/accelerated/stats").get("live_queries", 0)
     check(live > live_before, f"derived source realtime: the buffers were searched: {live_before} -> {live}")
     for idx in (java, rust, rt, "ds_rt_java"):
         req("DELETE", f"/{idx}")
@@ -1188,7 +1188,7 @@ def codecs(container):
         out = nodectl.exec_(container, script, errors="replace").stdout.split()
         check(len(out) == 2 and all(int(c) > 0 for c in out),
               f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
-    stats = must("GET", "/_plugins/lucene_rust/stats")
+    stats = must("GET", "/_plugins/accelerated/stats")
     check(stats.get("accelerated_errors", 0) == 0, f"no native errors on codec indices: {stats.get('accelerated_errors')}")
     for idx, _, _, _ in names:
         must("DELETE", f"/{idx}")
@@ -1295,7 +1295,7 @@ def logs_preset():
             check(a == b, f"{label}: search {i} answers as the stock mapping does: {json.dumps(a)[:200]} vs {json.dumps(b)[:200]}")
         for idx in ("logs_java", "logs_preset"):
             must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
-    stats = must("GET", "/_plugins/lucene_rust/stats")
+    stats = must("GET", "/_plugins/accelerated/stats")
     check(stats.get("accelerated_errors", 0) == 0, f"no native errors on logs preset indices: {stats.get('accelerated_errors')}")
     must("DELETE", "/_index_template/logs_preset_e2e")
     for idx in ("logs_java", "logs_preset"):
@@ -1349,7 +1349,7 @@ def encrypted(container):
             return "segments_" in name or name.endswith(".si") or name.startswith("corrupted_")
         wrong = [l for l in out if l.startswith("LRSE ") == commit(l)]
         check(len(out) > 4 and not wrong, f"{idx}: every shard file but commit metadata is encrypted ({len(out)} files): {wrong[:5]}")
-    stats = must("GET", "/_plugins/lucene_rust/stats")
+    stats = must("GET", "/_plugins/accelerated/stats")
     check(stats.get("accelerated_errors", 0) == 0, f"no native errors on encrypted indices: {stats.get('accelerated_errors')}")
 
     nodectl.kill(container)
@@ -1392,7 +1392,7 @@ def main():
     check(stats["segments"]["count"] >= 1, "segment stats are populated")
     check(stats["indexing"]["index_total"] > 0, "indexing stats are populated")
     check(stats["segments"]["index_writer_memory_in_bytes"] >= 0, "writer memory is reported")
-    analyzed = must("GET", "/_plugins/lucene_rust/stats").get("analyzed_values", {})
+    analyzed = must("GET", "/_plugins/accelerated/stats").get("analyzed_values", {})
     # title (english), body (standard), note and code (custom) are all Lucene components.
     check(analyzed.get("accelerated", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)

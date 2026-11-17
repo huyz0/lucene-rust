@@ -8,7 +8,7 @@ A sampler thread reads the node process's anonymous and total resident memory (s
 and end values of both. Heap numbers are used heap (not committed), so garbage counts until a
 collection runs; `heap_after_gc` forces one (`_nodes/stats` after a `jcmd GC.run` is not
 available without a JDK on the path, so the gap between peak and end is the thing to read).
-The plugin node's off-heap counters (`_plugins/lucene_rust/stats`) are added when present.
+The plugin node's off-heap counters (`_plugins/accelerated/stats`) are added when present.
 
 SHARDS, DOCS_LIMIT, SOAK_CYCLES are read from the environment."""
 import glob
@@ -47,7 +47,7 @@ def heap_stats():
 
 def off_heap():
     try:
-        s = bn.req("GET", "/_plugins/lucene_rust/stats")
+        s = bn.req("GET", "/_plugins/accelerated/stats")
     except Exception:
         return None
     m = s.get("off_heap_memory", {})

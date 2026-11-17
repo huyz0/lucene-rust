@@ -148,7 +148,7 @@ def checkDist = tasks.register('checkOpensearchDist') {
 tasks.named('compileJava') { dependsOn checkDist }
 
 // -Pjs: the native library with V8, for `"lang": "js"` scripts (the node
-// still needs lucene_rust.script.js.enabled). About 29 MB larger.
+// still needs script.js.enabled). About 29 MB larger.
 def js = findProperty('js') != null
 def cargoBuild = tasks.register('cargoBuild', Exec) {
     description = 'Builds liblucene_ffi.so (-PcargoProfile, dist by default) for this host; with -Pfips, against the FIPS module.'
@@ -239,8 +239,8 @@ def selfTest = tasks.register('selfTest', JavaExec) {
     dependsOn tasks.named('testClasses'), cargoBuild, makeDataPacks
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
-    systemProperty 'lucene_rust.data_packs', dataPacks.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.data_packs', dataPacks.absolutePath
     // Rust's float kernels always fuse multiply-adds; Lucene's scalar kernels do
     // only where Constants.HAS_FAST_SCALAR_FMA picks it for the CPU, so scores
     // would differ in the last ulp on some runners.
@@ -254,7 +254,7 @@ def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.EngineWriterDiffTest'
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
 // The encrypted store: Lucene and the Rust engine reading and writing one encrypted index.
@@ -263,7 +263,7 @@ def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.EncryptedStoreTest'
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
 tasks.named('test') { enabled = false }
@@ -277,7 +277,7 @@ tasks.register('nativeBench', JavaExec) {
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.NativeBench'
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-Xms2g', '-Xmx2g', '--add-modules', 'jdk.incubator.vector'
     args findProperty('docs') ?: '500000'
 }
@@ -289,7 +289,7 @@ tasks.register('indexingBench', JavaExec) {
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.IndexingBench'
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-Xms4g', '-Xmx4g'
     systemProperty 'refresh.ms', findProperty('refreshMs') ?: '1000'
     systemProperty 'merge_on_flush.ms', findProperty('mergeOnFlushMs') ?: '10000'
@@ -337,7 +337,7 @@ tasks.register('yamlRestTest', Test) {
     systemProperty 'tests.rest.suite', findProperty('tests.rest.suite') ?: 'search'
     systemProperty 'tests.cluster', findProperty('tests.rest.cluster') ?: 'localhost:9200'
     systemProperty 'tests.clustername', 'docker-cluster'
-    systemProperty 'lucene_rust.preserve_templates', findProperty('preserveTemplates') ?: 'false'
+    systemProperty 'accelerated.preserve_templates', findProperty('preserveTemplates') ?: 'false'
     systemProperty 'tests.security.manager', 'false'
     // Run everything and report, rather than stopping at the first failure.
     ignoreFailures = findProperty('yamlIgnoreFailures') == 'true'
@@ -372,7 +372,7 @@ tasks.register('engineTest', Test) {
     testClassesDirs = sourceSets.engineTest.output.classesDirs
     classpath = sourceSets.engineTest.runtimeClasspath
     useJUnit()
-    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
     systemProperty 'tests.security.manager', 'false'
     systemProperty 'java.io.tmpdir', layout.buildDirectory.dir('engine-test-tmp').get().asFile.absolutePath
     jvmArgs nativeAccess, '-ea', '-Xmx2g', '--add-opens=java.base/java.nio=ALL-UNNAMED'

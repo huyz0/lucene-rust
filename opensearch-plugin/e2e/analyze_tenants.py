@@ -145,7 +145,7 @@ def run(base, container, label, out, settings_extra, tenants, ndocs, perf):
     bt.req("PUT", "/shared", {"settings": settings, "mappings": bt.MAPPING})
     bt.req("GET", "/_cluster/health?wait_for_status=green&timeout=600s")
     try:
-        engine = json.dumps(bt.req("GET", "/_plugins/lucene_rust/stats").get("engines"))
+        engine = json.dumps(bt.req("GET", "/_plugins/accelerated/stats").get("engines"))
     except RuntimeError:
         engine = "stock"
     with Profiled(ctx, "load"):

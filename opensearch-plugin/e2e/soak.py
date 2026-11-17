@@ -806,7 +806,7 @@ def compare_with_stock(cl, ref, index, docs, shards, label, vec=False):
 # Log scan
 
 BAD_LOG = re.compile(r"CorruptIndexException|panicked at|SIGSEGV|fatal error in thread|AssertionError|"
-                     r"native error|FfiError|lucene_rust.*(ERROR|Exception)|failed to recover from|"
+                     r"native error|FfiError|lucene-rust.*(ERROR|Exception)|failed to recover from|"
                      r"IndexFormatTooOld|TranslogCorrupted|EngineCreationFailure|unsupported|"
                      r"ShardLockObtainFailed", re.I)
 
@@ -837,7 +837,7 @@ def plugin_stats(cl):
         if not n.alive():
             continue
         try:
-            code, s = Http([n.url]).req("GET", "/_plugins/lucene_rust/stats", retry=False)
+            code, s = Http([n.url]).req("GET", "/_plugins/accelerated/stats", retry=False)
             if code == 200:
                 out[n.name] = {k: s.get(k) for k in ("engines", "native_errors", "fallbacks") if k in s}
         except RuntimeError:
@@ -852,7 +852,7 @@ def engines(cl, index):
         if not n.alive():
             continue
         try:
-            code, s = Http([n.url]).req("GET", "/_plugins/lucene_rust/stats", retry=False)
+            code, s = Http([n.url]).req("GET", "/_plugins/accelerated/stats", retry=False)
         except RuntimeError:
             continue
         out[n.name] = s.get("engines") if code == 200 else f"{code}"

@@ -129,7 +129,7 @@ def realtime(plugin, stock):
         req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0,
                                               "refresh_interval": -1, **extra}, "mappings": MAPPING})
     items = docs(9, 1200, "r")
-    before = plugin("GET", "/_plugins/lucene_rust/stats")["live_queries"]
+    before = plugin("GET", "/_plugins/accelerated/stats")["live_queries"]
     for rnd in range(4):
         part = items[rnd * 300:(rnd + 1) * 300]
         # Updates of earlier blocks too: the old block deleted, the new one added whole.
@@ -141,7 +141,7 @@ def realtime(plugin, stock):
         compare(f"realtime round {rnd}", index, plugin, stock)
         if rnd == 1:
             plugin("POST", f"/{index}/_refresh")
-    after = plugin("GET", "/_plugins/lucene_rust/stats")["live_queries"]
+    after = plugin("GET", "/_plugins/accelerated/stats")["live_queries"]
     check(after - before >= 3 * len(rows()), f"realtime: nested searches ran live ({after - before})")
 
 

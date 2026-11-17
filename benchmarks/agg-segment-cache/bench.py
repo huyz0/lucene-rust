@@ -159,7 +159,7 @@ for name in ([] if os.environ.get("SKIP_STATIC") else dashboards(end)):
 
 def stats():
     try:
-        s = req("GET", "/_plugins/lucene_rust/stats")
+        s = req("GET", "/_plugins/accelerated/stats")
         node = next(iter(s["nodes"].values())) if "nodes" in s else s
         return node.get("aggregation_segment_cache")
     except Exception:

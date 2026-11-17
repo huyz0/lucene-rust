@@ -555,12 +555,12 @@ final class NativeSelfTestAnalysis {
 
     /**
      * The data-pack tokenizers: refused while no pack directory holds their dictionaries, then
-     * Lucene's tokens once {@code lucene_rust.data_packs} (scripts/make-data-packs.sh) is added.
+     * Lucene's tokens once {@code accelerated.data_packs} (scripts/make-data-packs.sh) is added.
      */
     static void packs(BiConsumer<Boolean, String> check) throws Exception {
-        String dir = System.getProperty("lucene_rust.data_packs");
+        String dir = System.getProperty("accelerated.data_packs");
         if (dir == null) {
-            System.out.println("NativeSelfTest: no lucene_rust.data_packs, data-pack tokenizers skipped");
+            System.out.println("NativeSelfTest: no accelerated.data_packs, data-pack tokenizers skipped");
             return;
         }
         try {
@@ -626,7 +626,7 @@ final class NativeSelfTestAnalysis {
      * dictionaries included, described and run in Rust; needs the data packs {@link #packs} adds.
      */
     static void cjkModules(BiConsumer<Boolean, String> check) throws Exception {
-        if (System.getProperty("lucene_rust.data_packs") == null) {
+        if (System.getProperty("accelerated.data_packs") == null) {
             return;
         }
         var ja = org.apache.lucene.analysis.ja.dict.UserDictionary.open(new StringReader("""

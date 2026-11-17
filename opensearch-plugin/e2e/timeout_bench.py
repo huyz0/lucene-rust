@@ -61,7 +61,7 @@ def main():
                       "hits", r[-1]["hits"], "total", r[-1]["total"], "status", r[-1]["status"], r[-1]["error"] or "",
                       flush=True)
     mb.req(base, "PUT", "/%s/_settings" % INDEX, {"index.search.accelerated": True})
-    stats = mb.req(base, "GET", "/_plugins/lucene_rust/stats")[1]
+    stats = mb.req(base, "GET", "/_plugins/accelerated/stats")[1]
     result["fallbacks"] = stats.get("fallbacks")
     with open(out_path, "w") as f:
         json.dump(result, f, indent=1)

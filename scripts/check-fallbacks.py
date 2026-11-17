@@ -2,7 +2,7 @@
 """Fail when the plugin gains a Lucene/Java fallback reason nobody approved.
 
 Every place the plugin hands a request back to Lucene or Java names a reason (a string
-literal that ends up in the `fallbacks` map of `GET _lucene_rust/stats`). This script
+literal that ends up in the `fallbacks` map of `GET _plugins/accelerated/stats`). This script
 extracts those literals from the plugin's Java sources and compares them with
 `opensearch-plugin/fallback-reasons.txt`, the list of reasons that still exist.
 

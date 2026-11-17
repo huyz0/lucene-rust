@@ -146,7 +146,7 @@ the append rounds 555 parts, 234 MB, 3,219 hits and 1,843 misses (1,288
 evictions over the run, mostly the never-seen trees). The `host` terms hold up
 to 81k keys per part and are most of the bytes. A part larger than an eighth
 of the budget is not kept. Counters: `aggregation_segment_cache` in
-`GET /_plugins/lucene_rust/stats`.
+`GET /_plugins/accelerated/stats`.
 
 ## Correctness
 
