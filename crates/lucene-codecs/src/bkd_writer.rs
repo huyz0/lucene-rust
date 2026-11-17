@@ -22,6 +22,7 @@
 //! recursion budget runs out) is the one place Java's own output is not
 //! reproducible; this port seeds it.
 
+use lucene_util::vint::{write_vint, write_vlong};
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -146,24 +147,6 @@ impl BkdConfig {
 /// `n`-byte values.
 fn common_prefix(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
-}
-
-fn write_vint(out: &mut Vec<u8>, v: i32) {
-    let mut v = v as u32;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
-fn write_vlong(out: &mut Vec<u8>, v: i64) {
-    let mut v = v as u64;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 /// `FixedBitSet.bits2words`.

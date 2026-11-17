@@ -948,3 +948,19 @@ fn clone_has_independent_file_pointer() {
     assert_eq!(original.read_byte().unwrap(), b'l'); // original independently re-reads the same byte at pos 1
     assert_eq!(cloned.position(), 2, "clone untouched by original's read");
 }
+
+#[test]
+fn read_vint_at_and_vlong_at_advance_and_keep_pos_on_error() {
+    let buf = [0x05u8, 0x80, 0x01, 0xff, 0xff, 0x7f];
+    let mut pos = 0;
+    assert_eq!(read_vint_at(&buf, &mut pos).unwrap(), 5);
+    assert_eq!(read_vint_at(&buf, &mut pos).unwrap(), 128);
+    assert_eq!(read_vlong_at(&buf, &mut pos).unwrap(), 0x1f_ffff);
+    assert_eq!(pos, buf.len());
+    let before = pos;
+    assert!(read_vint_at(&buf, &mut pos).is_err());
+    assert!(read_vlong_at(&buf, &mut pos).is_err());
+    assert_eq!(pos, before);
+    let mut past = buf.len() + 3;
+    assert!(read_vint_at(&buf, &mut past).is_err());
+}

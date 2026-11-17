@@ -44,6 +44,7 @@ pub mod term_interner;
 pub mod ternary_long_heap;
 pub mod vector_util;
 pub mod version;
+pub mod vint;
 // Shared test scratch directories (see the module docs). Compiled only for this
 // crate's own tests and for consumers that opt in via the `test-support`
 // feature on a `[dev-dependencies]` edge -- never in a production build.
