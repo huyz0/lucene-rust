@@ -13,7 +13,7 @@
       "plugin_dir": "neural",
       "repo": "opensearch-project/neural-search",
       "tag": "3.9.0.0",
-      "commit": null,
+      "commit": "ee4fcd6f16ff78653958f03d072b43aa3e4896ae",
       "roots": [
         "src/main/java/org/opensearch/neuralsearch"
       ],
@@ -26,7 +26,7 @@
       "plugin_dir": "knn",
       "repo": "opensearch-project/k-NN",
       "tag": "3.9.0.0",
-      "commit": null,
+      "commit": "e654c346d04f3599491f6e307384e651b28c6135",
       "roots": [
         "src/main/java/org/opensearch/knn"
       ]
@@ -36,7 +36,7 @@
       "plugin_dir": "sparse",
       "repo": "opensearch-project/neural-search",
       "tag": "3.9.0.0",
-      "commit": null,
+      "commit": "ee4fcd6f16ff78653958f03d072b43aa3e4896ae",
       "roots": [
         "src/main/java/org/opensearch/neuralsearch/sparse"
       ],
@@ -50,7 +50,7 @@
       "plugin_dir": "ml",
       "repo": "opensearch-project/ml-commons",
       "tag": "3.9.0.0",
-      "commit": null,
+      "commit": "fa87ea21cad30a00024df1244b806418c84fc5cc",
       "roots": [
         "plugin/src/main/java/org/opensearch/ml/settings",
         "plugin/src/main/java/org/opensearch/ml/utils",
