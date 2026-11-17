@@ -2,6 +2,7 @@
 use super::*;
 use crate::token_stream::consume;
 use crate::{StandardAnalyzer, StandardTokenizer};
+use lucene_util::shared_text::SharedText;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn terms(a: &Analyzer, field: &str, text: &str) -> Vec<String> {
@@ -14,7 +15,12 @@ fn terms(a: &Analyzer, field: &str, text: &str) -> Vec<String> {
 #[test]
 fn a_shared_text_stream_yields_the_same_tokens_as_a_borrowed_one() {
     let text = "The quick brown 😀 fox, jumps over the lazy dog's 世界 back";
-    let shared: Arc<str> = Arc::from(text);
+    let arc: Arc<str> = Arc::from(text);
+    // both forms the text can be shared in
+    let forms = [
+        SharedText::from(Arc::clone(&arc)),
+        SharedText::from(Arc::new(text.to_string())),
+    ];
     let a = Analyzer::new(StandardAnalyzer::new());
     let mut want = Vec::new();
     let mut ts = a.token_stream("f", text).unwrap();
@@ -24,9 +30,9 @@ fn a_shared_text_stream_yields_the_same_tokens_as_a_borrowed_one() {
     .unwrap();
     drop(ts);
     // twice: the second run reuses the components the first returned
-    for _ in 0..2 {
+    for shared in forms.iter().flat_map(|f| [f, f]) {
         let mut got = Vec::new();
-        let mut ts = a.token_stream_shared("f", &shared).unwrap();
+        let mut ts = a.token_stream_shared("f", shared).unwrap();
         consume(&mut ts, |x| {
             got.push((x.term().to_string(), x.start_offset(), x.end_offset()))
         })
@@ -35,9 +41,22 @@ fn a_shared_text_stream_yields_the_same_tokens_as_a_borrowed_one() {
         assert_eq!(got, want);
     }
     // the stream let go of its clone once dropped
-    assert_eq!(Arc::strong_count(&shared), 1);
+    drop(forms);
+    assert_eq!(Arc::strong_count(&arc), 1);
     // and a borrowed stream after a shared one still works
     assert_eq!(terms(&a, "f", "a b"), vec!["a", "b"]);
+}
+
+#[test]
+fn a_stream_over_a_shared_string_holds_the_callers_allocation_not_a_copy() {
+    let owner = Arc::new(String::from("one two three"));
+    let shared = SharedText::from(Arc::clone(&owner));
+    let a = Analyzer::new(StandardAnalyzer::new());
+    let ts = a.token_stream_shared("f", &shared).unwrap();
+    // the caller's handle, the clone in `shared`'s own, and the stream's
+    assert_eq!(Arc::strong_count(&owner), 3, "the stream took a handle");
+    drop(ts);
+    assert_eq!(Arc::strong_count(&owner), 2);
 }
 
 /// Counts `create_components` calls; per-field gaps.

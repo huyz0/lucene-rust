@@ -20,8 +20,9 @@ fuzz_target!(|data: &[u8]| {
         .map(|c| (c[0].clone(), c.get(1).cloned().unwrap_or_default()))
         .collect();
     // Inputs cannot contain the credentials (they are fixed strings the fuzzer would have to guess),
-    // so any appearance in a header is a leak.
-    if String::from_utf8_lossy(data).contains("fuzz-") {
+    // so any appearance in a header is a leak. Header names are lowercased by the signer, so the
+    // input is searched lowercased too: `fuZz-secret-..` as a header name signs as the secret's text.
+    if String::from_utf8_lossy(data).to_ascii_lowercase().contains("fuzz-") {
         return;
     }
     let Some(url) = Url::parse(&url) else { return };

@@ -21,12 +21,12 @@
 //! they stay in Java's `FieldInfos`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::stored_fields::StoredField;
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm};
+use lucene_util::shared_text::SharedText;
 
 use super::{
     illegal, index_options_subsumes, DocValuesSkipIndexType, DocValuesType, Document, FieldTokens,
@@ -688,7 +688,7 @@ impl InvertState {
         doc: i32,
         field: &str,
         analyzer: &Analyzer,
-        text: &Arc<str>,
+        text: &SharedText,
         analyzed: bool,
     ) -> super::Result<()> {
         let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
