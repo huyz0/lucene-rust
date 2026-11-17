@@ -117,7 +117,7 @@ license = "Apache-2.0"
 repository = "https://github.com/huyz0/lucene-rust"
 
 [workspace.dependencies]
-thiserror = "1"
+thiserror = "2"
 memmap2 = "0.9"
 crc32fast = "1"
 # `fcntl` for `NativeFsLockFactory`'s OS record lock on `write.lock` -- the
