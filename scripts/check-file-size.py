@@ -25,7 +25,7 @@ OVER = {
     "crates/lucene-aggs/src/bucket_aggs.rs": 7314,
     "crates/lucene-codecs/src/postings.rs": 6844,
     "crates/lucene-index/src/merge.rs": 5851,
-    "crates/lucene-index/src/check_index.rs": 6510,
+    "crates/lucene-index/src/check_index.rs": 5734,
     "crates/lucene-codecs/src/doc_values.rs": 6176,
     "crates/lucene-search/src/top_field.rs": 5754,
     "crates/lucene-search/src/lib.rs": 5723,
