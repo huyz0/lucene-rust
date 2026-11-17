@@ -49,7 +49,7 @@ final class NativeTopHits {
     private static final String CLASS = "org.opensearch.search.aggregations.metrics.TopHitsAggregator";
 
     /** The node for a built {@code top_hits} aggregator, or null. */
-    static NativeAggregationTree.Node node(AggregatorBase agg) throws ReflectiveOperationException {
+    static NativeAggregationTree.Node node(EncodeContext cx, AggregatorBase agg) throws ReflectiveOperationException {
         if (agg.getClass().getName().equals(CLASS) == false) {
             return null;
         }
@@ -79,7 +79,7 @@ final class NativeTopHits {
                     }
                 }
             }
-            SortEncoder.Encoded encoded = SortEncoder.encode(sort.sort, null, sub.trackScores());
+            SortEncoder.Encoded encoded = SortEncoder.encode(sort.sort, null, sub.trackScores(), new int[0][], 0, false, null, cx);
             if (encoded.fallbackReason() != null) {
                 return null;
             }

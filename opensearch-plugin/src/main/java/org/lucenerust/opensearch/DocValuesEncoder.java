@@ -60,7 +60,7 @@ final class DocValuesEncoder {
      * Appends {@code q} when it is one of these queries: null when it was written, a fallback reason
      * when it cannot be, {@link #NOT_DOC_VALUES} when it is none of them.
      */
-    static String node(Query q, ByteArrayOutputStream out, ExtendedEncoder.Child child) {
+    static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, ExtendedEncoder.Child child) {
         try {
             switch (q.getClass().getName()) {
                 case DOCUMENT + "SortedNumericDocValuesRangeQuery" -> {
@@ -109,7 +109,7 @@ final class DocValuesEncoder {
                     return null;
                 }
                 case SANDBOX + "CoveringQuery" -> {
-                    return covering(q, out, child);
+                    return covering(cx, q, out, child);
                 }
                 case DOCUMENT + "LongDistanceFeatureQuery" -> {
                     out.write(NODE_LONG_DISTANCE_FEATURE);
@@ -168,7 +168,7 @@ final class DocValuesEncoder {
      * them in), then the minimum. A constant one is rewritten away before a search sees it; OpenSearch's
      * {@code minimum_should_match_field} reads each document's first value of the field.
      */
-    private static String covering(Query q, ByteArrayOutputStream out, ExtendedEncoder.Child child)
+    private static String covering(EncodeContext cx, Query q, ByteArrayOutputStream out, ExtendedEncoder.Child child)
         throws ReflectiveOperationException {
         Collection<?> queries = (Collection<?>) ExtendedEncoder.field(q, "queries");
         LongValuesSource min = (LongValuesSource) ExtendedEncoder.field(q, "minimumNumberMatch");
@@ -178,7 +178,7 @@ final class DocValuesEncoder {
             String name = min.getClass().getName();
             if (name.equals("org.opensearch.index.query.TermsSetQueryBuilder$ScriptLongValueSource")) {
                 ByteArrayOutputStream spec = new ByteArrayOutputStream();
-                String why = ExtendedEncoder.painlessTermsSet((TermsSetQueryScript.LeafFactory) ExtendedEncoder.field(min, "leafFactory"), spec);
+                String why = ExtendedEncoder.painlessTermsSet(cx, (TermsSetQueryScript.LeafFactory) ExtendedEncoder.field(min, "leafFactory"), spec);
                 if (why != null) {
                     return why;
                 }
