@@ -119,7 +119,7 @@ impl BytesRefBlockPool {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BytesRefHashError {
     /// `MaxBytesLengthExceededException`.
-    #[error("bytes can be at most {} in length; got {0}", BYTE_BLOCK_SIZE - 2)]
+    #[error("bytes can be at most {max} in length; got {0}", max = BYTE_BLOCK_SIZE - 2)]
     MaxBytesLengthExceeded(usize),
     /// Used after `clear` without `reinit` (Java: a `NullPointerException`).
     #[error("bytesStart is null - not initialized")]

@@ -42,7 +42,7 @@ lucene-sparse = { path = "../lucene-sparse" }
 # The ml-commons port's local model inference (`ml.rs`).
 lucene-ml = { path = "../lucene-ml", default-features = false }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.
-libloading = "0.8"
+libloading = "0.9"
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
 
