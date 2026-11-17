@@ -927,3 +927,6 @@ impl JObject for JStringBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

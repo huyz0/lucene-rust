@@ -690,3 +690,6 @@ pub fn collections_lookup(name: &str, arity: usize) -> Option<ApiFn> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests;
