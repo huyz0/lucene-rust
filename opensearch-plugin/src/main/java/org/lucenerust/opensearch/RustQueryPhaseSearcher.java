@@ -269,221 +269,29 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 throw new QueryPhaseExecutionException(ctx.shardTarget(), "Failed to execute main query", refused);
             }
         }
-        byte[] blob = null;
-        // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
-        // collector in its FilteredCollector): the hits search "query AND filter", the filter a
-        // non-scoring clause, so each hit keeps the query's score; the aggregations the query.
-        byte[] hitsBlob = null;
+        PlainSearch plan = new PlainSearch(ctx, searcher, query);
         if (reason == null) {
-            // Each scored field's similarity, sent in front of the blobs when
-            // one is not the default.
-            SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
-            Query encoding = query;
-            QueryEncoder.Encoded enc = QueryEncoder.encode(encoding, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-            reason = enc.fallbackReason();
-            blob = enc.blob();
-            boolean fast = enc.fast();
-            hitsBlob = blob;
-            // The post_filter is rewritten here as QueryPhase rewrites it,
-            // which is also when an approximate range in it
-            // (ApproximateScoreQuery) resolves: approximated, it matches only
-            // the first track_total_hits documents it visits in BKD order -- a
-            // filter narrower than the range, which the native engine would not
-            // reproduce, so OpenSearch answers.
-            Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
-                reason = FallbackReason.APPROXIMATE.key();
-            }
-            if (reason == null && postFilter != null) {
-                Query filteredQuery = postFiltered(query, postFilter);
-                QueryEncoder.Encoded filtered = QueryEncoder.encode(filteredQuery, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-                reason = filtered.fallbackReason();
-                hitsBlob = filtered.blob();
-                fast = fast && filtered.fast();
-            }
-            if (reason == null && fast == false && flags(ctx).allShapes() == false) {
-                reason = FallbackReason.SLOWER_SHAPE.key();
-            }
-            // min_score: OpenSearch's MinimumScoreCollector sits outside every other collector,
-            // aggregations included, so every blob carries it.
-            if (reason == null && ctx.minimumScore() != null) {
-                blob = QueryEncoder.withMinScore(blob, ctx.minimumScore());
-                hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
-            }
-            if (reason == null) {
-                boolean sameBlob = blob == hitsBlob;
-                blob = NativeDfs.prefix(searcher, similarities.prefix(blob));
-                hitsBlob = sameBlob ? blob : NativeDfs.prefix(searcher, similarities.prefix(hitsBlob));
-            }
-        }
-        // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
-        // search to Lucene.
-        List<NativeRescore> rescores = null;
-        if (reason == null && NativeRescore.applies(ctx)) {
-            rescores = new ArrayList<>();
-            reason = NativeRescore.encode(ctx, searcher, new SimilarityEncoder(searcher.getSimilarity()), rescores);
-        }
-        // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
-        // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
-        // Lucene's exact answer, which is what the native engine gives: native by default
-        // (NATIVE_APPROXIMATE), on OpenSearch's when the index turns that off.
-        // Not over buffered documents: the approximation walks the reader's points alone, where
-        // they have none, so only the native engine finds them.
-        if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
-            reason = FallbackReason.APPROXIMATE.key();
-        }
-        // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
-        // order to keep, and runs as the unsorted count it is).
-        byte[] sortBlob = null;
-        // A scroll's later pages search after the last hit it emitted
-        // (ScrollingTopDocsCollectorContext); one ordered by score, as the score sort it is:
-        // PagingFieldCollector skips what PagingTopScoreDocCollector does, and keeps the same hits.
-        Sort sort = ctx.sort() == null ? null : ctx.sort().sort;
-        FieldDoc after = ctx.searchAfter();
-        // A search by score run as the score sort, its hits handed back as ScoreDocs.
-        boolean scoreDocs = false;
-        ScrollContext scroll = ctx.scrollContext();
-        if (reason == null && scroll != null && scroll.totalHits != null && scroll.lastEmittedDoc != null) {
-            ScoreDoc last = scroll.lastEmittedDoc;
-            if (sort == null) {
-                sort = new Sort(SortField.FIELD_SCORE);
-                after = new FieldDoc(last.doc, last.score, new Object[] { last.score });
-                scoreDocs = true;
-            } else if (last instanceof FieldDoc fd) {
-                after = fd;
-            } else {
-                reason = FallbackReason.SCROLL_AFTER.key();
-            }
-        }
-        // terminate_after runs on the sorted search, which takes the cut
-        // (SortEncoder): by score as the score sort, and without hits (size 0)
-        // by _doc, the cheapest order, its one hit dropped.
-        int terminateAfter = ctx.terminateAfter() == SearchContext.DEFAULT_TERMINATE_AFTER ? 0 : ctx.terminateAfter();
-        if (terminateAfter > 0 && ctx.size() == 0) {
-            sort = new Sort(SortField.FIELD_DOC);
-        } else if (terminateAfter > 0 && sort == null) {
-            sort = new Sort(SortField.FIELD_SCORE);
-            scoreDocs = true;
-        }
-        // collapse: CollapsingTopDocsCollectorContext, by the request's sort or
-        // the score, from + size groups; its comparators never skip, so no
-        // index-sort flags.
-        byte[] collapseBlob = null;
-        if (reason == null && ctx.collapse() != null && ctx.size() > 0) {
-            int[][] slices = NativeAggregations.slices(ctx);
-            Sort collapseSort = NativeCollapse.sort(ctx);
-            boolean trackMaxScore = ctx.trackScores() && NativeCollapse.sortByScore(ctx) == false;
-            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, FallbackReason.INTRA_SEGMENT.key())
-                : SortEncoder.encode(collapseSort, after, trackMaxScore, slices, terminateAfter, false, null);
-            reason = sorted.fallbackReason();
-            sortBlob = sorted.blob();
-            sort = collapseSort;
-            collapseBlob = NativeCollapse.blob(ctx.collapse());
-        } else if (reason == null && sort != null && (ctx.size() > 0 || terminateAfter > 0)) {
-            // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
-            boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
-            // A concurrent search collects each slice separately, as Lucene does.
-            int[][] slices = NativeAggregations.slices(ctx);
-            // TopFieldCollector ends a segment whose index sort begins with the
-            // search's sort at its first non-competitive document; the native
-            // collector does too, told which segments -- and where the query
-            // pins the index sort's first keys and sorts by the ones after.
-            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
-            Sort keys = sort;
-            FieldDoc from = after;
-            boolean counts = countSegments(ctx, terminateAfter);
-            int limit = terminateAfter;
-            // A script key's script reads fields by the index's mappings.
-            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, FallbackReason.INTRA_SEGMENT.key())
-                : SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted, EncodeContext.of(ctx));
-            reason = sorted.fallbackReason();
-            sortBlob = sorted.blob();
-        }
-        NativeReaders.Acquired acquired = null;
-        boolean memoryTimedOut = false;
-        // The reader the native search ran over, for a profile to run the query over again.
-        long[] searchedHandle = new long[1];
-        if (reason == null) {
-            acquired = readers.acquire(searcher.getIndexReader());
-            reason = acquired.fallbackReason();
+            reason = plan.encodeQuery();
         }
         if (reason == null) {
-            // A timeout already past: Lucene would skip every segment and answer nothing, timed
-            // out -- which is what its own path does fastest.
-            if (ctx.isCancelled()) {
-                reason = FallbackReason.CANCELLED.key();
-            } else if (hasTimeout && deadlinePassed(ctx)) {
-                reason = FallbackReason.TIMEOUT.key();
-            } else {
-                // What the native calls allocate is charged to the request breaker while they run.
-                NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_search");
-                try {
-                    // The writer's buffered documents too, when the searcher has a view of them and
-                    // the request is one the buffers answer; otherwise the reader's documents alone.
-                    LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
-                    searchedHandle[0] = acquired.handle();
-                    boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
-                        && rescores == null && sort == null && terminateAfter == 0;
-                    if (live == null) {
-                        reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
-                    } else if (liveIneligible(ctx) != null) {
-                        // Lucene sees the view's documents as deleted and answers from the reader's.
-                        reason = FallbackReason.REALTIME_VIEW.key();
-                    } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
-                        // A k-NN search's hits, found when the query was rewritten: nothing of the
-                        // buffers is read again.
-                        storeKnnHits(ctx, hits);
-                    } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
-                        // Everything else reads the buffers written as segments, one per leaf of the
-                        // view: aggregations, sorts, collapse, rescore, and what the plain path's
-                        // buffers cannot answer.
-                        if (ctx.mapperService().hasNested() || ctx.explain()) {
-                            // The fetch phase finds a buffered hit's root document by doc values the
-                            // view's leaves read only from the buffers given to Lucene as segments,
-                            // and explains a hit by their postings.
-                            readByLucene(ctx, searcher, live);
-                        }
-                        long[] whole = new long[1];
-                        long built = System.nanoTime();
-                        // The request's terms only: the hits query's (the post_filter's terms with the
-                        // query's), the rescore queries' and the aggregation tree's.
-                        byte[] request = hitsBlob;
-                        byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
-                        int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
-                        byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
-                        if (tree != null && treeBlob == null) {
-                            request = null;
-                        }
-                        int rc = NativeLive.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
-                        if (rc == NativeBridge.OK) {
-                            stats.liveReaderTime(System.nanoTime() - built);
-                        }
-                        if (rc != NativeBridge.OK) {
-                            NativeMemory.check(rc);
-                            logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
-                            reason = FallbackReason.REALTIME_VIEW.key();
-                        } else {
-                            searchedHandle[0] = whole[0];
-                            reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
-                            if (reason == null) {
-                                stats.liveQuery();
-                            }
-                        }
-                    }
-                } finally {
-                    memory.close();
-                    stats.nativeMemory(memory.peak());
-                }
-                memoryTimedOut = memory.timedOut();
-            }
+            reason = plan.encodeRescores();
+        }
+        if (reason == null) {
+            reason = plan.refuseApproximate();
+        }
+        if (reason == null) {
+            reason = plan.encodeSort();
+        }
+        if (reason == null) {
+            reason = executeNative(plan, aggs, tree, hasTimeout);
             if (reason == null) {
                 stats.nativeQuery();
-                if (memoryTimedOut || hasTimeout && deadlinePassed(ctx)) {
+                if (plan.memoryTimedOut || hasTimeout && deadlinePassed(ctx)) {
                     timedOut(ctx);
                 }
                 stats.nativeTime(System.nanoTime() - start);
                 if (NativeProfile.requested(ctx)) {
-                    profile(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, searchedHandle[0], blob, similarities(searcher), System.nanoTime() - start);
+                    profile(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, plan.searchedHandle, plan.blob, similarities(searcher), System.nanoTime() - start);
                 }
                 return false;
             }
@@ -506,6 +314,116 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /**
+     * Runs {@code p}'s request on the native engine: null when it did, else the reason it did not.
+     * The writer's buffered documents are read too when the searcher has a view of them.
+     */
+    private String executeNative(PlainSearch p, NativeAggregations.Plan aggs, NativeAggregationTree.Tree tree, boolean hasTimeout)
+        throws IOException {
+        SearchContext ctx = p.ctx;
+        ContextIndexSearcher searcher = p.searcher;
+        NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
+        String reason = acquired.fallbackReason();
+        if (reason == null) {
+            // A timeout already past: Lucene would skip every segment and answer nothing, timed
+            // out -- which is what its own path does fastest.
+            if (ctx.isCancelled()) {
+                reason = FallbackReason.CANCELLED.key();
+            } else if (hasTimeout && deadlinePassed(ctx)) {
+                reason = FallbackReason.TIMEOUT.key();
+            } else {
+                // What the native calls allocate is charged to the request breaker while they run.
+                NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_search");
+                try {
+                    reason = searchReaderAndBuffers(p, acquired, aggs, tree);
+                } finally {
+                    memory.close();
+                    stats.nativeMemory(memory.peak());
+                }
+                p.memoryTimedOut = memory.timedOut();
+            }
+        }
+        return reason;
+    }
+
+    /**
+     * The native search of {@code p}'s request over the reader, and over the writer's buffered
+     * documents too when the searcher has a view of them and the request is one the buffers
+     * answer: null when it ran, else the fallback reason.
+     */
+    private String searchReaderAndBuffers(
+        PlainSearch p,
+        NativeReaders.Acquired acquired,
+        NativeAggregations.Plan aggs,
+        NativeAggregationTree.Tree tree
+    ) throws IOException {
+        SearchContext ctx = p.ctx;
+        ContextIndexSearcher searcher = p.searcher;
+        Query query = p.query;
+        byte[] blob = p.blob;
+        byte[] hitsBlob = p.hitsBlob;
+        byte[] sortBlob = p.sortBlob;
+        byte[] collapseBlob = p.collapseBlob;
+        List<NativeRescore> rescores = p.rescores;
+        Sort sort = p.sort;
+        boolean scoreDocs = p.scoreDocs;
+        int terminateAfter = p.terminateAfter;
+        String reason = null;
+        // The writer's buffered documents too, when the searcher has a view of them and
+        // the request is one the buffers answer; otherwise the reader's documents alone.
+        LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+        p.searchedHandle = acquired.handle();
+        boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
+            && rescores == null && sort == null && terminateAfter == 0;
+        if (live == null) {
+            reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
+        } else if (liveIneligible(ctx) != null) {
+            // Lucene sees the view's documents as deleted and answers from the reader's.
+            reason = FallbackReason.REALTIME_VIEW.key();
+        } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+            // A k-NN search's hits, found when the query was rewritten: nothing of the
+            // buffers is read again.
+            storeKnnHits(ctx, hits);
+        } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
+            // Everything else reads the buffers written as segments, one per leaf of the
+            // view: aggregations, sorts, collapse, rescore, and what the plain path's
+            // buffers cannot answer.
+            if (ctx.mapperService().hasNested() || ctx.explain()) {
+                // The fetch phase finds a buffered hit's root document by doc values the
+                // view's leaves read only from the buffers given to Lucene as segments,
+                // and explains a hit by their postings.
+                readByLucene(ctx, searcher, live);
+            }
+            long[] whole = new long[1];
+            long built = System.nanoTime();
+            // The request's terms only: the hits query's (the post_filter's terms with the
+            // query's), the rescore queries' and the aggregation tree's.
+            byte[] request = hitsBlob;
+            byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
+            int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
+            byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
+            if (tree != null && treeBlob == null) {
+                request = null;
+            }
+            int rc = NativeLive.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
+            if (rc == NativeBridge.OK) {
+                stats.liveReaderTime(System.nanoTime() - built);
+            }
+            if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
+                logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                reason = FallbackReason.REALTIME_VIEW.key();
+            } else {
+                p.searchedHandle = whole[0];
+                reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
+                if (reason == null) {
+                    stats.liveQuery();
+                }
+            }
+        }
+        return reason;
     }
 
     /**
@@ -1350,7 +1268,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The plugin's index settings as last read, and the settings version they were read at. */
-    private record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate, boolean aggCache) {}
+    record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate, boolean aggCache) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -2067,7 +1985,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** Whether the searcher reads a view of the writer's buffered documents that holds some. */
-    private static boolean buffered(ContextIndexSearcher searcher) {
+    static boolean buffered(ContextIndexSearcher searcher) {
         LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
         return live != null && live.view().maxDoc() > 0;
     }
