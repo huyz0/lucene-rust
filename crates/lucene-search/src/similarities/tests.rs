@@ -248,3 +248,29 @@ fn default_bm25_is_recognised_and_bulk_scoring_is_per_document() {
     assert_eq!(java_max(1.0, 2.0), 2.0);
     assert_eq!(java_max(3.0, 2.0), 3.0);
 }
+
+/// Lucene 10.6 (#16139): `DistributionSPL` never returns a negative score,
+/// even for lambda next to 1 and extreme term frequencies.
+#[test]
+fn spl_distribution_never_scores_negative() {
+    for lambda in [
+        0.99,
+        0.999,
+        0.9999,
+        0.99999,
+        0.999999,
+        1.0f64.next_down(),
+        1.0f64.next_up(),
+        1.001,
+        1.01,
+        1.1,
+    ] {
+        for tfn in [1e-10, 1e-5, 0.1, 1.0, 10.0, 1e6, 1e10, 1e15] {
+            let score = Distribution::SPL.score(tfn, lambda);
+            assert!(
+                score >= 0.0 && !score.is_sign_negative(),
+                "lambda={lambda} tfn={tfn} gave {score}"
+            );
+        }
+    }
+}

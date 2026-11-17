@@ -241,11 +241,13 @@ fn merge_recomputes_or_weights_centroids() {
                 centroid: if missing { None } else { Some(&ca) },
                 vectors: &a,
                 has_deletions: has_del,
+                live: None,
             },
             QuantizedMergeSource {
                 centroid: Some(&cb),
                 vectors: &b,
                 has_deletions: false,
+                live: None,
             },
         ];
         for sim in [
@@ -405,4 +407,23 @@ fn field_records_out_of_range_are_corrupt() {
             VectorEncoding::Float32
         ))
     ));
+}
+
+/// A recomputed merge centroid is the mean of the live vectors only
+/// (Lucene 10.6, #16764): deleted vectors do not pull it.
+#[test]
+fn recomputed_centroid_skips_deleted_vectors() {
+    let dim = 2;
+    let vectors = [1.0f32, 1.0, 100.0, 100.0, 3.0, 3.0];
+    let live = [true, false, true];
+    let sources = [QuantizedMergeSource {
+        centroid: None,
+        vectors: &vectors,
+        has_deletions: true,
+        live: Some(&live),
+    }];
+    let mut c = vec![0f32; dim];
+    let count = merge_and_recalculate_centroids(&sources, false, dim, &mut c).unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(c, [2.0, 2.0]);
 }

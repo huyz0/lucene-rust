@@ -1285,7 +1285,16 @@ impl Distribution {
                         lambda.next_down()
                     };
                 }
-                -((pow - lambda) / (1.0 - lambda)).ln()
+                // Clamp to avoid negative scores from floating-point rounding
+                // (`Math.max(0.0, ...)`: NaN propagates, -0.0 becomes 0.0).
+                let score = -((pow - lambda) / (1.0 - lambda)).ln();
+                if score.is_nan() {
+                    score
+                } else if score <= 0.0 {
+                    0.0
+                } else {
+                    score
+                }
             }
         }
     }
