@@ -180,6 +180,52 @@ fn segment_fields(dir: &FsDirectory, sci: &SegmentCommitInfo) -> Vec<FieldInfo> 
         .fields
 }
 
+/// A flush that streams `.doc`/`.pos`/`.pay` to the directory (buffered
+/// postings over `postings_stream_bytes`) writes the files, of the sizes, that
+/// holding them in memory writes, and `CheckIndex` accepts both.
+#[test]
+fn a_flush_that_streams_its_postings_writes_the_files_a_buffered_one_does() {
+    /// Restores the process-wide threshold even when an assertion panics.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            POSTINGS_STREAM_BYTES.store(4 << 20, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _restore = Restore;
+    let flush = |stream_bytes: usize| {
+        let tmp = TempDir::new("explicit-stream-postings");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        POSTINGS_STREAM_BYTES.store(stream_bytes, std::sync::atomic::Ordering::Relaxed);
+        let docs: Vec<ExplicitDocument> = (0..40).map(|i| doc(&f, i)).collect();
+        w.add_explicit_documents(docs).unwrap();
+        let infos = w.commit().unwrap().clone();
+        check(&dir);
+        let mut files: Vec<(String, u64)> = Vec::new();
+        for segment in &infos.segments {
+            for name in dir.list_all().unwrap() {
+                if name.starts_with(&segment.segment_name) {
+                    files.push((
+                        name.replace(&segment.segment_name, "_"),
+                        dir.file_length(&name).unwrap(),
+                    ));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let buffered = flush(usize::MAX);
+    let streamed = flush(0);
+    assert!(
+        buffered.iter().any(|(n, _)| n.ends_with(".pos")),
+        "the fixture has positions: {buffered:?}"
+    );
+    assert_eq!(streamed, buffered);
+}
+
 /// Explicit documents flush, merge and commit into segments the port's
 /// `CheckIndex` accepts, each listing only the fields it carries.
 /// `DocumentsWriterPerThread.updateDocuments` validates each document of
