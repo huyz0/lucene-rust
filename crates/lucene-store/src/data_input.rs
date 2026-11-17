@@ -783,5 +783,26 @@ fn group_vints_default<D: DataInput + ?Sized>(input: &mut D, dst: &mut [u64]) ->
     Ok(())
 }
 
+/// `ByteArrayDataInput.readVInt` at `*pos` of `buf`, advancing `*pos` past
+/// it (left unchanged on error). The in-memory decoder is [`SliceInput`]'s.
+#[inline]
+pub fn read_vint_at(buf: &[u8], pos: &mut usize) -> Result<i32> {
+    let mut input = SliceInput::new(buf);
+    input.seek(*pos)?;
+    let v = input.read_vint()?;
+    *pos = input.position();
+    Ok(v)
+}
+
+/// `ByteArrayDataInput.readVLong` at `*pos` of `buf`; see [`read_vint_at`].
+#[inline]
+pub fn read_vlong_at(buf: &[u8], pos: &mut usize) -> Result<i64> {
+    let mut input = SliceInput::new(buf);
+    input.seek(*pos)?;
+    let v = input.read_vlong()?;
+    *pos = input.position();
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests;

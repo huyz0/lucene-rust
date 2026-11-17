@@ -95,6 +95,7 @@
 use lucene_store::codec_util;
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::error::Error as StoreError;
+use lucene_util::vint::{write_vint, write_vlong};
 
 /// Errors specific to FST decoding, layered on top of `lucene_store::Error`.
 #[derive(Debug, thiserror::Error)]
@@ -3187,34 +3188,6 @@ impl TrieNode {
         }
         node.is_final = true;
         node.final_output = output;
-    }
-}
-
-fn write_vint(out: &mut Vec<u8>, mut v: i32) {
-    loop {
-        let mut b = (v & 0x7f) as u8;
-        v = ((v as u32) >> 7) as i32;
-        if v != 0 {
-            b |= 0x80;
-            out.push(b);
-        } else {
-            out.push(b);
-            break;
-        }
-    }
-}
-
-fn write_vlong(out: &mut Vec<u8>, mut v: i64) {
-    loop {
-        let mut b = (v & 0x7f) as u8;
-        v = ((v as u64) >> 7) as i64;
-        if v != 0 {
-            b |= 0x80;
-            out.push(b);
-        } else {
-            out.push(b);
-            break;
-        }
     }
 }
 
