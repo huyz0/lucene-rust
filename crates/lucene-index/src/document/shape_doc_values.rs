@@ -51,6 +51,7 @@
 //!   `ComponentTree`'s port does); Java's is unseeded, so Java itself does
 //!   not reproduce its own bytes in that case.
 
+use lucene_util::vint::write_vint;
 use std::borrow::Cow;
 
 use lucene_util::geo::{Component2D, GeoEncodingUtils, GeoError, Relation, XYEncodingUtils};
@@ -477,16 +478,6 @@ fn component_size(t: &DecodedTriangle, max_x: i32, max_y: i32) -> i32 {
             .wrapping_add(v_long_size(diff(max_y, t.c_y)));
     }
     size
-}
-
-/// `writeVInt`.
-fn write_vint(out: &mut Vec<u8>, v: i32) {
-    let mut v = v as u32;
-    while v & !0x7F != 0 {
-        out.push((v & 0x7F) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 /// `writeVLong` of a non-negative value.

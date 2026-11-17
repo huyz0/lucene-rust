@@ -7,25 +7,11 @@
 //! the instance ones. `doShare` -- instance state in Java -- is a const
 //! generic, because the trait has no `self`.
 
+use lucene_util::vint::{write_vint, write_vlong};
 use std::fmt;
 use std::marker::PhantomData;
 
 use lucene_codecs::fst_compiler::{FstOutputs, FstReadError, ReverseReader};
-
-/// `DataOutput.writeVInt`.
-fn write_vint(out: &mut Vec<u8>, v: i32) {
-    write_vlong(out, i64::from(v as u32));
-}
-
-/// `DataOutput.writeVLong` of the non-negative `v`.
-fn write_vlong(out: &mut Vec<u8>, v: i64) {
-    let mut v = v as u64;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
 
 // ---------------------------------------------------------------------------
 // UpToTwoPositiveIntOutputs

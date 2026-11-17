@@ -31,6 +31,7 @@
 //! buffer reserved, so stored values neither wait in memory nor count
 //! against the RAM buffer.
 
+use lucene_util::vint::write_vlong_u64 as write_vlong;
 use std::collections::BTreeSet;
 
 use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
@@ -649,14 +650,6 @@ fn unzigzag(v: u64) -> i64 {
 
 fn write_len(out: &mut Vec<u8>, n: usize) {
     write_vlong(out, n as u64);
-}
-
-fn write_vlong(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 struct Reader<'a> {

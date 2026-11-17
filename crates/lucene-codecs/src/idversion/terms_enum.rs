@@ -8,6 +8,7 @@
 //! compares against them (a re-seek reads `term.byteAt(targetUpto)` beyond
 //! the current term); [`TermBuf`] keeps them too.
 
+use lucene_store::data_input::{read_vint_at as read_vint, read_vlong_at as read_vlong};
 use std::cmp::Ordering;
 
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -22,24 +23,6 @@ use crate::fst_util::Arc;
 
 fn corrupt(msg: impl Into<String>) -> Error {
     Error::Corrupted(msg.into())
-}
-
-/// `ByteArrayDataInput.readVInt` at `*pos`.
-fn read_vint(buf: &[u8], pos: &mut usize) -> Result<i32, Error> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vint()?;
-    *pos = input.position();
-    Ok(v)
-}
-
-/// `ByteArrayDataInput.readVLong` at `*pos`.
-fn read_vlong(buf: &[u8], pos: &mut usize) -> Result<i64, Error> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vlong()?;
-    *pos = input.position();
-    Ok(v)
 }
 
 /// `ByteArrayDataInput.readZLong` at `*pos`.

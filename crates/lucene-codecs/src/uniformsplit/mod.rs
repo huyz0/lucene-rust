@@ -91,6 +91,7 @@ mod term_state;
 mod tests;
 mod writer;
 
+use lucene_store::data_input::{read_vint_at as read_vint, read_vlong_at as read_vlong};
 use std::fmt;
 use std::sync::Arc;
 
@@ -110,7 +111,6 @@ use crate::postings_writer::{
     self, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
 };
 use crate::segment_state::{SegmentReadState, SegmentWriteState};
-use lucene_store::data_input::{DataInput, SliceInput};
 
 /// `UniformSplitPostingsFormat.TERMS_DICTIONARY_EXTENSION`.
 pub const TERMS_DICTIONARY_EXTENSION: &str = "ustd";
@@ -375,24 +375,6 @@ impl UniformSplitPostingsFormat {
     ) -> Result<UniformSplitTermsReader> {
         UniformSplitTermsReader::open(ustb, ustd, state, self.block_decoder.clone())
     }
-}
-
-/// `ByteArrayDataInput.readVInt` at `*pos`.
-fn read_vint(buf: &[u8], pos: &mut usize) -> Result<i32> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vint()?;
-    *pos = input.position();
-    Ok(v)
-}
-
-/// `ByteArrayDataInput.readVLong` at `*pos`.
-fn read_vlong(buf: &[u8], pos: &mut usize) -> Result<i64> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vlong()?;
-    *pos = input.position();
-    Ok(v)
 }
 
 /// `n` bytes at `*pos`, advancing it.
