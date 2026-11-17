@@ -524,6 +524,21 @@ pub fn set_merge_lz4_hc_non_force(w: &EngineWriter, on: bool) {
         .with_writer(|iw| iw.set_merge_lz4_high_compression_non_force(on));
 }
 
+/// The index format the shard writes (`index.accelerated.index_format`):
+/// `105` for Lucene 10.5 files, `106` for 10.6's. Anything else is refused.
+pub fn set_index_format(w: &EngineWriter, format: i32) -> Result<(), Status> {
+    let format = match format {
+        105 => lucene_codecs::index_format::IndexFormat::Lucene105,
+        106 => lucene_codecs::index_format::IndexFormat::Lucene106,
+        other => {
+            set_last_error(format!("index format must be 105 or 106; got {other}"));
+            return Err(Status::InvalidArgument);
+        }
+    };
+    w.writer().with_writer(|iw| iw.set_index_format(format));
+    Ok(())
+}
+
 /// `index.knn.ivf.partition_min_vectors`.
 pub fn set_ivf_partition_clusters(w: &EngineWriter, min_vectors: i64) -> Result<(), Status> {
     let min = match usize::try_from(min_vectors) {

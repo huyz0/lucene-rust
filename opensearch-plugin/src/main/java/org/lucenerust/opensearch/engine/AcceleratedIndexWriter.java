@@ -888,6 +888,13 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         }
     }
 
+    /** {@code index.codec.index_format}: {@code 105} or {@code 106}, see {@link IndexFormatSettings}. */
+    void setIndexFormat(int format) throws IOException {
+        synchronized (lock) {
+            check(NativeWriter.writerSetIndexFormat(handle, format), "setting index.codec.index_format");
+        }
+    }
+
     /**
      * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the
      * index sort's first field, {@code 0} off.

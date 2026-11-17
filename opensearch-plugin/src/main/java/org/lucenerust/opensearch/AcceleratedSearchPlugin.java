@@ -305,6 +305,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
         org.lucenerust.opensearch.engine.AcceleratedEngineSupport.readFollowerEngine(settings);
+        org.lucenerust.opensearch.engine.IndexFormatSettings.readNodeDefault(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
         this.nativeFetch = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : true;
         // The index's one reader wrapper is the security plugin's when it is installed: stored
@@ -768,6 +769,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
             AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT,
             AcceleratedEngineSupport.ZSTD_TERMS,
             AcceleratedEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
+            org.lucenerust.opensearch.engine.IndexFormatSettings.INDEX_FORMAT,
             AcceleratedEngineSupport.PAGED_ZSTD_STORED_FIELDS,
             AcceleratedEngineSupport.STORE_MODE,
             AcceleratedEngineSupport.PARTITION_FIELD,

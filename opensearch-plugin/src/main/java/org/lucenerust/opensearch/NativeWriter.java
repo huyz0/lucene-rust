@@ -112,6 +112,10 @@ public final class NativeWriter {
             "ffi_engine_writer_set_ivf_partition_clusters",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
         );
+        static final MethodHandle WRITER_SET_INDEX_FORMAT = bind(
+            "ffi_engine_writer_set_index_format",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT)
+        );
         static final MethodHandle WRITER_SET_MERGE_LZ4_HC_NON_FORCE = bind(
             "ffi_engine_writer_set_merge_lz4_hc_non_force",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
@@ -632,6 +636,15 @@ public final class NativeWriter {
     public static int writerSetIvfPartitionClusters(long handle, long minVectors) {
         try {
             return (int) H.WRITER_SET_IVF_PARTITION_CLUSTERS.invokeExact(handle, minVectors);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The Lucene format generation written from now on: {@code 105} or {@code 106}. */
+    public static int writerSetIndexFormat(long handle, int format) {
+        try {
+            return (int) H.WRITER_SET_INDEX_FORMAT.invokeExact(handle, format);
         } catch (Throwable t) {
             throw rethrow(t);
         }

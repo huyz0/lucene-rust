@@ -1133,6 +1133,26 @@ fn merge_lz4_hc_non_force_is_accepted_by_a_live_writer_only() {
 }
 
 #[test]
+fn index_format_reaches_the_writer() {
+    use lucene_codecs::index_format::IndexFormat;
+    let tmp = empty_index("engine-writer-index-format");
+    let h = open(&tmp, 0);
+    let get = || {
+        lookup(h)
+            .unwrap()
+            .writer()
+            .with_writer(|w| w.index_format())
+    };
+    assert_eq!(get(), IndexFormat::Lucene105);
+    assert_eq!(ffi_engine_writer_set_index_format(h, 106), 0);
+    assert_eq!(get(), IndexFormat::Lucene106);
+    assert_eq!(ffi_engine_writer_set_index_format(h, 105), 0);
+    assert_eq!(get(), IndexFormat::Lucene105);
+    assert_ne!(ffi_engine_writer_set_index_format(h, 99), 0);
+    assert_ne!(ffi_engine_writer_set_index_format(0, 106), 0);
+}
+
+#[test]
 fn ivf_partition_clusters_reach_the_writer() {
     let tmp = empty_index("engine-writer-ivf-partitions");
     let h = open(&tmp, 0);

@@ -989,6 +989,12 @@ pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
     guard(|| with_writer(handle, |w| set_ivf_partition_clusters(w, min_vectors)))
 }
 
+/// The Lucene format generation the shard writes: `105` or `106`.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_index_format(handle: u64, format: i32) -> i32 {
+    guard(|| with_writer(handle, |w| set_index_format(w, format)))
+}
+
 /// `index.codec.stored_fields.recompress_on_merge: non_force` (with the open
 /// flag for the setting on): forced merges bulk-copy stored-field chunks
 /// instead of recompressing them. `on == 0` clears it.
