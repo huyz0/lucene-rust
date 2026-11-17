@@ -1040,9 +1040,9 @@ public final class NativeAggregationTree {
     static String unsupportedReason(SearchContext ctx) {
         try {
             String found = firstUnplanned(ctx.aggregations().factories().getFactories());
-            return found == null ? "aggregation_shape" : "aggregation_" + found;
+            return found == null ? "aggregation_shape" : FallbackReason.AGGREGATION_ANY.key() + found;
         } catch (ReflectiveOperationException | RuntimeException e) {
-            return "aggregation_shape";
+            return FallbackReason.AGGREGATION_SHAPE.key();
         }
     }
 

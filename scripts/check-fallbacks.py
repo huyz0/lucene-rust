@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Fail when the plugin gains a Lucene/Java fallback reason nobody approved.
 
-Every place the plugin hands a request back to Lucene or Java names a reason (a string
-literal that ends up in the `fallbacks` map of `GET _plugins/accelerated/stats`). This script
-extracts those literals from the plugin's Java sources and compares them with
-`opensearch-plugin/fallback-reasons.txt`, the list of reasons that still exist.
+Every place the plugin hands a request back to Lucene or Java names a reason, a constant of the
+`FallbackReason` enum whose key ends up in the `fallbacks` map of `GET _plugins/accelerated/stats`.
+This script compares the enum with `opensearch-plugin/fallback-reasons.txt`, the list of reasons
+that still exist, and finds reasons spelled as bare string literals.
 
-  * A reason in the source but not in the list: the build fails. Port the path to native
-    instead; if it truly cannot be, get it approved and add it to the list with a comment.
-  * A reason in the list but gone from the source: the build fails too, so the list only
+  * A bare literal where a reason is returned: the build fails; name it in `FallbackReason`.
+  * A constant not in the list: the build fails. Port the path to native instead; if it truly
+    cannot be, get it approved and add it to the list with a comment.
+  * A constant or list entry no source uses any more: the build fails too, so the list only
     shrinks as paths are ported and never carries stale entries.
 
 Usage: check-fallbacks.py [--write]   (--write regenerates the list; review the diff)
@@ -44,16 +45,31 @@ SKIP = {
 }
 
 
+ENUM = SRC / "org/lucenerust/opensearch/FallbackReason.java"
+
+
+def constants():
+    """key -> constant name, from the enum's `NAME("key"),` lines."""
+    pairs = re.findall(r'^\s+([A-Z][A-Z0-9_]*)\("([a-z][a-z0-9_]*)"\)', ENUM.read_text(), re.M)
+    return {k: n for n, k in pairs}
+
+
 def found():
-    out = {}
+    """Reasons the sources use through the enum: key -> files; plus bare literals left over."""
+    consts = constants()
+    by_name = {n: k for k, n in consts.items()}
+    used, literals = {}, {}
     for p in sorted(SRC.rglob("*.java")):
-        if p.name in SKIP:
+        if p.name in SKIP or p == ENUM:
             continue
         text = p.read_text(encoding="utf-8")
+        for m in re.finditer(r"\bFallbackReason\.([A-Z][A-Z0-9_]*)\b", text):
+            if m.group(1) in by_name:
+                used.setdefault(by_name[m.group(1)], set()).add(p.name)
         for pat in PATTERNS:
             for m in pat.finditer(text):
-                out.setdefault(m.group(1), set()).add(p.name)
-    return out
+                literals.setdefault(m.group(1), set()).add(p.name)
+    return used, literals, consts
 
 
 def listed():
@@ -67,7 +83,7 @@ def listed():
 
 
 def main():
-    f = found()
+    f, literals, consts = found()
     if "--write" in sys.argv:
         LIST.write_text(
             "# Fallback reasons the plugin still has (scripts/check-fallbacks.py).\n"
@@ -77,14 +93,21 @@ def main():
         print(f"wrote {len(f)} reasons")
         return 0
     have = listed()
-    new = sorted(set(f) - have)
-    stale = sorted(have - set(f))
-    for r in new:
+    bad = False
+    for r in sorted(literals):
+        print(f"BARE reason {r!r} in {', '.join(sorted(literals[r]))}: name it in FallbackReason.java")
+        bad = True
+    for r in sorted(set(consts) - set(f)):
+        print(f"UNUSED constant for {r!r} in FallbackReason.java: the fallback is gone, delete it")
+        bad = True
+    for r in sorted(set(f) - have):
         print(f"NEW fallback reason {r!r} in {', '.join(sorted(f[r]))}: port the path to native, "
               f"or get approval and add it to {LIST.relative_to(ROOT)}")
-    for r in stale:
+        bad = True
+    for r in sorted(have - set(f)):
         print(f"STALE entry {r!r} in {LIST.relative_to(ROOT)}: the fallback is gone, delete the line")
-    return 1 if new or stale else 0
+        bad = True
+    return 1 if bad else 0
 
 
 sys.exit(main())

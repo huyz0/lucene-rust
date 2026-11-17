@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.highlight;
 
+import org.lucenerust.opensearch.FallbackReason;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
@@ -167,7 +168,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         if (extended == false) {
             for (String v : values) {
                 if (NativePlainHighlighter.hasLoneSurrogate(v)) {
-                    stats.fallback("highlight_lone_surrogate");
+                    stats.fallback(FallbackReason.HIGHLIGHT_LONE_SURROGATE.key());
                     return super.highlight(fieldContext);
                 }
             }
@@ -185,7 +186,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
             logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
-            prepared.fallback = "highlight_native_error";
+            prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
             stats.fallback(prepared.fallback);
             return super.highlight(fieldContext);
         }
@@ -193,7 +194,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         int status = b.get();
         if (status == STATUS_THROWS && extended == false) {
             // OpenSearch's highlighter throws for this hit, or cuts a surrogate pair in two.
-            stats.fallback("highlight_fvh_hit");
+            stats.fallback(FallbackReason.HIGHLIGHT_FVH_HIT.key());
             return super.highlight(fieldContext);
         }
         if (status == STATUS_THROWS) {
@@ -253,7 +254,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         if (canHighlight(fieldType) == false) {
             if (extended == false) {
                 // OpenSearch's highlighter refuses it, and says so.
-                return Prepared.fallback("highlight_fvh_term_vectors");
+                return Prepared.fallback(FallbackReason.HIGHLIGHT_FVH_TERM_VECTORS.key());
             }
             throw new IllegalArgumentException(
                 "the field ["
@@ -262,7 +263,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
             );
         }
         if (FIELD_MATCH == null && extended == false) {
-            return Prepared.fallback("highlight_fvh_reflection");
+            return Prepared.fallback(FallbackReason.HIGHLIGHT_FVH_REFLECTION.key());
         }
         if (FIELD_MATCH == null) {
             // Lucene's FieldQuery changed under this build: a broken install, not a request to hand over.
@@ -270,16 +271,16 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         }
         // A realtime view adds the writer's buffers as leaves the native reader does not hold.
         if (extended == false && LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
-            return Prepared.fallback("highlight_live_view");
+            return Prepared.fallback(FallbackReason.HIGHLIGHT_LIVE_VIEW.key());
         }
         // Opened here when the query phase did not (a query it ran on Lucene): the hits were
         // searched on this reader, so later searches of it read through the same handle.
         long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
-            return Prepared.fallback("highlight_reader");
+            return Prepared.fallback(FallbackReason.HIGHLIGHT_READER.key());
         }
         if (extended == false && fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
-            return Prepared.fallback("highlight_derived_field");
+            return Prepared.fallback(FallbackReason.HIGHLIGHT_DERIVED_FIELD.key());
         }
         // A realtime view adds the writer's buffers as leaves after the reader's: the handle that
         // reads them as segments numbers the hits' documents as the view does.
@@ -287,7 +288,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         if (liveReader != null) {
             handle = liveReader.view().fullReader(handle);
             if (handle == 0) {
-                return Prepared.fallback("highlight_live_view");
+                return Prepared.fallback(FallbackReason.HIGHLIGHT_LIVE_VIEW.key());
             }
         }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
@@ -295,13 +296,13 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
         if (extended == false) {
             if (numberOfFragments != 0 && options.fragmentOffset() < -1) {
                 // OpenSearch's highlighter refuses it, and says so.
-                return Prepared.fallback("highlight_fragment_offset");
+                return Prepared.fallback(FallbackReason.HIGHLIGHT_FRAGMENT_OFFSET.key());
             }
             if (numberOfFragments != 0) {
                 // BaseFragListBuilder.createFieldFragList refuses a size under its minimum on every hit.
                 int margin = options.fragmentOffset() == -1 ? 6 : options.fragmentOffset();
                 if (options.fragmentCharSize() < Math.max(1, margin * 3)) {
-                    return Prepared.fallback("highlight_fragment_size");
+                    return Prepared.fallback(FallbackReason.HIGHLIGHT_FRAGMENT_SIZE.key());
                 }
             }
         }
@@ -324,13 +325,13 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
                 break;
             default:
                 if (extended == false) {
-                    return Prepared.fallback("highlight_boundary_scanner");
+                    return Prepared.fallback(FallbackReason.HIGHLIGHT_BOUNDARY_SCANNER.key());
                 }
                 throw new IllegalArgumentException("Invalid boundary scanner type: " + scannerType);
         }
         // The JDK's break rules are the same for every locale but Thai (a dictionary).
         if (scanner != 0 && "th".equals(locale.getLanguage()) && extended == false) {
-            return Prepared.fallback("highlight_locale");
+            return Prepared.fallback(FallbackReason.HIGHLIGHT_LOCALE.key());
         }
         if (scanner != 0 && "th".equals(locale.getLanguage())) {
             ThaiWords.install();
