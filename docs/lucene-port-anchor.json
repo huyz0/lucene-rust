@@ -45,6 +45,7 @@
     16547,
     16631,
     16647,
+    16667,
     16714,
     16717,
     16718,
@@ -65,7 +66,14 @@
     "16588": "no analogue: the k-NN accept set already intersects live docs word-wise",
     "16593": "already in: live docs are applied in bulk by live_word_at",
     "16355": "already in: the lowercase filter has an ASCII fast path",
-    "16316": "no analogue: the accumulator buffer is not allocated per scorer"
+    "16316": "no analogue: the accumulator buffer is not allocated per scorer",
+    "16582": "deliberately not applied: the port does not rewrite doc-values range queries from global skipper stats (see doc_values_queries.rs)",
+    "16424": "tied to the same skipper-stat rewrite; not applied",
+    "16715": "no gain: ReqExcl here already skips by doc-id runs and builds no exclusion bit set",
+    "16370": "no analogue: the dense conjunction bulk scorer takes term legs only, no two-phase clauses",
+    "16146": "no analogue: no cached-filter conjunction batching in this port",
+    "16721": "needs BreakIterator isBoundary/following/last, which the installed JVM and ICU Thai breakers do not provide; no OpenSearch surface",
+    "16627": "concurrent HNSW merge repair rewrite (657 lines of Java); deferred, merge repair is not the bottleneck here"
   },
   "notes": "ported_prs lists upstream PR numbers from 10.5.2..10.6.0 that the port has taken; skipped_prs have a measured reason. scripts/lucene-upstream-diff.py reads both and also treats a PR number mentioned anywhere in the repo as 'referenced'. Update this file in the same PR that ports or rejects a change; bump base when the pin moves."
 }

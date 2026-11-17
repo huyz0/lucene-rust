@@ -1365,17 +1365,30 @@ impl BooleanQuery {
         dedup_clauses(&mut must_not);
 
         // Rule 8: "Check whether some clauses are both required and excluded"
-        // -- `MatchNoDocsQuery("FILTER or MUST clause also in MUST_NOT")`, and
+        // -- `MatchNoDocsQuery("FILTER clause also in MUST_NOT")`, and
         // `MatchNoDocsQuery("MUST_NOT clause is MatchAllDocsQuery")`. Java's
         // predicate is `clauseSets.get(MUST)::contains` **or**
         // `clauseSets.get(FILTER)::contains` -- a clause required only as a
         // filter is just as excluded by a matching `MUST_NOT`.
-        if must_not
-            .iter()
-            .any(|c| must.contains(c) || filter.contains(c))
-        {
+        if must_not.iter().any(|c| filter.contains(c)) {
             return Clause::MatchNoDocs(
-                MatchNoDocsQuery::new().with_reason("FILTER or MUST clause also in MUST_NOT"),
+                MatchNoDocsQuery::new().with_reason("FILTER clause also in MUST_NOT"),
+            );
+        }
+        // Lucene 10.6 (#16667): a MUST clause is also excluded when it is the
+        // excluded query under a boost or a constant score wrapper.
+        if must.iter().any(|c| {
+            let mut unwrapped = c;
+            if let Clause::Boost(b) = unwrapped {
+                unwrapped = &b.inner;
+            }
+            if let Clause::ConstantScore(cs) = unwrapped {
+                unwrapped = &cs.inner;
+            }
+            must_not.contains(unwrapped)
+        }) {
+            return Clause::MatchNoDocs(
+                MatchNoDocsQuery::new().with_reason("MUST clause also in MUST_NOT"),
             );
         }
         if must_not

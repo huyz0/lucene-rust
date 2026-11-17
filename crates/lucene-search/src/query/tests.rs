@@ -733,10 +733,7 @@ fn rewrite_of_a_clause_that_is_both_required_and_excluded_is_match_no_docs() {
     let Clause::MatchNoDocs(reason) = q.rewrite() else {
         panic!("expected MatchNoDocs");
     };
-    assert_eq!(
-        reason.reason.as_str(),
-        "FILTER or MUST clause also in MUST_NOT"
-    );
+    assert_eq!(reason.reason.as_str(), "MUST clause also in MUST_NOT");
 
     // The `FILTER` half of the same predicate: a clause required only as a
     // filter is just as excluded by a matching `MUST_NOT`.
@@ -747,10 +744,24 @@ fn rewrite_of_a_clause_that_is_both_required_and_excluded_is_match_no_docs() {
     let Clause::MatchNoDocs(reason) = q.rewrite() else {
         panic!("expected MatchNoDocs");
     };
-    assert_eq!(
-        reason.reason.as_str(),
-        "FILTER or MUST clause also in MUST_NOT"
+    assert_eq!(reason.reason.as_str(), "FILTER clause also in MUST_NOT");
+
+    // A MUST clause under a boost and a constant score wrapper is as excluded
+    // (Lucene 10.6, #16667).
+    let wrapped = BoostQuery::new(
+        Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+            TermQuery::new("body", "cat"),
+            1.0,
+        ))),
+        2.0,
     );
+    let q = BooleanQuery::new()
+        .with_must([Clause::Boost(Box::new(wrapped))])
+        .with_must_not([TermQuery::new("body", "cat")]);
+    let Clause::MatchNoDocs(reason) = q.rewrite() else {
+        panic!("expected MatchNoDocs");
+    };
+    assert_eq!(reason.reason.as_str(), "MUST clause also in MUST_NOT");
 }
 
 // ---- `Occur.FILTER` rewrite rules -------------------------------------
