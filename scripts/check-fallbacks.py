@@ -39,7 +39,7 @@ PATTERNS = [
 ]
 # Files whose `return "..."` literals are not fallback reasons (names, formatting, REST).
 SKIP = {
-    "RestStatsAction.java", "RustSearchPlugin.java", "RustIndexWriter.java",
+    "RestStatsAction.java", "AcceleratedSearchPlugin.java", "AcceleratedIndexWriter.java",
     "InfoStatsManager.java", "JoinQueries.java", "KnnRestHandlers.java",
     "KnnModelHandlers.java", "DocValuesEncoder.java",
 }

@@ -9,7 +9,7 @@ import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.util.BytesRef;
-import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
 import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.regex.Regex;
@@ -77,7 +77,7 @@ public final class DerivedSource {
             && KnnSettings.DERIVED_SOURCE.get(settings)
             && IndexSettings.INDEX_DERIVED_SOURCE_SETTING.get(settings) == false
             && segRepLocal(settings) == false
-            && RustEngineSupport.servedByRust(settings);
+            && AcceleratedEngineSupport.servedByRust(settings);
     }
 
     private static boolean segRepLocal(Settings settings) {

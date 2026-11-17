@@ -2,7 +2,7 @@
 # Writes the language modules' data packs (lucene_analysis::data_pack): one
 # directory per pack, holding the files its crate's `src/pack.rs` lists,
 # byte for byte its src/resources copies. A build without a module's
-# `embedded-data` feature reads them from a directory on LUCENE_RUST_PACKS
+# `embedded-data` feature reads them from a directory on ACCELERATED_PACKS
 # (or lucene_analysis::data_pack::add_pack_dir).
 #
 #   scripts/make-data-packs.sh [out-dir]     # default target/data-packs

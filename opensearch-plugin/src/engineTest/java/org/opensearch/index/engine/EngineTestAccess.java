@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * The protected and package-private members of OpenSearch's engine classes that
  * InternalEngineTests reaches from inside {@code org.opensearch.index.engine}, for the derived
- * RustEngineTests, which lives in the plugin's package. Test code only: in the test JVM this class
+ * AcceleratedEngineTests, which lives in the plugin's package. Test code only: in the test JVM this class
  * and OpenSearch's share one class loader, so the split package is legal here and nowhere else.
  */
 public final class EngineTestAccess {

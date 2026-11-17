@@ -98,12 +98,12 @@ public final class NativeMemory {
                 MemorySegment stub = Linker.nativeLinker()
                     .upcallStub(target, FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG), Arena.global());
                 if (NativeLimits.memorySetUpcall(stub) != NativeBridge.OK) {
-                    throw new IllegalStateException("lucene-rust: registering the memory upcall failed: " + NativeBridge.lastError());
+                    throw new IllegalStateException("accelerated-search: registering the memory upcall failed: " + NativeBridge.lastError());
                 }
             } catch (ReflectiveOperationException e) {
                 throw new IllegalStateException(e);
             }
-            Thread watch = new Thread(NativeMemory::watchCancels, "lucene-rust-memory-cancel");
+            Thread watch = new Thread(NativeMemory::watchCancels, "accelerated-search-memory-cancel");
             watch.setDaemon(true);
             watch.start();
             installed = true;
@@ -113,7 +113,7 @@ public final class NativeMemory {
         // the ones IndicesQueryCache would hold on the heap for the same searches.
         long queryCache = org.opensearch.indices.IndicesQueryCache.INDICES_CACHE_QUERY_SIZE_SETTING.get(settings).getBytes();
         if (NativeLimits.queryCacheSetBudget(queryCache) != NativeBridge.OK) {
-            throw new IllegalStateException("lucene-rust: cannot set the query cache budget: " + NativeBridge.lastError());
+            throw new IllegalStateException("accelerated-search: cannot set the query cache budget: " + NativeBridge.lastError());
         }
     }
 
@@ -125,10 +125,10 @@ public final class NativeMemory {
         limit = bytes;
         int rc = NativeLimits.memorySetProcessLimit(bytes);
         if (rc != NativeBridge.OK) {
-            throw new IllegalStateException("lucene-rust: cannot set the off-heap limit (status " + rc + ")");
+            throw new IllegalStateException("accelerated-search: cannot set the off-heap limit (status " + rc + ")");
         }
         logger.info(
-            "lucene-rust: off-heap limit {} (machine or container {}, heap {})",
+            "accelerated-search: off-heap limit {} (machine or container {}, heap {})",
             bytes == 0 ? "none" : new ByteSizeValue(bytes),
             new ByteSizeValue(total),
             new ByteSizeValue(heap)
@@ -195,7 +195,7 @@ public final class NativeMemory {
         int rc = NativeLimits.memoryScopeBegin(token, 0, label.getBytes(StandardCharsets.UTF_8));
         if (rc != NativeBridge.OK) {
             OPEN.remove(token);
-            logger.warn("lucene-rust: cannot open a memory scope ({}): {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: cannot open a memory scope ({}): {}", rc, NativeBridge.lastError());
             s.opened = false;
         } else {
             long deadline = DEADLINE.get()[0];
@@ -287,7 +287,7 @@ public final class NativeMemory {
             } catch (InterruptedException e) {
                 return;
             } catch (Throwable t) {
-                logger.debug("lucene-rust: memory cancel watch", t);
+                logger.debug("accelerated-search: memory cancel watch", t);
             }
         }
     }

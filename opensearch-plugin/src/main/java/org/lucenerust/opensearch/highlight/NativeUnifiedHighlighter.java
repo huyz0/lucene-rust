@@ -147,7 +147,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
             out
         );
         if (rc != NativeBridge.OK) {
-            logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
             prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
@@ -194,7 +194,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
                         + "For large texts, indexing with offsets or term vectors is recommended!"
                 );
             default:
-                throw new IllegalStateException("lucene-rust: highlight status " + status);
+                throw new IllegalStateException("accelerated-search: highlight status " + status);
         }
         int count = b.getInt();
         List<Snippet> snippets = new ArrayList<>(count);

@@ -3,7 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
-import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.search.CreatePitAction;
 import org.opensearch.action.search.CreatePitRequest;
@@ -94,8 +94,8 @@ final class RealtimePrimaryFilter implements ActionFilter {
 
     static boolean segmentCopies(IndexMetadata index) {
         Settings settings = index.getSettings();
-        return RustEngineSupport.REALTIME_SEARCH.get(settings)
-            && RustEngineSupport.openSearchEngine(settings) == false
+        return AcceleratedEngineSupport.REALTIME_SEARCH.get(settings)
+            && AcceleratedEngineSupport.openSearchEngine(settings) == false
             && index.getNumberOfReplicas() > 0
             && (IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings) == ReplicationType.SEGMENT
                 || settings.getAsBoolean(IndexMetadata.SETTING_REMOTE_STORE_ENABLED, false));

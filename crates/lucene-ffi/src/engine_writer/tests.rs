@@ -33,7 +33,7 @@ fn indexing_threads_yield_to_searches() {
     })
     .join()
     .unwrap();
-    let want = std::env::var("LUCENE_RUST_INDEX_NICE")
+    let want = std::env::var("ACCELERATED_INDEX_NICE")
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(INDEX_NICE);

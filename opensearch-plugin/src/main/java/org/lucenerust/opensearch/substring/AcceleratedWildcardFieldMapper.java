@@ -68,7 +68,7 @@ import org.opensearch.search.lookup.SearchLookup;
  * the {@code wildcard} field runs a {@code WildcardQuery} over its trigram terms; {@code fuzzy} and
  * {@code range} are refused, as there.
  */
-public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
+public final class AcceleratedWildcardFieldMapper extends ParametrizedFieldMapper {
     public static final String CONTENT_TYPE = "compact_wildcard";
 
     /**
@@ -81,8 +81,8 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
 
     public static final TypeParser PARSER = new TypeParser((n, c) -> new Builder(n, c.getIndexAnalyzers()));
 
-    private static RustWildcardFieldMapper toType(FieldMapper in) {
-        return (RustWildcardFieldMapper) in;
+    private static AcceleratedWildcardFieldMapper toType(FieldMapper in) {
+        return (AcceleratedWildcardFieldMapper) in;
     }
 
     /** The doc-values field type of every {@code compact_wildcard} value. */
@@ -125,7 +125,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
         }
 
         @Override
-        public RustWildcardFieldMapper build(BuilderContext context) {
+        public AcceleratedWildcardFieldMapper build(BuilderContext context) {
             String normalizerName = normalizer.getValue();
             NamedAnalyzer analyzer = Lucene.KEYWORD_ANALYZER;
             if ("default".equals(normalizerName) == false) {
@@ -134,14 +134,14 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
                     throw new IllegalArgumentException("normalizer [" + normalizerName + "] not found for field [" + name + "]");
                 }
             }
-            RustWildcardFieldType ft = new RustWildcardFieldType(
+            AcceleratedWildcardFieldType ft = new AcceleratedWildcardFieldType(
                 context.path().pathAsText(name),
                 analyzer,
                 ignoreAbove.getValue(),
                 nullValue.getValue(),
                 meta.getValue()
             );
-            return new RustWildcardFieldMapper(name, ft, multiFieldsBuilder.build(this, context), copyTo.build(), this);
+            return new AcceleratedWildcardFieldMapper(name, ft, multiFieldsBuilder.build(this, context), copyTo.build(), this);
         }
     }
 
@@ -150,7 +150,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
     private final String normalizerName;
     private final IndexAnalyzers indexAnalyzers;
 
-    private RustWildcardFieldMapper(String simpleName, RustWildcardFieldType type, MultiFields multiFields, CopyTo copyTo, Builder builder) {
+    private AcceleratedWildcardFieldMapper(String simpleName, AcceleratedWildcardFieldType type, MultiFields multiFields, CopyTo copyTo, Builder builder) {
         super(simpleName, type, multiFields, copyTo);
         this.nullValue = builder.nullValue.getValue();
         this.ignoreAbove = builder.ignoreAbove.getValue();
@@ -159,8 +159,8 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
     }
 
     @Override
-    public RustWildcardFieldType fieldType() {
-        return (RustWildcardFieldType) super.fieldType();
+    public AcceleratedWildcardFieldType fieldType() {
+        return (AcceleratedWildcardFieldType) super.fieldType();
     }
 
     @Override
@@ -228,7 +228,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
     }
 
     /** The field type: the {@code wildcard} field's queries, as tests of each document's value. */
-    public static final class RustWildcardFieldType extends StringFieldType {
+    public static final class AcceleratedWildcardFieldType extends StringFieldType {
         private static final Set<Character> WILDCARD_SPECIAL = Set.of('?', '*', '\\');
         private static final Set<Character> REGEXP_SPECIAL = Set.of(
             '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/', '\\'
@@ -237,7 +237,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
         private final int ignoreAbove;
         private final String nullValue;
 
-        public RustWildcardFieldType(String name, NamedAnalyzer normalizer, int ignoreAbove, String nullValue, Map<String, String> meta) {
+        public AcceleratedWildcardFieldType(String name, NamedAnalyzer normalizer, int ignoreAbove, String nullValue, Map<String, String> meta) {
             super(name, true, false, true, TextSearchInfo.SIMPLE_MATCH_ONLY, meta);
             setIndexAnalyzer(normalizer);
             this.ignoreAbove = ignoreAbove;
@@ -245,7 +245,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
         }
 
         /** A field of the defaults, for tests. */
-        public RustWildcardFieldType(String name) {
+        public AcceleratedWildcardFieldType(String name) {
             this(name, Lucene.KEYWORD_ANALYZER, Integer.MAX_VALUE, null, Map.of());
         }
 
@@ -310,7 +310,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
             }
             BooleanQuery.Builder b = new BooleanQuery.Builder();
             for (String v : expected) {
-                b.add(new RustWildcardQuery(name(), RustWildcardQuery.Kind.EXACT, v, false, true, 0, v::equals), BooleanClause.Occur.SHOULD);
+                b.add(new AcceleratedWildcardQuery(name(), AcceleratedWildcardQuery.Kind.EXACT, v, false, true, 0, v::equals), BooleanClause.Occur.SHOULD);
             }
             return new ConstantScoreQuery(b.build());
         }
@@ -338,7 +338,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
                 case SINGLE: {
                     String exact = performEscape(finalValue, false);
                     Predicate<String> test = caseInsensitive ? s -> s.toLowerCase(Locale.ROOT).equals(exact) : exact::equals;
-                    return new RustWildcardQuery(name(), RustWildcardQuery.Kind.EXACT, exact, caseInsensitive, true, 0, test);
+                    return new AcceleratedWildcardQuery(name(), AcceleratedWildcardQuery.Kind.EXACT, exact, caseInsensitive, true, 0, test);
                 }
                 default: {
                     Predicate<String> test = s -> {
@@ -346,7 +346,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
                         BytesRef bytes = new BytesRef(v);
                         return compiled.runAutomaton.run(bytes.bytes, bytes.offset, bytes.length);
                     };
-                    return new RustWildcardQuery(name(), RustWildcardQuery.Kind.WILDCARD, value, caseInsensitive, true, 0, test);
+                    return new AcceleratedWildcardQuery(name(), AcceleratedWildcardQuery.Kind.WILDCARD, value, caseInsensitive, true, 0, test);
                 }
             }
         }
@@ -386,19 +386,19 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
                     if (caseInsensitive) {
                         // As the wildcard field: the value lower-cased against the pattern as written.
                         boolean nativeOk = exact.equals(exact.toLowerCase(Locale.ROOT));
-                        return new RustWildcardQuery(
-                            name(), RustWildcardQuery.Kind.EXACT, exact, true, nativeOk, flags,
+                        return new AcceleratedWildcardQuery(
+                            name(), AcceleratedWildcardQuery.Kind.EXACT, exact, true, nativeOk, flags,
                             s -> s.toLowerCase(Locale.ROOT).equals(exact)
                         );
                     }
-                    return new RustWildcardQuery(name(), RustWildcardQuery.Kind.EXACT, exact, false, true, flags, exact::equals);
+                    return new AcceleratedWildcardQuery(name(), AcceleratedWildcardQuery.Kind.EXACT, exact, false, true, flags, exact::equals);
                 }
                 default: {
                     Predicate<String> test = s -> {
                         BytesRef bytes = new BytesRef(s);
                         return compiled.runAutomaton.run(bytes.bytes, bytes.offset, bytes.length);
                     };
-                    return new RustWildcardQuery(name(), RustWildcardQuery.Kind.REGEXP, finalValue, caseInsensitive, nativeSyntax, flags, test);
+                    return new AcceleratedWildcardQuery(name(), AcceleratedWildcardQuery.Kind.REGEXP, finalValue, caseInsensitive, nativeSyntax, flags, test);
                 }
             }
         }

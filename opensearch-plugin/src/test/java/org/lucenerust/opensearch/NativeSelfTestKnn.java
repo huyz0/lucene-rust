@@ -109,7 +109,7 @@ final class NativeSelfTestKnn {
 
     static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
         sourceFilters(check);
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-knn");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-knn");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;

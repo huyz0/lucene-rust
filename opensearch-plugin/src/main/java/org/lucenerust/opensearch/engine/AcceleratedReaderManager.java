@@ -33,13 +33,13 @@ import java.util.List;
  * IndexWriter}'s NRT readers do through {@code IndexFileDeleter} -- so a merge or a dropped commit
  * never deletes a file a search, or a replica copying segments, still reads.
  */
-final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader> {
-    private final RustIndexWriter writer;
+final class AcceleratedReaderManager extends ReferenceManager<OpenSearchDirectoryReader> {
+    private final AcceleratedIndexWriter writer;
     private final Directory directory;
     private final ShardId shardId;
     private final Comparator<LeafReader> leafSorter;
 
-    RustReaderManager(RustIndexWriter writer, Directory directory, ShardId shardId, Comparator<LeafReader> leafSorter)
+    AcceleratedReaderManager(AcceleratedIndexWriter writer, Directory directory, ShardId shardId, Comparator<LeafReader> leafSorter)
         throws IOException {
         this.writer = writer;
         this.directory = directory;

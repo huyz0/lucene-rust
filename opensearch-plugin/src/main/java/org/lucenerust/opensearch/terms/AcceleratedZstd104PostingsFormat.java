@@ -30,13 +30,13 @@ import org.apache.lucene.util.IOUtils;
  * reads with Lucene's own reader. A Java merge writes its own codec's formats, so it rewrites the
  * fields stock-readable.
  */
-public final class RustZstd104PostingsFormat extends PostingsFormat {
+public final class AcceleratedZstd104PostingsFormat extends PostingsFormat {
     /** {@code RUST_ZSTD_FORMAT_NAME} in {@code per_field_postings.rs}. */
     public static final String NAME = "ZstdTerms104";
 
     private final Lucene104PostingsFormat lucene104 = new Lucene104PostingsFormat();
 
-    public RustZstd104PostingsFormat() {
+    public AcceleratedZstd104PostingsFormat() {
         super(NAME);
     }
 

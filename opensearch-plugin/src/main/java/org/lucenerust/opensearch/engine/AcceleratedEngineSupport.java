@@ -31,11 +31,11 @@ import java.util.Map;
 import java.util.function.LongSupplier;
 
 /**
- * What {@link RustEngine} adds to the {@code InternalEngine} it is derived from: opening the Rust
+ * What {@link AcceleratedEngine} adds to the {@code InternalEngine} it is derived from: opening the Rust
  * writer for a shard, and refusing, at engine creation, the index configurations the Rust writer
  * cannot produce -- so an unsupported index fails to start rather than indexing something else.
  */
-public final class RustEngineSupport {
+public final class AcceleratedEngineSupport {
     /**
      * What an index that does not set {@code index.engine.accelerated} gets, on this node: every
      * such index, system indices and indices created before the plugin included, is served by the
@@ -50,7 +50,7 @@ public final class RustEngineSupport {
         Setting.Property.NodeScope
     );
 
-    /** Serves the index's primaries (and document-replication replicas) with {@link RustEngine}. */
+    /** Serves the index's primaries (and document-replication replicas) with {@link AcceleratedEngine}. */
     public static final Setting<Boolean> ENGINE_ENABLED = Setting.boolSetting(
         "index.engine.accelerated",
         ENGINE_DEFAULT,
@@ -228,7 +228,7 @@ public final class RustEngineSupport {
     public static final Setting<String> STORE_MODE = new Setting<>(
         "index.store.read_mode",
         "mmap",
-        RustEngineSupport::parseStoreMode,
+        AcceleratedEngineSupport::parseStoreMode,
         Setting.Property.IndexScope
     );
 
@@ -249,13 +249,13 @@ public final class RustEngineSupport {
      */
     static void bindStoreMode(EngineConfig config, Store store) {
         // The key the writer and the native readers look the binding up by.
-        String path = org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath(store));
+        String path = org.lucenerust.opensearch.store.AcceleratedEncryptedDirectory.nativePath(indexPath(store));
         String mode = STORE_MODE.get(config.getIndexSettings().getSettings());
         int rc = mode.equals("mmap")
             ? NativeStore.storeUnbindPageCache(path)
             : NativeStore.storeBindPageCache(path, 0, mode.equals("page_cache_vectors"));
         if (rc != 0) {
-            throw new IllegalStateException("lucene-rust: cannot set the store mode of [" + path + "] (status " + rc + ")");
+            throw new IllegalStateException("accelerated-search: cannot set the store mode of [" + path + "] (status " + rc + ")");
         }
     }
 
@@ -456,7 +456,7 @@ public final class RustEngineSupport {
 
     private static volatile CircuitBreaker breaker;
 
-    private RustEngineSupport() {}
+    private AcceleratedEngineSupport() {}
 
     /** Set once, by the plugin, when OpenSearch hands it the breaker it registered. */
     public static void setBreaker(CircuitBreaker b) {
@@ -478,12 +478,12 @@ public final class RustEngineSupport {
         if (reason != null) {
             throw new IllegalArgumentException(reason);
         }
-        // A segment-replication primary needs RustIndexerFactory in its shard (see there).
-        if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.building() == false) {
+        // A segment-replication primary needs AcceleratedIndexerFactory in its shard (see there).
+        if (config.getIndexSettings().isSegRepLocalEnabled() && AcceleratedIndexerFactory.building() == false) {
             throw new IllegalArgumentException(
                 "the accelerated engine for "
                     + config.getShardId()
-                    + " was not built through RustIndexerFactory, so it cannot be a segment-replication primary; "
+                    + " was not built through AcceleratedIndexerFactory, so it cannot be a segment-replication primary; "
                     + "use index.replication.type: DOCUMENT"
             );
         }
@@ -565,7 +565,7 @@ public final class RustEngineSupport {
         }
         // Remote-backed storage uploads segments through RemoteStoreRefreshListener, which asks for an
         // InternalEngine by class; segment replication between nodes is served through
-        // RustIndexerFactory.
+        // AcceleratedIndexerFactory.
         if (settings.isRemoteStoreEnabled() || settings.isAssignedOnRemoteNode()) {
             return "the accelerated engine does not support remote-backed storage";
         }
@@ -684,7 +684,7 @@ public final class RustEngineSupport {
         return config.getIndexSort() != null ? org.opensearch.common.lucene.Lucene.PARENT_FIELD : null;
     }
 
-    static RustIndexWriter openWriter(
+    static AcceleratedIndexWriter openWriter(
         EngineConfig config,
         Store store,
         IndexDeletionPolicy deletionPolicy,
@@ -694,7 +694,7 @@ public final class RustEngineSupport {
     ) throws IOException {
         Codec codec = config.getCodec();
         bindStoreMode(config, store);
-        RustIndexWriter writer = RustIndexWriter.open(
+        AcceleratedIndexWriter writer = AcceleratedIndexWriter.open(
             store.directory(),
             indexPath(store),
             config.getIndexingBufferSize().getMbFrac(),
@@ -766,7 +766,7 @@ public final class RustEngineSupport {
      */
     static void refreshMergeScheduler(DocumentIndexWriter writer, EngineConfig config) {
         refreshMergePolicy(writer, config);
-        if (writer instanceof RustIndexWriter rust) {
+        if (writer instanceof AcceleratedIndexWriter rust) {
             IndexSettings indexSettings = config.getIndexSettings();
             MergeSchedulerConfig merges = indexSettings.getMergeSchedulerConfig();
             merges.updateMaxForceMergeMBPerSec(indexSettings);
@@ -789,7 +789,7 @@ public final class RustEngineSupport {
      * settings change), or {@code NoMergePolicy} when merges are off.
      */
     static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
-        if (writer instanceof RustIndexWriter rust) {
+        if (writer instanceof AcceleratedIndexWriter rust) {
             MergePolicy policy = config.getMergePolicy();
             while (policy instanceof FilterMergePolicy filter) {
                 policy = filter.unwrap();

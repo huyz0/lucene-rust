@@ -528,11 +528,11 @@ struct SealedBlock {
     end: SlicePos,
 }
 
-/// Whether terms' full blocks are sealed; `LUCENE_RUST_NO_SEAL` turns it
+/// Whether terms' full blocks are sealed; `ACCELERATED_NO_SEAL` turns it
 /// off.
 fn sealing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("LUCENE_RUST_NO_SEAL").is_none())
+    *ON.get_or_init(|| std::env::var_os("ACCELERATED_NO_SEAL").is_none())
 }
 
 /// A sealed block's charge beside its bytes: its entry and `Arc` header.

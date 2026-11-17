@@ -60,7 +60,7 @@ public final class NativeBench {
         }
         System.out.printf("crossing_ns %.1f%n", median(crossing));
 
-        Path dir = Files.createTempDirectory("lucene-rust-bench");
+        Path dir = Files.createTempDirectory("accelerated-search-bench");
         Random rnd = new Random(1);
         String[] words = new String[2000];
         for (int i = 0; i < words.length; i++) {

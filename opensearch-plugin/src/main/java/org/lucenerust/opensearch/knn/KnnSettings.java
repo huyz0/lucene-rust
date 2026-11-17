@@ -47,7 +47,7 @@ public final class KnnSettings {
     /**
      * {@code index.knn.derived_source.enabled}: vectors are masked in the stored {@code _source} and
      * derived back from the vector files on read. On by default for a new knn index, as stock sets
-     * it ({@code RustSearchPlugin.getAdditionalIndexSettingProviders}). Segments stock wrote that way
+     * it ({@code AcceleratedSearchPlugin.getAdditionalIndexSettingProviders}). Segments stock wrote that way
      * are read here ({@code DerivedSourceStoredFieldsFormat}); this node masks its own writes where
      * {@link DerivedSource#forIndex} allows, and keeps {@code _source} whole elsewhere.
      */

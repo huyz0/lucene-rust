@@ -24,7 +24,7 @@ import org.lucenerust.opensearch.NativeStore;
  * <ul>
  *   <li>The default build uses the JDK's own providers ({@code Cipher.getInstance} with no provider
  *       named, which is SunJCE).
- *   <li>The FIPS build (the plugin zip built with {@code -Pfips}, whose {@code lucene-rust-build.properties}
+ *   <li>The FIPS build (the plugin zip built with {@code -Pfips}, whose {@code accelerated-search-build.properties}
  *       says {@code fips=true}) uses the Amazon Corretto Crypto Provider's FIPS build, which is AWS-LC's
  *       FIPS 140-3 module: the same module the native library's {@code fips} build links. SunJCE is not
  *       FIPS validated, so it is never used there. Startup checks that ACCP loaded, is the FIPS build,
@@ -69,9 +69,9 @@ public final class StoreCrypto {
         return c;
     }
 
-    /** Whether this plugin was built as the FIPS variant ({@code lucene-rust-build.properties}). */
+    /** Whether this plugin was built as the FIPS variant ({@code accelerated-search-build.properties}). */
     public static boolean buildIsFips() {
-        try (InputStream in = StoreCrypto.class.getResourceAsStream("/lucene-rust-build.properties")) {
+        try (InputStream in = StoreCrypto.class.getResourceAsStream("/accelerated-search-build.properties")) {
             if (in == null) {
                 return false;
             }
@@ -79,7 +79,7 @@ public final class StoreCrypto {
             p.load(in);
             return Boolean.parseBoolean(p.getProperty("fips", "false"));
         } catch (IOException e) {
-            throw new IllegalStateException("lucene-rust: cannot read lucene-rust-build.properties", e);
+            throw new IllegalStateException("accelerated-search: cannot read accelerated-search-build.properties", e);
         }
     }
 
@@ -90,7 +90,7 @@ public final class StoreCrypto {
         Provider accp = loadAccp();
         if (NativeStore.storeIsFips() == false) {
             throw new IllegalStateException(
-                "lucene-rust: this is the FIPS build, but the native library's encryption is not in FIPS mode "
+                "accelerated-search: this is the FIPS build, but the native library's encryption is not in FIPS mode "
                     + "(build it with scripts/build-fips.sh, or the plugin with -Pfips)"
             );
         }
@@ -98,7 +98,7 @@ public final class StoreCrypto {
             SecureRandom random = SecureRandom.getInstance("DEFAULT", accp);
             return new StoreCrypto(true, accp, random, accp.getName() + " " + accp.getVersionStr() + " (FIPS)");
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("lucene-rust: the Corretto provider offers no DRBG", e);
+            throw new IllegalStateException("accelerated-search: the Corretto provider offers no DRBG", e);
         }
     }
 
@@ -114,7 +114,7 @@ public final class StoreCrypto {
             boolean isFips = (Boolean) c.getMethod("isFips").invoke(p);
             if (isFips == false) {
                 throw new IllegalStateException(
-                    "lucene-rust: the FIPS build needs the Corretto provider's FIPS build (AmazonCorrettoCryptoProvider-FIPS), and "
+                    "accelerated-search: the FIPS build needs the Corretto provider's FIPS build (AmazonCorrettoCryptoProvider-FIPS), and "
                         + p.getName()
                         + " "
                         + p.getVersionStr()
@@ -124,12 +124,12 @@ public final class StoreCrypto {
             return p;
         } catch (ClassNotFoundException e) {
             throw new IllegalStateException(
-                "lucene-rust: the FIPS build needs the Amazon Corretto Crypto Provider (FIPS) on the plugin's class path",
+                "accelerated-search: the FIPS build needs the Amazon Corretto Crypto Provider (FIPS) on the plugin's class path",
                 e
             );
         } catch (ReflectiveOperationException e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
-            throw new IllegalStateException("lucene-rust: the Corretto provider is not usable: " + cause, cause);
+            throw new IllegalStateException("accelerated-search: the Corretto provider is not usable: " + cause, cause);
         }
     }
 
@@ -151,7 +151,7 @@ public final class StoreCrypto {
         try {
             return provider == null ? Cipher.getInstance(TRANSFORMATION) : Cipher.getInstance(TRANSFORMATION, provider);
         } catch (GeneralSecurityException e) {
-            throw new IOException("lucene-rust: no " + TRANSFORMATION + " cipher from " + description, e);
+            throw new IOException("accelerated-search: no " + TRANSFORMATION + " cipher from " + description, e);
         }
     }
 
@@ -177,7 +177,7 @@ public final class StoreCrypto {
             cipher.updateAAD(aad);
             return cipher.doFinal(in, off, len);
         } catch (GeneralSecurityException e) {
-            throw new IOException("lucene-rust: sealing a chunk failed", e);
+            throw new IOException("accelerated-search: sealing a chunk failed", e);
         }
     }
 

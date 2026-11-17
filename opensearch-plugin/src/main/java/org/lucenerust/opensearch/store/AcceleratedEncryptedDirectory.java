@@ -33,7 +33,7 @@ import org.lucenerust.opensearch.NativeStore;
  * after a restart ({@code Store.tryOpenIndex}). They hold segment and file names, document counts,
  * codec names and commit user data, never field contents.
  */
-public final class RustEncryptedDirectory extends FilterDirectory {
+public final class AcceleratedEncryptedDirectory extends FilterDirectory {
     private final KeySource keys;
     private final StoreCrypto crypto;
     private final int chunkSize;
@@ -50,7 +50,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
      * Encrypts {@code inner}'s files with keys from {@code keys} (owned: closed with this directory),
      * sealing {@code chunkSize} bytes per chunk, and binds {@code inner}'s path for the native engine.
      */
-    public RustEncryptedDirectory(FSDirectory inner, KeySource keys, StoreCrypto crypto, int chunkSize) throws IOException {
+    public AcceleratedEncryptedDirectory(FSDirectory inner, KeySource keys, StoreCrypto crypto, int chunkSize) throws IOException {
         super(inner);
         if (chunkSize <= 0 || chunkSize > Lrse.MAX_CHUNK_SIZE) {
             throw new IllegalArgumentException("chunk size " + chunkSize + " out of range");
@@ -64,7 +64,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
         int rc = NativeStore.storeBindEncrypted(boundPath, handle, chunkSize);
         if (rc != NativeBridge.OK) {
             KeyHandles.release(handle);
-            throw new IOException("lucene-rust: binding the encrypted store at [" + boundPath + "] failed: " + NativeBridge.lastError());
+            throw new IOException("accelerated-search: binding the encrypted store at [" + boundPath + "] failed: " + NativeBridge.lastError());
         }
     }
 
@@ -201,7 +201,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
 
     @Override
     public String toString() {
-        return "RustEncryptedDirectory(" + in + ")";
+        return "AcceleratedEncryptedDirectory(" + in + ")";
     }
 
     /** Records an output's plaintext length once it closes, for {@link #fileLength}. */

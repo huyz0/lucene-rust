@@ -43,7 +43,7 @@ final class HighlightErrors {
                 }
                 throw new RuntimeException(new InvalidTokenOffsetsException(message));
             default:
-                throw new IllegalStateException("lucene-rust: highlighting threw " + cls + ": " + message);
+                throw new IllegalStateException("accelerated-search: highlighting threw " + cls + ": " + message);
         }
     }
 

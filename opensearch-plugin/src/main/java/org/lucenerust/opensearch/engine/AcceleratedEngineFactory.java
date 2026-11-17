@@ -12,7 +12,7 @@ import org.opensearch.index.engine.NRTReplicationEngine;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The engine for an index with {@code index.engine.accelerated: true}: {@link RustEngine} for every
+ * The engine for an index with {@code index.engine.accelerated: true}: {@link AcceleratedEngine} for every
  * shard that indexes, and OpenSearch's own {@link NRTReplicationEngine} for a segment-replication
  * replica, exactly as {@code NRTReplicationEngineFactory} picks -- a replica only opens the
  * segments its primary wrote, which the plugin's query phase already searches natively.
@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * OpenSearch's {@link InternalEngine} instead, which is how one cluster runs a Rust primary next
  * to a Java one for the same index.
  */
-public final class RustEngineFactory implements EngineFactory {
+public final class AcceleratedEngineFactory implements EngineFactory {
     /** Engines created on this node, by kind, for the stats endpoint. */
     public static final AtomicLong RUST = new AtomicLong();
 
@@ -38,12 +38,12 @@ public final class RustEngineFactory implements EngineFactory {
     static final String SEQ_NO_NEEDS_ENGINE = "[index.seq_no.index_options: doc_values_only] needs the accelerated engine:"
         + " set [index.engine.accelerated] or [indices.engine.accelerated.default] on this node";
 
-    public RustEngineFactory(boolean nodeEnabled) {
+    public AcceleratedEngineFactory(boolean nodeEnabled) {
         this(nodeEnabled, false);
     }
 
     /** With {@code follower}, the engines are {@link FollowerEngines}: a cross-cluster replication follower's. */
-    public RustEngineFactory(boolean nodeEnabled, boolean follower) {
+    public AcceleratedEngineFactory(boolean nodeEnabled, boolean follower) {
         this.nodeEnabled = nodeEnabled;
         this.follower = follower;
     }
@@ -69,10 +69,10 @@ public final class RustEngineFactory implements EngineFactory {
         }
         // Another engine plugin's PrimaryOperationPolicy: an index that only inherits the node
         // default gets OpenSearch's engine, one that asked for the Rust engine its refusal.
-        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(config.getIndexSettings().getSettings());
-        if (nodeEnabled && (asked || RustEngineSupport.unsupportedPolicy(config) == null)) {
+        boolean asked = AcceleratedEngineSupport.ENGINE_ENABLED.exists(config.getIndexSettings().getSettings());
+        if (nodeEnabled && (asked || AcceleratedEngineSupport.unsupportedPolicy(config) == null)) {
             RUST.incrementAndGet();
-            return follower ? new FollowerEngines.Accelerated(config) : new RustEngine(config);
+            return follower ? new FollowerEngines.Accelerated(config) : new AcceleratedEngine(config);
         }
         if (seqNoDocValuesOnly) {
             // OpenSearch's engine would run its history and retention ranges on points these segments lack.

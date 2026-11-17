@@ -23,13 +23,13 @@ import org.apache.lucene.index.SegmentWriteState;
  * stays readable. A Java merge writes its own codec's formats, so it rewrites the fields
  * stock-readable.
  */
-public final class RustAdaptiveDocValuesFormat extends DocValuesFormat {
+public final class AcceleratedAdaptiveDocValuesFormat extends DocValuesFormat {
     /** {@code Lucene90DocValuesFormat::RUST_ADAPTIVE_NAME} in {@code doc_values.rs}. */
     public static final String NAME = "Adaptive90";
 
     private final Lucene90DocValuesFormat lucene90 = new Lucene90DocValuesFormat();
 
-    public RustAdaptiveDocValuesFormat() {
+    public AcceleratedAdaptiveDocValuesFormat() {
         super(NAME);
     }
 
@@ -42,7 +42,7 @@ public final class RustAdaptiveDocValuesFormat extends DocValuesFormat {
     public DocValuesProducer fieldsProducer(SegmentReadState state) throws IOException {
         DocValuesProducer delegate = lucene90.fieldsProducer(state);
         try {
-            return new RustAdaptiveDocValuesProducer(state, delegate);
+            return new AcceleratedAdaptiveDocValuesProducer(state, delegate);
         } catch (Throwable t) {
             org.apache.lucene.util.IOUtils.closeWhileSuppressingExceptions(t, delegate);
             throw t;

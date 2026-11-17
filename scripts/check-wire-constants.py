@@ -75,8 +75,8 @@ PREFIXES = {
     "NativeAggregations.java": "METRIC_",
     "SortEncoder.java": "SORT_",
     "NativeCollapse.java": "COLLAPSE_",
-    "RustAdaptiveDocValuesProducer.java": "DOC_VALUES_TYPE_",
-    "RustSubstringDocValuesFormat.java": "DOC_VALUES_TYPE_",
+    "AcceleratedAdaptiveDocValuesProducer.java": "DOC_VALUES_TYPE_",
+    "AcceleratedSubstringDocValuesFormat.java": "DOC_VALUES_TYPE_",
 }
 
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
@@ -167,7 +167,7 @@ JAVA_ONLY = {
     ("NativeDocValues.java", "POINT_READS"): "when a Java iterator hands over to the segment's own for a scan",
     ("LuceneChangesSnapshot.java", "DEFAULT_BATCH_SIZE"): "derived OpenSearch engine code",
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",
-    ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
+    ("AcceleratedIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("NativeAggregations.java", "HALF_FLOAT"): "ValueKind::HalfFloat's number in metric_aggs.rs, an enum's",
     ("NativeAggregations.java", "SCALED"): "ValueKind::Scaled's number in metric_aggs.rs, an enum's",

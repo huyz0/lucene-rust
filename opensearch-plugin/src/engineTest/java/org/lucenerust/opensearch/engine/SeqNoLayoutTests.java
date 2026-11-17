@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 
 /** The Rust engine with {@link SeqNoSettings}' leaner {@code _seq_no} layouts. */
-public class SeqNoLayoutTests extends RustEngineTestCase {
+public class SeqNoLayoutTests extends AcceleratedEngineTestCase {
     /** Index settings with {@link SeqNoSettings}' options on top of {@code defaultSettings}. */
     private IndexSettings seqNoSettings(boolean sentinels) {
         Settings.Builder settings = Settings.builder()
@@ -43,9 +43,9 @@ public class SeqNoLayoutTests extends RustEngineTestCase {
             EngineConfig config = config(seqNoSettings(false), store, createTempDir(), newMergePolicy(), null);
             IllegalArgumentException refused = expectThrows(
                 IllegalArgumentException.class,
-                () -> new RustEngineFactory(false).newReadWriteEngine(config)
+                () -> new AcceleratedEngineFactory(false).newReadWriteEngine(config)
             );
-            assertEquals(RustEngineFactory.SEQ_NO_NEEDS_ENGINE, refused.getMessage());
+            assertEquals(AcceleratedEngineFactory.SEQ_NO_NEEDS_ENGINE, refused.getMessage());
         }
     }
 
@@ -58,7 +58,7 @@ public class SeqNoLayoutTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (Store store = createStore()) {
             int numDocs = scaledRandomIntBetween(10, 100);
-            RustEngine engine = createEngine(config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get));
+            AcceleratedEngine engine = createEngine(config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get));
             try {
                 for (int i = 0; i < numDocs; i++) {
                     ParsedDocument doc = testParsedDocument(Integer.toString(i), null, testDocument(), B_1, null);
@@ -106,7 +106,7 @@ public class SeqNoLayoutTests extends RustEngineTestCase {
                 engine.translogManager().syncTranslog();
                 engine.flush(true, true);
                 engine.close();
-                engine = new RustEngine(engine.config());
+                engine = new AcceleratedEngine(engine.config());
                 assertEquals(last, engine.getProcessedLocalCheckpoint());
                 assertConsistentHistoryBetweenTranslogAndLuceneIndex(engine);
             } finally {
@@ -125,7 +125,7 @@ public class SeqNoLayoutTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get))
+            AcceleratedEngine engine = createEngine(config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get))
         ) {
             int numDocs = scaledRandomIntBetween(20, 100);
             long half = numDocs / 2;

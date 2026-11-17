@@ -24,7 +24,7 @@ nodes from them:
 | variant | what it is | what it replaces |
 |---|---|---|
 | `stock` | the tarball as shipped (all bundled plugins) | `opensearchproject/opensearch` |
-| `stock-min` | no bundled plugins | `opensearch-stock-min` / `lucene-rust-stock` |
+| `stock-min` | no bundled plugins | `opensearch-stock-min` / `accelerated-search-stock` |
 | `plugin` | this repo's zip over `opensearch-custom-codecs`, the encrypted-store test key, `--enable-native-access` | `lucene-rust-opensearch` |
 | `plugin-knn` | the same, also keeping `opensearch-knn` (upgraded 2.x indices) | the upgrade job's image |
 

@@ -168,9 +168,9 @@ class Node:
             jvm.append(line.rstrip("\n").replace("logs/", self.logs + "/").replace("=data", "=" + self.data).replace("javaagent:agent/", "javaagent:" + d + "/agent/"))
         jvm += [f"-Xms{HEAP}", f"-Xmx{HEAP}"]
         open(os.path.join(self.conf, "jvm.options"), "w").write("\n".join(jvm) + "\n")
-        if os.path.isdir(os.path.join(d, "plugins", "lucene-rust")):
+        if os.path.isdir(os.path.join(d, "plugins", "accelerated-search")):
             os.makedirs(os.path.join(self.conf, "jvm.options.d"), exist_ok=True)
-            open(os.path.join(self.conf, "jvm.options.d", "lucene-rust.options"), "w").write(
+            open(os.path.join(self.conf, "jvm.options.d", "accelerated-search.options"), "w").write(
                 "--enable-native-access=ALL-UNNAMED\n")
         with open(os.path.join(self.conf, "opensearch.yml"), "w") as f:
             for k, v in self.settings(extra).items():
@@ -806,7 +806,7 @@ def compare_with_stock(cl, ref, index, docs, shards, label, vec=False):
 # Log scan
 
 BAD_LOG = re.compile(r"CorruptIndexException|panicked at|SIGSEGV|fatal error in thread|AssertionError|"
-                     r"native error|FfiError|lucene-rust.*(ERROR|Exception)|failed to recover from|"
+                     r"native error|FfiError|accelerated-search.*(ERROR|Exception)|failed to recover from|"
                      r"IndexFormatTooOld|TranslogCorrupted|EngineCreationFailure|unsupported|"
                      r"ShardLockObtainFailed", re.I)
 

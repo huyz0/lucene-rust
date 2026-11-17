@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# the cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
+# the cluster proof: three OpenSearch 3.9.0 nodes with the accelerated-search plugin,
 # two serving Rust-engine indices with the Rust writer and one
 # (indices.engine.accelerated.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,
@@ -49,7 +49,7 @@ fi
 
 start() { # name http-port transport-port rust-enabled
     nodectl run "$1" "$VARIANT" "$2" --transport "$3" --heap 768m --no-wait \
-        --setting cluster.name=lucene-rust \
+        --setting cluster.name=accelerated-search \
         --setting discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303 \
         --setting cluster.initial_cluster_manager_nodes=os1,os2,os3 \
         --setting indices.engine.accelerated.node_enabled="$4" >/dev/null

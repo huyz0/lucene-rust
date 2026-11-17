@@ -100,9 +100,9 @@ if nodectl logs "${PREFIX}-plugin" 2>&1 | grep -E "A fatal error has been detect
     status=1
 fi
 # The only native refusals expected are the k-NN codec's (see verify_upgrade.py).
-if nodectl logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" >/dev/null; then
+if nodectl logs "${PREFIX}-plugin" 2>&1 | grep "accelerated-search: native reader open failed" | grep -v "KNN[0-9]*Codec" >/dev/null; then
     echo "verify-opensearch-upgrade: a native reader open failed for something other than the k-NN codec:" >&2
-    nodectl logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" | head -5 >&2
+    nodectl logs "${PREFIX}-plugin" 2>&1 | grep "accelerated-search: native reader open failed" | grep -v "KNN[0-9]*Codec" | head -5 >&2
     status=1
 fi
 

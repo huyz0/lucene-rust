@@ -107,7 +107,7 @@ def check(ok, what):
 def node(name, http, transport, image, enabled=True):
     """(Re)create node NAME on variant `image` over its data directory, as `docker run` did."""
     settings = [
-        "cluster.name=lucene-rust-rollback",
+        "cluster.name=accelerated-search-rollback",
         "discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303",
         "cluster.initial_cluster_manager_nodes=os1,os2,os3",
     ]

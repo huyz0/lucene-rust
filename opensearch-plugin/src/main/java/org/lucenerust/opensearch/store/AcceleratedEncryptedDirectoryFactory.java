@@ -41,7 +41,7 @@ import org.opensearch.plugins.IndexStorePlugin;
  * The key provider type {@code local_keystore} instead wraps data keys with a key held in the
  * node's keystore ({@code indices.store.encrypted.local_key}), for tests and clusters without a KMS.
  */
-public final class RustEncryptedDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
+public final class AcceleratedEncryptedDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
     public static final String TYPE = "encrypted";
     private static final String PREFIX = "index.store." + TYPE + ".";
 
@@ -98,7 +98,7 @@ public final class RustEncryptedDirectoryFactory implements IndexStorePlugin.Dir
     private final LocalKeySource.Config local;
 
     /** {@code local} is the node's local key-encryption key, or {@code null} when it has none. */
-    public RustEncryptedDirectoryFactory(LocalKeySource.Config local) {
+    public AcceleratedEncryptedDirectoryFactory(LocalKeySource.Config local) {
         this.local = local;
     }
 
@@ -122,7 +122,7 @@ public final class RustEncryptedDirectoryFactory implements IndexStorePlugin.Dir
         FSDirectory fs = null;
         try {
             fs = new MMapDirectory(location, lockFactory);
-            return new RustEncryptedDirectory(fs, keys, crypto, Math.toIntExact(CHUNK_SIZE.get(s).getBytes()));
+            return new AcceleratedEncryptedDirectory(fs, keys, crypto, Math.toIntExact(CHUNK_SIZE.get(s).getBytes()));
         } catch (IOException | RuntimeException e) {
             try {
                 keys.close();

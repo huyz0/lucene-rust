@@ -26,11 +26,11 @@ INPUTS=(
     "framework-${VERSION}-sources.jar 6717909b84106a323b41bbb890e641902064883e6e8ec8daea2faa9db3b56c15 $FRAMEWORK"
 )
 # The files the script writes, relative to src/engineTest/java. The others
-# there (RustIndexerFactoryTests, EngineTestAccess) are written by hand.
+# there (AcceleratedIndexerFactoryTests, EngineTestAccess) are written by hand.
 DERIVED=(
-    org/lucenerust/opensearch/engine/RustEngineTestCase.java
-    org/lucenerust/opensearch/engine/RustTestEngine.java
-    org/lucenerust/opensearch/engine/RustEngineTests.java
+    org/lucenerust/opensearch/engine/AcceleratedEngineTestCase.java
+    org/lucenerust/opensearch/engine/AcceleratedTestEngine.java
+    org/lucenerust/opensearch/engine/AcceleratedEngineTests.java
     org/opensearch/index/engine/EngineSearcherTotalHitsMatcher.java
     org/opensearch/index/translog/TestTranslog.java
     org/opensearch/index/translog/SnapshotMatchers.java

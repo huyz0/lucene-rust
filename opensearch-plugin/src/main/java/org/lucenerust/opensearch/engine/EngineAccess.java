@@ -16,7 +16,7 @@ import java.util.concurrent.locks.Lock;
 
 /**
  * The package-private members of OpenSearch's engine classes that {@code InternalEngine} uses and
- * {@link RustEngine}, living in another package and class loader, cannot call directly. Reached
+ * {@link AcceleratedEngine}, living in another package and class loader, cannot call directly. Reached
  * reflectively, once, at class initialization -- a missing member fails the plugin at startup
  * rather than at the first call.
  */

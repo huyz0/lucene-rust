@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""neural_sparse through the lucene-rust plugin against stock neural-search.
+"""neural_sparse through the accelerated-search plugin against stock neural-search.
 
 Starts two nodes of the pinned OpenSearch image: one with the lucene-rust
 plugin (built by scripts/verify-opensearch.sh's steps; neural-search removed,
@@ -108,7 +108,7 @@ def search(port, index, field, tokens, mp):
 
 def main():
     keep = "--keep" in sys.argv
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

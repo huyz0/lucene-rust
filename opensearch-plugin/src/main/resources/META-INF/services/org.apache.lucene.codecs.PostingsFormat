@@ -1,1 +1,1 @@
-org.lucenerust.opensearch.terms.RustZstd104PostingsFormat
+org.lucenerust.opensearch.terms.AcceleratedZstd104PostingsFormat

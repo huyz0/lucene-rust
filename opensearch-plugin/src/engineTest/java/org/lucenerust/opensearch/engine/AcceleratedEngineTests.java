@@ -262,7 +262,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SuppressWarnings({ "deprecation", "try", "unchecked", "rawtypes", "cast", "static", "fallthrough", "this-escape", "removal" }) // derived code, linted upstream
-public class RustEngineTests extends RustEngineTestCase {
+public class AcceleratedEngineTests extends AcceleratedEngineTestCase {
 
     public void testVersionMapAfterAutoIDDocument() throws IOException {
         engine.refresh("warm_up");
@@ -470,7 +470,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("index sorting is refused (AcceleratedEngineSupport.checkSupported)")
     public void testSegmentsWithIndexSort() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("field", false));
         try (
@@ -503,7 +503,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("index sorting is refused (AcceleratedEngineSupport.checkSupported)")
     public void testSegmentsWithNestedFieldIndexSort() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("foo1", false));
         try (
@@ -530,7 +530,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("index sorting is refused (AcceleratedEngineSupport.checkSupported)")
     public void testSegmentsWithNestedFieldIndexSortWithMerge() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("foo1", false));
         try (
@@ -597,7 +597,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get)
             )
         ) {
@@ -665,7 +665,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get)
             )
         ) {
@@ -738,7 +738,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get)
             )
         ) {
@@ -807,7 +807,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), mergePolicy, null, null, globalCheckpoint::get)
             )
         ) {
@@ -849,7 +849,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get)
             )
         ) {
@@ -908,7 +908,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(UNASSIGNED_SEQ_NO);
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(store, createTempDir(), (maxSeq, localCP) -> new LocalCheckpointTracker(maxSeq, localCP) {
+            AcceleratedEngine engine = createEngine(store, createTempDir(), (maxSeq, localCP) -> new LocalCheckpointTracker(maxSeq, localCP) {
                 @Override
                 public long getMaxSeqNo() {
                     return maxSeqNo.get();
@@ -964,7 +964,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine.index(indexForDoc(doc));
         engine.close();
 
-        engine = new RustEngine(engine.config());
+        engine = new AcceleratedEngine(engine.config());
         expectThrows(IllegalStateException.class, engine.translogManager()::ensureCanFlush);
         expectThrows(IllegalStateException.class, () -> engine.flush(true, true));
         if (randomBoolean()) {
@@ -1023,7 +1023,7 @@ public class RustEngineTests extends RustEngineTestCase {
         } finally {
             IOUtils.close(engine);
         }
-        try (Engine recoveringEngine = new RustEngine(engine.config())) {
+        try (Engine recoveringEngine = new AcceleratedEngine(engine.config())) {
             TranslogHandler translogHandler = createTranslogHandler(engine.config().getIndexSettings(), recoveringEngine);
             recoveringEngine.translogManager()
                 .recoverFromTranslog(translogHandler, recoveringEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -1053,7 +1053,7 @@ public class RustEngineTests extends RustEngineTestCase {
         Engine recoveringEngine = null;
         try {
             final AtomicBoolean committed = new AtomicBoolean();
-            recoveringEngine = new RustEngine(initialEngine.config()) {
+            recoveringEngine = new AcceleratedEngine(initialEngine.config()) {
 
                 @Override
                 protected void commitIndexWriter(DocumentIndexWriter writer, String translogUUID) throws IOException {
@@ -1097,7 +1097,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 }
             }
             initialEngine.close();
-            recoveringEngine = new RustEngine(initialEngine.config());
+            recoveringEngine = new AcceleratedEngine(initialEngine.config());
             TranslogHandler translogHandler = createTranslogHandler(initialEngine.config().getIndexSettings(), recoveringEngine);
             recoveringEngine.translogManager()
                 .recoverFromTranslog(translogHandler, recoveringEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -1116,7 +1116,7 @@ public class RustEngineTests extends RustEngineTestCase {
         try (Store store = createStore()) {
             EngineConfig config = config(defaultSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get);
             final long maxSeqNo;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 final int docs = randomIntBetween(1, 100);
                 for (int i = 0; i < docs; i++) {
                     final String id = Integer.toString(i);
@@ -1132,13 +1132,13 @@ public class RustEngineTests extends RustEngineTestCase {
                 globalCheckpoint.set(randomLongBetween(globalCheckpoint.get(), engine.getProcessedLocalCheckpoint()));
                 engine.translogManager().syncTranslog();
             }
-            try (RustEngine engine = new RustEngine(config)) {
+            try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                 TranslogHandler translogHandler = createTranslogHandler(config.getIndexSettings(), engine);
                 engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
                 assertThat(engine.getProcessedLocalCheckpoint(), equalTo(maxSeqNo));
                 assertThat(engine.getLocalCheckpointTracker().getMaxSeqNo(), equalTo(maxSeqNo));
             }
-            try (RustEngine engine = new RustEngine(config)) {
+            try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                 long upToSeqNo = randomLongBetween(globalCheckpoint.get(), maxSeqNo);
                 TranslogHandler translogHandler = createTranslogHandler(config.getIndexSettings(), engine);
                 engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), upToSeqNo);
@@ -1192,7 +1192,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (
             Store store = createStore();
-            RustEngine engine = createUpdateOnlyEngine(
+            AcceleratedEngine engine = createUpdateOnlyEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -1210,7 +1210,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    private RustEngine createUpdateOnlyEngine(EngineConfig config) throws IOException {
+    private AcceleratedEngine createUpdateOnlyEngine(EngineConfig config) throws IOException {
         final Store store = config.getStore();
         final Directory directory = store.directory();
         if (Lucene.indexExists(directory) == false) {
@@ -1224,7 +1224,7 @@ public class RustEngineTests extends RustEngineTestCase {
             store.associateIndexWithNewTranslog(translogUuid);
         }
 
-        return new RustEngine(config) {
+        return new AcceleratedEngine(config) {
             @Override
             protected IndexingStrategy indexingStrategyForOperation(Index index) throws IOException {
                 return IndexingStrategy.processNormally(false, 0, 0);
@@ -1621,7 +1621,7 @@ public class RustEngineTests extends RustEngineTestCase {
             );
             store.associateIndexWithNewTranslog(translogUUID);
         }
-        engine = new RustEngine(config);
+        engine = new AcceleratedEngine(config);
         engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
         assertEquals(engine.getLastCommittedSegmentInfos().getUserData().get(Engine.SYNC_COMMIT_ID), syncId);
     }
@@ -1656,7 +1656,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine.index(indexForDoc(doc));
         EngineConfig config = engine.config();
         engine.close();
-        engine = new RustEngine(config);
+        engine = new AcceleratedEngine(config);
         TranslogHandler translogHandler = createTranslogHandler(config.getIndexSettings(), engine);
         engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
         assertNull(
@@ -1665,7 +1665,7 @@ public class RustEngineTests extends RustEngineTestCase {
         );
     }
 
-    void syncFlush(IndexWriter writer, RustEngine engine, String syncId) throws IOException {
+    void syncFlush(IndexWriter writer, AcceleratedEngine engine, String syncId) throws IOException {
         try (ReleasableLock ignored = EngineTestAccess.writeLock(engine).acquire()) {
             Map<String, String> userData = new HashMap<>();
             writer.getLiveCommitData().forEach(e -> userData.put(e.getKey(), e.getValue()));
@@ -1913,7 +1913,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final Set<String> liveDocs = new HashSet<>();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(defaultSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -1943,7 +1943,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final Set<String> liveDocs = new HashSet<>();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -2023,7 +2023,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final Set<String> liveDocsWithSource = new HashSet<>();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(random(), false), null, null, globalCheckpoint::get)
             )
         ) {
@@ -2125,7 +2125,7 @@ public class RustEngineTests extends RustEngineTestCase {
         int numIters = randomIntBetween(2, 10);
         for (int j = 0; j < numIters; j++) {
             try (Store store = createStore()) {
-                final RustEngine engine = createEngine(store, createTempDir());
+                final AcceleratedEngine engine = createEngine(store, createTempDir());
                 final CountDownLatch startGun = new CountDownLatch(1);
                 final CountDownLatch indexed = new CountDownLatch(1);
 
@@ -2374,7 +2374,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    private int assertOpsOnPrimary(List<Engine.Operation> ops, long currentOpVersion, boolean docDeleted, RustEngine engine)
+    private int assertOpsOnPrimary(List<Engine.Operation> ops, long currentOpVersion, boolean docDeleted, AcceleratedEngine engine)
         throws IOException {
         String lastFieldValue = null;
         int opsPerformed = 0;
@@ -2917,7 +2917,7 @@ public class RustEngineTests extends RustEngineTestCase {
         long maxSeqNo = SequenceNumbers.NO_OPS_PERFORMED;
         IOUtils.close(store, engine);
         store = createStore();
-        RustEngine initialEngine = null;
+        AcceleratedEngine initialEngine = null;
 
         try {
             initialEngine = createEngine(defaultSettings, store, createTempDir(), newLogMergePolicy(), null);
@@ -3066,7 +3066,7 @@ public class RustEngineTests extends RustEngineTestCase {
             IOUtils.close(initialEngine);
         }
 
-        try (RustEngine recoveringEngine = new RustEngine(initialEngine.config())) {
+        try (AcceleratedEngine recoveringEngine = new AcceleratedEngine(initialEngine.config())) {
             TranslogHandler translogHandler = createTranslogHandler(initialEngine.config().getIndexSettings(), recoveringEngine);
             recoveringEngine.translogManager()
                 .recoverFromTranslog(translogHandler, recoveringEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -3101,7 +3101,7 @@ public class RustEngineTests extends RustEngineTestCase {
         List<GatedCloseable<IndexCommit>> commits = new ArrayList<>();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(config(defaultSettings, store, createTempDir(), newMergePolicy(), null))
+            AcceleratedEngine engine = createEngine(config(defaultSettings, store, createTempDir(), newMergePolicy(), null))
         ) {
             final int numIndexingThreads = scaledRandomIntBetween(2, 4);
             final int numDocsPerThread = randomIntBetween(500, 1000);
@@ -3417,7 +3417,7 @@ public class RustEngineTests extends RustEngineTestCase {
             try (Store store = createStore(wrapper)) {
                 int refCount = store.refCount();
                 assertTrue("refCount: " + store.refCount(), store.refCount() > 0);
-                RustEngine holder;
+                AcceleratedEngine holder;
                 try {
                     holder = createEngine(store, translogPath);
                 } catch (EngineCreationFailureException | IOException ex) {
@@ -3494,7 +3494,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
             // Just allow force merge so that regular merge does not close the shard first before any any other operation
             //
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(
                     defaultSettings,
                     store,
@@ -3544,7 +3544,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("index sorting is refused (AcceleratedEngineSupport.checkSupported)")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort() throws Exception {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3597,7 +3597,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
             // Just allow force merge so that regular merge does not close the shard first before any any other operation
             //
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(
                     idxSettings,
                     store,
@@ -3693,7 +3693,7 @@ public class RustEngineTests extends RustEngineTestCase {
             final AtomicReference<RetentionLeases> retentionLeasesHolder = new AtomicReference<>(
                 new RetentionLeases(primaryTerm, retentionLeasesVersion.get(), Collections.emptyList())
             );
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(
                     defaultSettings,
                     store,
@@ -3792,7 +3792,7 @@ public class RustEngineTests extends RustEngineTestCase {
             final AtomicReference<RetentionLeases> retentionLeasesHolder = new AtomicReference<>(
                 new RetentionLeases(primaryTerm, retentionLeasesVersion.get(), Collections.emptyList())
             );
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(
                     defaultSettings,
                     store,
@@ -3852,7 +3852,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testCriteriaBasedGrouping() throws Exception {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
             "test",
@@ -3964,7 +3964,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     0
                 );
 
-                try (RustEngine engine = createEngine(config)) {
+                try (AcceleratedEngine engine = createEngine(config)) {
                     engine.index(firstIndexRequest);
                     engine.translogManager().syncTranslog(); // to advance persisted local checkpoint
                     assertEquals(engine.getProcessedLocalCheckpoint(), engine.getPersistedLocalCheckpoint());
@@ -3985,7 +3985,7 @@ public class RustEngineTests extends RustEngineTestCase {
             // open and recover tlog
             {
                 for (int i = 0; i < 2; i++) {
-                    try (RustEngine engine = new RustEngine(config)) {
+                    try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                         expectThrows(IllegalStateException.class, engine.translogManager()::ensureCanFlush);
                         Map<String, String> userData = engine.getLastCommittedSegmentInfos().getUserData();
                         engine.ensureOpen();
@@ -4013,7 +4013,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     primaryTerm.get()
                 );
                 store.associateIndexWithNewTranslog(translogUUID);
-                try (RustEngine engine = new RustEngine(config)) {
+                try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                     Map<String, String> userData = engine.getLastCommittedSegmentInfos().getUserData();
                     engine.ensureOpen();
                     assertEquals(
@@ -4030,7 +4030,7 @@ public class RustEngineTests extends RustEngineTestCase {
             // open and recover tlog with empty tlog
             {
                 for (int i = 0; i < 2; i++) {
-                    try (RustEngine engine = new RustEngine(config)) {
+                    try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                         Map<String, String> userData = engine.getLastCommittedSegmentInfos().getUserData();
                         engine.ensureOpen();
                         assertEquals(
@@ -4068,7 +4068,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final String translogUUID = Translog.createEmptyTranslog(primaryTranslogDir, UNASSIGNED_SEQ_NO, shardId, newPrimaryTerm);
         store.associateIndexWithNewTranslog(translogUUID);
         EngineConfig config = config(defaultSettings, store, primaryTranslogDir, newMergePolicy(), null);
-        engine = new RustEngine(config);
+        engine = new AcceleratedEngine(config);
     }
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
@@ -4077,7 +4077,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final Path translogPath = createTempDir("testTranslogReplayWithFailure");
         try (Store store = createStore(directory)) {
             final int numDocs = randomIntBetween(1, 10);
-            try (RustEngine engine = createEngine(store, translogPath)) {
+            try (AcceleratedEngine engine = createEngine(store, translogPath)) {
                 for (int i = 0; i < numDocs; i++) {
                     ParsedDocument doc = testParsedDocument(Integer.toString(i), null, testDocument(), new BytesArray("{}"), null);
                     Engine.Index firstIndexRequest = new Engine.Index(
@@ -4108,7 +4108,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 directory.setFailOnOpenInput(randomBoolean());
                 directory.setAllowRandomFileNotFoundException(randomBoolean());
                 boolean started = false;
-                RustEngine engine = null;
+                AcceleratedEngine engine = null;
                 try {
                     engine = createEngine(store, translogPath);
                     started = true;
@@ -4152,7 +4152,7 @@ public class RustEngineTests extends RustEngineTestCase {
             final String translogUUID = Translog.createEmptyTranslog(translogPath, globalCheckpoint.get(), shardId, primaryTerm.get());
             store.associateIndexWithNewTranslog(translogUUID);
             try (
-                RustEngine engine = new RustEngine(
+                AcceleratedEngine engine = new AcceleratedEngine(
                     config(indexSettings, store, translogPath, newMergePolicy(), null, null, globalCheckpointSupplier)
                 ) {
 
@@ -4176,7 +4176,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 assertThat(e.getCause().getMessage(), equalTo("power's out"));
             }
             try (
-                RustEngine engine = new RustEngine(
+                AcceleratedEngine engine = new AcceleratedEngine(
                     config(indexSettings, store, translogPath, newMergePolicy(), null, null, globalCheckpointSupplier)
                 )
             ) {
@@ -4220,7 +4220,7 @@ public class RustEngineTests extends RustEngineTestCase {
         EngineConfig config = engine.config();
         assertVisibleCount(engine, numDocs);
         engine.close();
-        try (RustEngine engine = new RustEngine(config)) {
+        try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
             engine.translogManager().skipTranslogRecovery();
             try (Engine.Searcher searcher = engine.acquireSearcher("test", Engine.SearcherScope.INTERNAL)) {
                 TopDocs topDocs = searcher.search(new MatchAllDocsQuery(), randomIntBetween(numDocs, numDocs + 10));
@@ -4257,7 +4257,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         engine.close();
         // we need to reuse the engine config unless the parser.mappingModified won't work
-        engine = new RustEngine(copy(engine.config(), inSyncGlobalCheckpointSupplier));
+        engine = new AcceleratedEngine(copy(engine.config(), inSyncGlobalCheckpointSupplier));
         translogHandler = createTranslogHandler(EngineTestAccess.engineConfig(engine).getIndexSettings(), engine);
         engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
         engine.refresh("warm_up");
@@ -4417,7 +4417,7 @@ public class RustEngineTests extends RustEngineTestCase {
             .primaryTermSupplier(primaryTerm::get)
             .tombstoneDocSupplier(tombstoneDocSupplier())
             .build();
-        expectThrows(EngineCreationFailureException.class, () -> new RustEngine(brokenConfig));
+        expectThrows(EngineCreationFailureException.class, () -> new AcceleratedEngine(brokenConfig));
 
         engine = createEngine(store, primaryTranslogDir); // and recover again!
         assertVisibleCount(engine, numDocs, true);
@@ -4619,7 +4619,7 @@ public class RustEngineTests extends RustEngineTestCase {
             final ParsedDocument doc3 = testParsedDocument("3", null, testDocumentWithTextField(), B_1, null);
 
             AtomicReference<ThrowingIndexWriter> throwingIndexWriter = new AtomicReference<>();
-            try (RustEngine engine = createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
+            try (AcceleratedEngine engine = createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
                 throwingIndexWriter.set(new ThrowingIndexWriter(directory, iwc));
                 return throwingIndexWriter.get();
             })) {
@@ -4709,7 +4709,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 }
             };
             EngineConfig config = config(this.engine.config(), store, createTempDir(), tombstoneDocSupplier);
-            try (RustEngine engine = createEngine(null, null, null, config)) {
+            try (AcceleratedEngine engine = createEngine(null, null, null, config)) {
                 final ParsedDocument doc = testParsedDocument("1", null, testDocumentWithTextField(), SOURCE, null);
                 engine.index(indexForDoc(doc));
                 expectThrows(IllegalStateException.class, () -> engine.delete(new Engine.Delete("1", newUid("1"), primaryTerm.get())));
@@ -5297,7 +5297,7 @@ public class RustEngineTests extends RustEngineTestCase {
             engine.index(appendOnlyPrimary(doc, true, timestamp1));
             assertEquals(timestamp1, engine.segmentsStats(false, false).getMaxUnsafeAutoIdTimestamp());
         }
-        try (Store store = createStore(newFSDirectory(storeDir)); RustEngine engine = new RustEngine(configSupplier.apply(store))) {
+        try (Store store = createStore(newFSDirectory(storeDir)); AcceleratedEngine engine = new AcceleratedEngine(configSupplier.apply(store))) {
             assertEquals(IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, engine.segmentsStats(false, false).getMaxUnsafeAutoIdTimestamp());
             TranslogHandler translogHandler = createTranslogHandler(configSupplier.apply(store).getIndexSettings(), engine);
             engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -5324,7 +5324,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 );
                 store.associateIndexWithNewTranslog(translogUUID);
             }
-            try (Engine engine = new RustEngine(configSupplier.apply(store))) {
+            try (Engine engine = new AcceleratedEngine(configSupplier.apply(store))) {
                 assertEquals(maxTimestamp12, engine.segmentsStats(false, false).getMaxUnsafeAutoIdTimestamp());
             }
         }
@@ -5396,11 +5396,11 @@ public class RustEngineTests extends RustEngineTestCase {
         assertLuceneOperations(engine, numDocs, 0, 0);
     }
 
-    public static long getNumVersionLookups(RustEngine engine) { // for other tests to access this
+    public static long getNumVersionLookups(AcceleratedEngine engine) { // for other tests to access this
         return engine.getNumVersionLookups();
     }
 
-    public static long getNumIndexVersionsLookups(RustEngine engine) { // for other tests to access this
+    public static long getNumIndexVersionsLookups(AcceleratedEngine engine) { // for other tests to access this
         return engine.getNumIndexVersionsLookups();
     }
 
@@ -5431,7 +5431,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     }
                 }
             });
-            RustEngine internalEngine = createEngine(config);
+            AcceleratedEngine internalEngine = createEngine(config);
             int docId = 0;
             final ParsedDocument doc = testParsedDocument(
                 Integer.toString(docId),
@@ -5550,11 +5550,11 @@ public class RustEngineTests extends RustEngineTestCase {
             boolean isIndexing = randomBoolean();
             int copies = frequently() ? 1 : between(2, 4);
             for (int c = 0; c < copies; c++) {
-                final ParsedDocument doc = RustEngineTestCase.createParsedDoc(id, null);
+                final ParsedDocument doc = AcceleratedEngineTestCase.createParsedDoc(id, null);
                 if (isIndexing) {
                     operations.add(
                         new Engine.Index(
-                            RustEngineTestCase.newUid(doc),
+                            AcceleratedEngineTestCase.newUid(doc),
                             doc,
                             seqNo,
                             primaryTerm.get(),
@@ -5572,7 +5572,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     operations.add(
                         new Engine.Delete(
                             EngineTestAccess.id(doc),
-                            RustEngineTestCase.newUid(doc),
+                            AcceleratedEngineTestCase.newUid(doc),
                             seqNo,
                             primaryTerm.get(),
                             i,
@@ -5594,7 +5594,7 @@ public class RustEngineTests extends RustEngineTestCase {
         Map<String, Engine.Operation> latestOps = new HashMap<>(); // id -> latest seq_no
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(config(defaultSettings, store, createTempDir(), newMergePolicy(), null))
+            AcceleratedEngine engine = createEngine(config(defaultSettings, store, createTempDir(), newMergePolicy(), null))
         ) {
             CheckedRunnable<IOException> lookupAndCheck = () -> {
                 try (Engine.Searcher searcher = engine.acquireSearcher("test", Engine.SearcherScope.INTERNAL)) {
@@ -5686,7 +5686,7 @@ public class RustEngineTests extends RustEngineTestCase {
     public void testSequenceNumberAdvancesToMaxSeqOnEngineOpenOnPrimary() throws BrokenBarrierException, InterruptedException, IOException {
         engine.close();
         final int docs = randomIntBetween(1, 32);
-        RustEngine initialEngine = null;
+        AcceleratedEngine initialEngine = null;
         try {
             final AtomicReference<CountDownLatch> latchReference = new AtomicReference<>(new CountDownLatch(1));
             final CyclicBarrier barrier = new CyclicBarrier(2);
@@ -5703,7 +5703,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 null,
                 getStallingSeqNoGenerator(latchReference, barrier, stall, expectedLocalCheckpoint)
             );
-            final RustEngine finalInitialEngine = initialEngine;
+            final AcceleratedEngine finalInitialEngine = initialEngine;
             for (int i = 0; i < docs; i++) {
                 final String id = Integer.toString(i);
                 final ParsedDocument doc = testParsedDocument(id, null, testDocumentWithTextField(), SOURCE, null);
@@ -5737,7 +5737,7 @@ public class RustEngineTests extends RustEngineTestCase {
         } finally {
             IOUtils.close(initialEngine);
         }
-        try (RustEngine recoveringEngine = new RustEngine(initialEngine.config())) {
+        try (AcceleratedEngine recoveringEngine = new AcceleratedEngine(initialEngine.config())) {
             TranslogHandler translogHandler = createTranslogHandler(initialEngine.config().getIndexSettings(), recoveringEngine);
             recoveringEngine.translogManager()
                 .recoverFromTranslog(translogHandler, recoveringEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -5898,7 +5898,7 @@ public class RustEngineTests extends RustEngineTestCase {
      */
     public void testNoOps() throws IOException {
         engine.close();
-        RustEngine noOpEngine = null;
+        AcceleratedEngine noOpEngine = null;
         final int maxSeqNo = randomIntBetween(0, 128);
         final int localCheckpoint = randomIntBetween(0, maxSeqNo);
         try {
@@ -5914,7 +5914,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     engine.config().getMergePolicy()
                 )
             );
-            noOpEngine = new RustEngine(
+            noOpEngine = new AcceleratedEngine(
                 noopEngineConfig,
                 IndexWriter.MAX_DOCS,
                 supplier,
@@ -6038,7 +6038,7 @@ public class RustEngineTests extends RustEngineTestCase {
     public void testMinGenerationForSeqNo() throws IOException, BrokenBarrierException, InterruptedException {
         engine.close();
         final int numberOfTriplets = randomIntBetween(1, 32);
-        RustEngine actualEngine = null;
+        AcceleratedEngine actualEngine = null;
         try {
             final AtomicReference<CountDownLatch> latchReference = new AtomicReference<>();
             final CyclicBarrier barrier = new CyclicBarrier(2);
@@ -6055,7 +6055,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 null,
                 getStallingSeqNoGenerator(latchReference, barrier, stall, expectedLocalCheckpoint)
             );
-            final RustEngine finalActualEngine = actualEngine;
+            final AcceleratedEngine finalActualEngine = actualEngine;
             finalActualEngine.ensureOpen();
             final Translog translog = assertAndGetInternalTranslogManager(finalActualEngine.translogManager()).getTranslog();
             final long generation = assertAndGetInternalTranslogManager(finalActualEngine.translogManager()).getTranslog()
@@ -6109,7 +6109,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    private void index(final RustEngine engine, final int id) throws IOException {
+    private void index(final AcceleratedEngine engine, final int id) throws IOException {
         final String docId = Integer.toString(id);
         final ParsedDocument doc = testParsedDocument(docId, null, testDocumentWithTextField(), SOURCE, null);
         engine.index(indexForDoc(doc));
@@ -6157,7 +6157,7 @@ public class RustEngineTests extends RustEngineTestCase {
             final EngineConfig engineConfig;
             final SeqNoStats prevSeqNoStats;
             final List<DocIdSeqNoAndSource> prevDocs;
-            try (RustEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
+            try (AcceleratedEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
                 engineConfig = engine.config();
                 for (final long seqNo : seqNos) {
                     final String id = Long.toString(seqNo);
@@ -6175,7 +6175,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 prevSeqNoStats = engine.getSeqNoStats(globalCheckpoint.get());
                 prevDocs = getDocIds(engine, true);
             }
-            try (RustEngine engine = new RustEngine(engineConfig)) {
+            try (AcceleratedEngine engine = new AcceleratedEngine(engineConfig)) {
                 engine.ensureOpen();
                 final long currentTranslogGeneration = assertAndGetInternalTranslogManager(engine.translogManager()).getTranslog()
                     .currentFileGeneration();
@@ -6224,13 +6224,13 @@ public class RustEngineTests extends RustEngineTestCase {
 
         boolean flushed = false;
         AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
-        RustEngine recoveringEngine = null;
+        AcceleratedEngine recoveringEngine = null;
         try {
             assertEquals(docs - 1, engine.getSeqNoStats(-1).getMaxSeqNo());
             assertEquals(docs - 1, engine.getProcessedLocalCheckpoint());
             assertEquals(maxSeqIDOnReplica, replicaEngine.getSeqNoStats(-1).getMaxSeqNo());
             assertEquals(checkpointOnReplica, replicaEngine.getProcessedLocalCheckpoint());
-            recoveringEngine = new RustEngine(copy(replicaEngine.config(), globalCheckpoint::get));
+            recoveringEngine = new AcceleratedEngine(copy(replicaEngine.config(), globalCheckpoint::get));
             assertEquals(numDocsOnReplica, recoveringEngine.translogManager().getTranslogStats().getUncommittedOperations());
             TranslogHandler translogHandler = createTranslogHandler(replicaEngine.config().getIndexSettings(), recoveringEngine);
             recoveringEngine.translogManager()
@@ -6266,7 +6266,7 @@ public class RustEngineTests extends RustEngineTestCase {
         // now do it again to make sure we preserve values etc.
         try {
             EngineConfig config = copy(replicaEngine.config(), globalCheckpoint::get);
-            recoveringEngine = new RustEngine(config);
+            recoveringEngine = new AcceleratedEngine(config);
             if (flushed) {
                 assertThat(recoveringEngine.translogManager().getTranslogStats().getUncommittedOperations(), equalTo(0));
             }
@@ -6308,7 +6308,7 @@ public class RustEngineTests extends RustEngineTestCase {
     public void testRefreshScopedSearcher() throws IOException {
         try (
             Store store = createStore();
-            RustEngine engine =
+            AcceleratedEngine engine =
                 // disable merges to make sure that the reader doesn't change unexpectedly during the test
                 createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE)
         ) {
@@ -6490,7 +6490,7 @@ public class RustEngineTests extends RustEngineTestCase {
             () -> globalCheckpoint.get()
         );
         final AtomicLong lastSyncedGlobalCheckpointBeforeCommit = new AtomicLong(Translog.readGlobalCheckpoint(translogPath, translogUUID));
-        try (RustEngine engine = new RustEngine(engineConfig) {
+        try (AcceleratedEngine engine = new AcceleratedEngine(engineConfig) {
             @Override
             protected void commitIndexWriter(DocumentIndexWriter writer, String translogUUID) throws IOException {
                 lastSyncedGlobalCheckpointBeforeCommit.set(Translog.readGlobalCheckpoint(translogPath, translogUUID));
@@ -6611,7 +6611,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         final GatedCloseable<IndexCommit> wrappedSnapshot;
         final boolean closeSnapshotBeforeEngine = randomBoolean();
-        try (RustEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
+        try (AcceleratedEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
             int numDocs = between(1, 20);
             for (int i = 0; i < numDocs; i++) {
                 index(engine, i);
@@ -6664,7 +6664,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -6702,7 +6702,7 @@ public class RustEngineTests extends RustEngineTestCase {
         IOUtils.close(engine, store);
         store = createStore();
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
-        try (RustEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
+        try (AcceleratedEngine engine = createEngine(store, createTempDir(), globalCheckpoint::get)) {
             final int numDocs = scaledRandomIntBetween(10, 100);
             for (int docId = 0; docId < numDocs; docId++) {
                 index(engine, docId);
@@ -6998,7 +6998,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final int iters = randomIntBetween(1, 15);
         for (int i = 0; i < iters; i++) {
             // this is a reproduction of https://github.com/elastic/elasticsearch/issues/28714
-            try (Store store = createStore(); RustEngine engine = createEngine(store, createTempDir())) {
+            try (Store store = createStore(); AcceleratedEngine engine = createEngine(store, createTempDir())) {
                 final IndexSettings indexSettings = engine.config().getIndexSettings();
                 final IndexMetadata indexMetadata = IndexMetadata.builder(indexSettings.getIndexMetadata())
                     .settings(
@@ -7123,7 +7123,7 @@ public class RustEngineTests extends RustEngineTestCase {
             )
             .build();
         indexSettings.updateIndexMetadata(indexMetadata);
-        try (Store store = createStore(); RustEngine engine = createEngine(store, createTempDir())) {
+        try (Store store = createStore(); AcceleratedEngine engine = createEngine(store, createTempDir())) {
             engine.config().setEnableGcDeletes(false);
             for (int i = 0, docs = scaledRandomIntBetween(0, 10); i < docs; i++) {
                 index(engine, i);
@@ -7181,7 +7181,7 @@ public class RustEngineTests extends RustEngineTestCase {
             EngineConfig config = config(defaultSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get);
             final List<Long> commitMaxSeqNo = new ArrayList<>();
             final long minTranslogGen;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 for (int i = 0; i < seqNos.size(); i++) {
                     ParsedDocument doc = testParsedDocument(Long.toString(seqNos.get(i)), null, testDocument(), new BytesArray("{}"), null);
                     Engine.Index index = new Engine.Index(
@@ -7460,7 +7460,7 @@ public class RustEngineTests extends RustEngineTestCase {
         } else {
             engine.flushAndClose();
         }
-        try (RustEngine recoveringEngine = new RustEngine(engine.config())) {
+        try (AcceleratedEngine recoveringEngine = new AcceleratedEngine(engine.config())) {
             assertThat(recoveringEngine.getMinRetainedSeqNo(), equalTo(lastMinRetainedSeqNo));
         }
     }
@@ -7498,7 +7498,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final AtomicLong refreshCounter = new AtomicLong();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(defaultSettings, store, createTempDir(), newMergePolicy(), null, new ReferenceManager.RefreshListener() {
                     @Override
                     public void beforeRefresh() {
@@ -7566,7 +7566,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine.close();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
+            AcceleratedEngine engine = createEngine(config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
         ) {
             engine.close();
             expectThrows(
@@ -7580,7 +7580,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine.close();
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
+            AcceleratedEngine engine = createEngine(config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
         ) {
             engine.close();
             expectThrows(AlreadyClosedException.class, () -> engine.delete(replicaDeleteForDoc("test", 42, 7, System.nanoTime())));
@@ -7590,7 +7590,7 @@ public class RustEngineTests extends RustEngineTestCase {
     public void testTrackMaxSeqNoOfUpdatesOrDeletesOnPrimary() throws Exception {
         engine.close();
         Set<String> liveDocIds = new HashSet<>();
-        engine = new RustEngine(engine.config());
+        engine = new AcceleratedEngine(engine.config());
         assertThat(engine.getMaxSeqNoOfUpdatesOrDeletes(), equalTo(-1L));
         int numOps = between(1, 500);
         for (int i = 0; i < numOps; i++) {
@@ -7663,7 +7663,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 new NoneCircuitBreakerService()
             );
             final List<DocIdSeqNoAndSource> docs;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 recordedGeneration.set(store.readLastCommittedSegmentsInfo().getGeneration());
                 recording.set(true);
                 for (Engine.Operation op : operations) {
@@ -7692,7 +7692,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 }
             }
             assertThat(operationsInSafeCommit, notNullValue());
-            try (RustEngine engine = new RustEngine(config)) { // do not recover from translog
+            try (AcceleratedEngine engine = new AcceleratedEngine(config)) { // do not recover from translog
                 final Map<BytesRef, Engine.Operation> deletesAfterCheckpoint = new HashMap<>();
                 for (Engine.Operation op : operationsInSafeCommit) {
                     if (op instanceof Engine.NoOp == false && op.seqNo() > engine.getPersistedLocalCheckpoint()) {
@@ -7737,7 +7737,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    void assertLuceneOperations(RustEngine engine, long expectedAppends, long expectedUpdates, long expectedDeletes) {
+    void assertLuceneOperations(AcceleratedEngine engine, long expectedAppends, long expectedUpdates, long expectedDeletes) {
         String message = "Lucene operations mismatched;"
             + " appends [actual:"
             + engine.getNumDocAppends()
@@ -7769,7 +7769,7 @@ public class RustEngineTests extends RustEngineTestCase {
             IndexSettings indexSettings = IndexSettingsModule.newIndexSettings("test", settings);
             try (
                 Store store = createStore();
-                RustEngine engine = createEngine(config(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
+                AcceleratedEngine engine = createEngine(config(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))
             ) {
                 ParsedDocument doc = testParsedDocument("1", null, new Document(), new BytesArray("{}".getBytes("UTF-8")), null);
                 engine.index(appendOnlyPrimary(doc, false, 1));
@@ -7873,7 +7873,7 @@ public class RustEngineTests extends RustEngineTestCase {
         store = createStore(defaultSettings, newFSDirectory(createTempDir()));
         LogDocMergePolicy policy = new LogDocMergePolicy();
         policy.setMinMergeDocs(10000);
-        try (RustEngine engine = createEngine(defaultSettings, store, createTempDir(), policy)) {
+        try (AcceleratedEngine engine = createEngine(defaultSettings, store, createTempDir(), policy)) {
             int numDocs = between(1, 20);
             for (int i = 0; i < numDocs; i++) {
                 index(engine, i);
@@ -7927,7 +7927,7 @@ public class RustEngineTests extends RustEngineTestCase {
         try (Store store = createStore()) {
             EngineConfig config = config(defaultSettings, store, translogPath, newMergePolicy(), null, null, globalCheckpoint::get);
             final List<DocIdSeqNoAndSource> docs;
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 for (Engine.Operation op : operations) {
                     applyOperation(engine, op);
                     if (randomBoolean()) {
@@ -7952,7 +7952,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 }
                 docs = getDocIds(engine, true);
             }
-            try (RustEngine engine = new RustEngine(config)) {
+            try (AcceleratedEngine engine = new AcceleratedEngine(config)) {
                 translogHandler = createTranslogHandler(EngineTestAccess.engineConfig(engine).getIndexSettings(), engine);
                 engine.onSettingsChanged(TimeValue.MINUS_ONE, ByteSizeValue.ZERO, 0);
                 engine.translogManager().recoverFromTranslog(translogHandler, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
@@ -7969,7 +7969,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    private Map<BytesRef, DeleteVersionValue> tombstonesInVersionMap(RustEngine engine) {
+    private Map<BytesRef, DeleteVersionValue> tombstonesInVersionMap(AcceleratedEngine engine) {
         return engine.getVersionMap()
             .entrySet()
             .stream()
@@ -7992,7 +7992,7 @@ public class RustEngineTests extends RustEngineTestCase {
         };
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, indexWriterFactory)
+            AcceleratedEngine engine = createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, indexWriterFactory)
         ) {
             final ParsedDocument doc = testParsedDocument("1", null, testDocumentWithTextField(), SOURCE, null);
             Engine.Operation.Origin origin = randomFrom(REPLICA, LOCAL_RESET, PEER_RECOVERY);
@@ -8074,17 +8074,17 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter")
     public void testDeleteFailureDocAlreadyDeleted() throws IOException {
-        runTestDeleteFailure(RustEngine::delete);
+        runTestDeleteFailure(AcceleratedEngine::delete);
     }
 
-    private void runTestDeleteFailure(final CheckedBiConsumer<RustEngine, Engine.Delete, IOException> consumer) throws IOException {
+    private void runTestDeleteFailure(final CheckedBiConsumer<AcceleratedEngine, Engine.Delete, IOException> consumer) throws IOException {
         engine.close();
         final AtomicReference<ThrowingIndexWriter> iw = new AtomicReference<>();
-        try (Store store = createStore(); RustEngine engine = createEngine((dir, iwc) -> {
+        try (Store store = createStore(); AcceleratedEngine engine = createEngine((dir, iwc) -> {
             iw.set(new ThrowingIndexWriter(dir, iwc));
             return iw.get();
         }, null, null, config(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, null))) {
-            engine.index(new Engine.Index(newUid("0"), primaryTerm.get(), RustEngineTests.createParsedDoc("0", null)));
+            engine.index(new Engine.Index(newUid("0"), primaryTerm.get(), AcceleratedEngineTests.createParsedDoc("0", null)));
             final Engine.Delete op = new Engine.Delete("0", newUid("0"), primaryTerm.get());
             consumer.accept(engine, op);
             iw.get().setThrowFailure(() -> new IllegalArgumentException("fatal"));
@@ -8151,7 +8151,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 null,
                 engine.config().getCircuitBreakerService()
             );
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 int numDocs = randomIntBetween(10, 100);
                 Set<String> ids = new HashSet<>();
                 for (int i = 0; i < numDocs; i++) {
@@ -8220,7 +8220,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 null,
                 engine.config().getCircuitBreakerService()
             );
-            try (RustEngine engine = createEngine(config)) {
+            try (AcceleratedEngine engine = createEngine(config)) {
                 if (randomBoolean()) {
                     engine.index(indexForDoc(createParsedDoc("id", null)));
                 }
@@ -8279,7 +8279,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 .primaryTermSupplier(config.getPrimaryTermSupplier())
                 .tombstoneDocSupplier(config.getTombstoneDocSupplier())
                 .build();
-            try (RustEngine engine = createEngine(configWithWarmer)) {
+            try (AcceleratedEngine engine = createEngine(configWithWarmer)) {
                 assertThat(warmedUpReaders, empty());
                 assertThat(
                     expectThrows(Throwable.class, () -> engine.acquireSearcher("test")).getMessage(),
@@ -8349,7 +8349,7 @@ public class RustEngineTests extends RustEngineTestCase {
         int maxDocs = randomIntBetween(1, 100);
         setIndexWriterMaxDocs(maxDocs);
         try {
-            engine = new RustTestEngine(engine.config(), maxDocs, LocalCheckpointTracker::new);
+            engine = new AcceleratedTestEngine(engine.config(), maxDocs, LocalCheckpointTracker::new);
             int numDocs = between(maxDocs + 1, maxDocs * 2);
             List<Engine.Operation> operations = new ArrayList<>(numDocs);
             for (int i = 0; i < numDocs; i++) {
@@ -8393,7 +8393,7 @@ public class RustEngineTests extends RustEngineTestCase {
         int maxDocs = randomIntBetween(1, 100);
         setIndexWriterMaxDocs(maxDocs);
         try {
-            engine = new RustTestEngine(engine.config(), maxDocs, LocalCheckpointTracker::new);
+            engine = new AcceleratedTestEngine(engine.config(), maxDocs, LocalCheckpointTracker::new);
             int numDocs = between(maxDocs + 1, maxDocs * 2);
             List<Engine.Operation> operations = generateHistoryOnReplica(numDocs, randomBoolean(), randomBoolean(), randomBoolean());
             final IllegalArgumentException error = expectThrows(IllegalArgumentException.class, () -> {
@@ -8498,7 +8498,7 @@ public class RustEngineTests extends RustEngineTestCase {
         when(mockCheckpointTracker.getProcessedCheckpoint()).thenReturn(expectedLocalCheckpoint);
 
         Store store = createStore();
-        RustEngine engine = createEngine(store, createTempDir(), (a, b) -> mockCheckpointTracker);
+        AcceleratedEngine engine = createEngine(store, createTempDir(), (a, b) -> mockCheckpointTracker);
 
         long actualLocalCheckpoint = engine.getProcessedLocalCheckpoint();
         assertEquals(expectedLocalCheckpoint, actualLocalCheckpoint);
@@ -8515,7 +8515,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(indexMetadata);
 
         Store store = createStore();
-        RustEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
+        AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
 
         int numDocs = randomIntBetween(10, 100);
         for (int i = 0; i < numDocs; i++) {
@@ -8538,7 +8538,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(indexMetadata);
 
         Store store = createStore();
-        RustEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
+        AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
 
         int totalNumberOfDocsRefreshed = 0;
         for (int j = 0; j < randomIntBetween(1, 10); j++) {
@@ -8577,7 +8577,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(indexMetadata);
 
         Store store = createStore();
-        RustEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
+        AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
 
         int totalNumberOfDocsRefreshed = 0;
         for (int j = 0; j < randomIntBetween(1, 10); j++) {
@@ -8616,7 +8616,7 @@ public class RustEngineTests extends RustEngineTestCase {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(indexMetadata);
 
         Store store = createStore();
-        RustEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
+        AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), newMergePolicy());
 
         final int numIndexingThreads = scaledRandomIntBetween(3, 8);
         final int numDocsPerThread = randomIntBetween(500, 1000);
@@ -8670,7 +8670,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (Store store = createStore()) {
             EngineConfig engineConfig = createEngineConfigWithMapperSupplierForDerivedSource(store, false);
-            RustEngine engine = null;
+            AcceleratedEngine engine = null;
             try {
                 engine = createEngine(engineConfig);
                 // Index documents
@@ -8733,7 +8733,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabled() throws IOException {
         IOUtils.close(engine, store);
         final List<Engine.Operation> operations = new ArrayList<>();
@@ -8743,7 +8743,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (Store store = createStore()) {
             EngineConfig engineConfig = createEngineConfigWithMapperSupplierForDerivedSource(store, true);
-            RustEngine engine = null;
+            AcceleratedEngine engine = null;
             try {
                 engine = createEngine(engineConfig);
                 // First index documents
@@ -8897,7 +8897,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabledWithFilterWrapper() throws IOException {
         IOUtils.close(engine, store);
         final List<Engine.Operation> operations = new ArrayList<>();
@@ -8907,7 +8907,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (Store store = createStore()) {
             EngineConfig engineConfig = createEngineConfigWithMapperSupplierForDerivedSource(store, true);
-            RustEngine engine = null;
+            AcceleratedEngine engine = null;
             try {
                 engine = createEngineForWrapper(
                     engineConfig,
@@ -9097,7 +9097,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
         try (Store store = createStore()) {
             EngineConfig engineConfig = createEngineConfigWithMapperSupplierForDerivedSource(store, false);
-            RustEngine engine = null;
+            AcceleratedEngine engine = null;
             try {
                 engine = createEngine(engineConfig);
                 // First index documents
@@ -9302,7 +9302,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithAppend() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -9319,7 +9319,7 @@ public class RustEngineTests extends RustEngineTestCase {
                     .put(IndexSettings.INDEX_CONTEXT_AWARE_ENABLED_SETTING.getKey(), true)
                     .build()
             );
-            try (RustEngine engine = createEngine(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
+            try (AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
                 throwingIndexWriter.set(new AddIndexesFailingIndexWriter(directory, iwc));
                 return throwingIndexWriter.get();
             })) {
@@ -9348,7 +9348,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithUpdate() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -9365,7 +9365,7 @@ public class RustEngineTests extends RustEngineTestCase {
             );
 
             AtomicReference<AddIndexesFailingIndexWriter> throwingIndexWriter = new AtomicReference<>();
-            try (RustEngine engine = createEngine(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
+            try (AcceleratedEngine engine = createEngine(indexSettings, store, createTempDir(), NoMergePolicy.INSTANCE, (directory, iwc) -> {
                 throwingIndexWriter.set(new AddIndexesFailingIndexWriter(directory, iwc));
                 return throwingIndexWriter.get();
             })) {
@@ -9394,7 +9394,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testDoesNotAllowGroupingCriteriaUpdate() throws IOException, InterruptedException {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
@@ -9406,7 +9406,7 @@ public class RustEngineTests extends RustEngineTestCase {
         );
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -9418,7 +9418,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
-    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("context-aware segments are refused (AcceleratedEngineSupport.checkSupported)")
     public void testAllowGroupingCriteriaUpdateWithTombstone() throws IOException, InterruptedException {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
@@ -9430,7 +9430,7 @@ public class RustEngineTests extends RustEngineTestCase {
         );
         try (
             Store store = createStore();
-            RustEngine engine = createEngine(
+            AcceleratedEngine engine = createEngine(
                 config(indexSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get)
             )
         ) {
@@ -9567,7 +9567,7 @@ public class RustEngineTests extends RustEngineTestCase {
      * less than the actual on-disk size. The fix replaces {@code put} with
      * {@code map.merge(extension, length, Long::sum)} so every file's bytes are counted.
      */
-    @org.junit.Ignore("index.optimize_doc_id_lookup.fuzzy_set.enabled is refused (RustEngineSupport.checkSupported)")
+    @org.junit.Ignore("index.optimize_doc_id_lookup.fuzzy_set.enabled is refused (AcceleratedEngineSupport.checkSupported)")
     public void testSegmentFileSizesAccumulatesAllFilesIncludingDuplicateExtensions() throws Exception {
         // Disable compound file so each Lucene file is a separate entry in the directory,
         // making it straightforward to compare the expected total (sum of file lengths from the
@@ -9622,7 +9622,7 @@ public class RustEngineTests extends RustEngineTestCase {
                 .tombstoneDocSupplier(base.getTombstoneDocSupplier())
                 .build();
 
-            try (RustEngine engine = createEngine(engineConfig)) {
+            try (AcceleratedEngine engine = createEngine(engineConfig)) {
                 // Index one document. The _id field goes through FuzzyFilterPostingsFormat;
                 // the "value" text field goes through the standard format. Both end up in the
                 // same segment, guaranteeing multiple files per extension.

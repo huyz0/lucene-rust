@@ -135,7 +135,7 @@ cargo test --release -p lucene-search
 # docs/mechanical-gates.md#data-packs.
 echo "gate: language modules over data packs (no embedded dictionaries)"
 scripts/make-data-packs.sh target/data-packs >/dev/null
-LUCENE_RUST_PACKS="$PWD/target/data-packs" cargo test --no-default-features \
+ACCELERATED_PACKS="$PWD/target/data-packs" cargo test --no-default-features \
   -p lucene-analysis-kuromoji -p lucene-analysis-nori -p lucene-analysis-smartcn \
   -p lucene-analysis-morfologik -p lucene-analysis-stempel
 

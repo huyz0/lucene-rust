@@ -4,7 +4,7 @@
 package org.lucenerust.opensearch.join;
 
 import org.apache.lucene.search.Query;
-import org.lucenerust.opensearch.RustQueryPhaseSearcher;
+import org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -77,7 +77,7 @@ public final class NativeJoinQueryBuilder extends AbstractQueryBuilder<NativeJoi
     @Override
     protected Query doToQuery(QueryShardContext context) throws IOException {
         Query q = join.toQuery(context);
-        if (RustQueryPhaseSearcher.ENABLED.get(context.getIndexSettings().getSettings()) == false) {
+        if (AcceleratedQueryPhaseSearcher.ENABLED.get(context.getIndexSettings().getSettings()) == false) {
             return q;
         }
         return JoinQueries.deferred(q);

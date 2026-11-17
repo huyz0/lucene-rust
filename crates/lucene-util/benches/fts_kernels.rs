@@ -4,7 +4,7 @@
 //!
 //! The dispatched kernel uses AVX-512 when the CPU has it. To compare it
 //! against the AVX2 build baseline on the same machine, run once as is and
-//! once with `LUCENE_RUST_SIMD=avx2`.
+//! once with `ACCELERATED_SIMD=avx2`.
 //!
 //! Run with: `cargo bench -p lucene-util --bench fts_kernels`
 #![allow(clippy::arithmetic_side_effects)]

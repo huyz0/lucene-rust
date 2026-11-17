@@ -40,30 +40,30 @@ import org.lucenerust.opensearch.NativeWriter;
  * {@code IndexWriter.mergeMiddle} hands it -- which is how OpenSearch pre-copies merged segments to
  * segment-replication replicas.
  */
-final class RustMergedSegmentWarmer {
-    private static final Logger logger = LogManager.getLogger(RustMergedSegmentWarmer.class);
+final class AcceleratedMergedSegmentWarmer {
+    private static final Logger logger = LogManager.getLogger(AcceleratedMergedSegmentWarmer.class);
 
     private final Directory directory;
     private final int indexCreatedVersionMajor;
     private final IndexWriter.IndexReaderWarmer warmer;
 
-    private RustMergedSegmentWarmer(Directory directory, int indexCreatedVersionMajor, IndexWriter.IndexReaderWarmer warmer) {
+    private AcceleratedMergedSegmentWarmer(Directory directory, int indexCreatedVersionMajor, IndexWriter.IndexReaderWarmer warmer) {
         this.directory = directory;
         this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.warmer = warmer;
     }
 
     /** The warmer for each native writer that has one, by writer handle. */
-    private static final Map<Long, RustMergedSegmentWarmer> WARMERS = new ConcurrentHashMap<>();
+    private static final Map<Long, AcceleratedMergedSegmentWarmer> WARMERS = new ConcurrentHashMap<>();
     private static boolean upcallInstalled;
 
     /** Has {@code warmer} warm every segment the writer {@code handle} names merges into {@code directory}. */
     static void install(long handle, Directory directory, int indexCreatedVersionMajor, IndexWriter.IndexReaderWarmer warmer) {
         installUpcall();
-        WARMERS.put(handle, new RustMergedSegmentWarmer(directory, indexCreatedVersionMajor, warmer));
+        WARMERS.put(handle, new AcceleratedMergedSegmentWarmer(directory, indexCreatedVersionMajor, warmer));
         if (NativeWriter.writerSetMergedSegmentWarmer(handle, true) != NativeBridge.OK) {
             WARMERS.remove(handle);
-            throw new IllegalStateException("lucene-rust: setting the merged-segment warmer failed: " + NativeBridge.lastError());
+            throw new IllegalStateException("accelerated-search: setting the merged-segment warmer failed: " + NativeBridge.lastError());
         }
     }
 
@@ -81,14 +81,14 @@ final class RustMergedSegmentWarmer {
         try {
             MethodHandle target = MethodHandles.lookup()
                 .findStatic(
-                    RustMergedSegmentWarmer.class,
+                    AcceleratedMergedSegmentWarmer.class,
                     "warmUpcall",
                     MethodType.methodType(int.class, long.class, MemorySegment.class, long.class, MemorySegment.class)
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
             if (NativeWriter.setWarmUpcall(stub) != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the warm upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the warm upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
         } catch (ReflectiveOperationException e) {
@@ -103,7 +103,7 @@ final class RustMergedSegmentWarmer {
      */
     @SuppressWarnings("restricted") // the segments are the native caller's, sized by its contract
     private static int warmUpcall(long handle, MemorySegment name, long nameLen, MemorySegment id) {
-        RustMergedSegmentWarmer w = WARMERS.get(handle);
+        AcceleratedMergedSegmentWarmer w = WARMERS.get(handle);
         if (w == null) {
             return NativeWriter.WARM_OK;
         }

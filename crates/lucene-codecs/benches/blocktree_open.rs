@@ -8,7 +8,7 @@
 //! The corpus is `benchmarks/.corpus/merged` (see `scripts/bench-corpus.sh`),
 //! the same single-segment, force-merged, real-Lucene index
 //! `scripts/bench-compare.sh` runs both engines over: ~4.7 MB `.tim`,
-//! ~89 KB `.tip`, 579k distinct terms. Point `LUCENE_RUST_BENCH_INDEX` at
+//! ~89 KB `.tip`, 579k distinct terms. Point `ACCELERATED_BENCH_INDEX` at
 //! another index directory to use that instead.
 //!
 //! Every case is **skipped, not failed**, when the corpus is absent, because
@@ -41,7 +41,7 @@ struct Corpus {
 }
 
 fn corpus_dir() -> PathBuf {
-    match std::env::var_os("LUCENE_RUST_BENCH_INDEX") {
+    match std::env::var_os("ACCELERATED_BENCH_INDEX") {
         Some(p) => PathBuf::from(p),
         None => Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../benchmarks/.corpus/merged")
@@ -53,7 +53,7 @@ fn corpus_dir() -> PathBuf {
 /// `benchmarks/corpus/src/GenTermCorpus.java`, the shape
 /// the dead-prefix skip is measured on.
 fn terms_dir() -> PathBuf {
-    match std::env::var_os("LUCENE_RUST_BENCH_TERMS_INDEX") {
+    match std::env::var_os("ACCELERATED_BENCH_TERMS_INDEX") {
         Some(p) => PathBuf::from(p),
         None => Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../benchmarks/.corpus/terms1m")

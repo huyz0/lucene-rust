@@ -11,7 +11,7 @@
 //! the file and the directories searched.
 //!
 //! Pack directories are [`add_pack_dir`]'s, in the order added, then the
-//! `LUCENE_RUST_PACKS` environment variable's (a path list, as `PATH`). A
+//! `ACCELERATED_PACKS` environment variable's (a path list, as `PATH`). A
 //! pack is a plain directory of the module's files, byte for byte the
 //! `src/resources` files of its crate (`scripts/make-data-packs.sh` writes
 //! them), so a build without `embedded-data` and a pack directory reads
@@ -28,7 +28,7 @@ use std::sync::RwLock;
 use crate::factory::FactoryError;
 
 /// The environment variable read for pack directories.
-pub const PACKS_ENV: &str = "LUCENE_RUST_PACKS";
+pub const PACKS_ENV: &str = "ACCELERATED_PACKS";
 
 static DIRS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 

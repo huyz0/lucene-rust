@@ -1,4 +1,4 @@
-//! Opt-in timing of realtime search phases: with `LUCENE_RUST_LIVE_TIMING`
+//! Opt-in timing of realtime search phases: with `ACCELERATED_LIVE_TIMING`
 //! set, each phase's count, total and worst time are summed and printed to
 //! standard error every five seconds.
 
@@ -107,7 +107,7 @@ struct Sums {
 fn sums() -> Option<&'static Sums> {
     static S: OnceLock<Option<Sums>> = OnceLock::new();
     S.get_or_init(|| {
-        std::env::var_os("LUCENE_RUST_LIVE_TIMING").map(|_| Sums {
+        std::env::var_os("ACCELERATED_LIVE_TIMING").map(|_| Sums {
             count: Default::default(),
             nanos: Default::default(),
             max: Default::default(),

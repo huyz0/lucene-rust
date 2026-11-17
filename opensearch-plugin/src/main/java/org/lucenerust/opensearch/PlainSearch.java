@@ -3,12 +3,12 @@
  */
 package org.lucenerust.opensearch;
 
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.approximated;
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.buffered;
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.countSegments;
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.flags;
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.postFiltered;
-import static org.lucenerust.opensearch.RustQueryPhaseSearcher.sortByScore;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.approximated;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.buffered;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.countSegments;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.flags;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.postFiltered;
+import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.sortByScore;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -25,7 +25,7 @@ import org.opensearch.search.internal.SearchContext;
 /**
  * What a plain (non-hybrid) search sends the native engine, built stage by stage. Each stage
  * returns null to go on, or the reason the request cannot run natively, which ends the pipeline
- * and leaves the search to Lucene ({@link RustQueryPhaseSearcher#searchPlain}).
+ * and leaves the search to Lucene ({@link AcceleratedQueryPhaseSearcher#searchPlain}).
  */
 final class PlainSearch {
     final SearchContext ctx;

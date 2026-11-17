@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# the end-to-end proof: builds the lucene-rust OpenSearch plugin, installs it
+# the end-to-end proof: builds the accelerated-search OpenSearch plugin, installs it
 # into the pinned OpenSearch distribution, starts a node (a plain process, no Docker), and runs
 # opensearch-plugin/e2e/verify_opensearch.py against it -- the query matrix
 # native vs Lucene, force-merge reader release, and SIGKILL recovery.
@@ -71,7 +71,7 @@ start_node() { # name port variant [setting ...]; the e2e hunspell dictionary is
     local n=$1 p=$2 v=$3; shift 3
     local a=() s
     for s in "$@"; do a+=(--setting "$s"); done
-    nodectl run "$n" "$v" "$p" --setting cluster.name=lucene-rust-e2e "${a[@]}" >/dev/null
+    nodectl run "$n" "$v" "$p" --setting cluster.name=accelerated-search-e2e "${a[@]}" >/dev/null
 }
 start_node "$NAME" "$PORT" plugin ${NODE_ENV[@]+"${NODE_ENV[@]}"}
 if [[ $KEEP == 0 ]]; then
@@ -104,7 +104,7 @@ run_yaml() { # port out-dir
     mkdir -p "$2" && chmod 777 "$2"
     (cd "$2" && "${as[@]}" "$java_bin" -ea -cp "$cp:$cp/*" \
         -Dtests.rest.cluster="localhost:$1" -Dtests.cluster="localhost:$1" \
-        -Dtests.clustername=lucene-rust-e2e -Dtests.rest.suite="$YAML_SUITES" \
+        -Dtests.clustername=accelerated-search-e2e -Dtests.rest.suite="$YAML_SUITES" \
         -Dtests.security.manager=false -Djava.io.tmpdir="$2" \
         org.junit.runner.JUnitCore org.lucenerust.opensearch.LuceneRustYamlIT >"$2/out.txt" 2>&1 || true)
     grep -E '^[0-9]+\) ' "$2/out.txt" | sed 's/^[0-9]*) //' | sort >"$2/failures.txt" || true

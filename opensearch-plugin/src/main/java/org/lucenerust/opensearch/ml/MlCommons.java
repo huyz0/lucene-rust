@@ -318,7 +318,7 @@ public final class MlCommons {
     }
 
     private static <T> ActionListener<T> logged(String what) {
-        return ActionListener.wrap(r -> {}, e -> LOGGER.warn("lucene-rust ml: {} failed", what, e));
+        return ActionListener.wrap(r -> {}, e -> LOGGER.warn("accelerated-search ml: {} failed", what, e));
     }
 
     // ---- Tasks -----------------------------------------------------------------------------
@@ -1341,7 +1341,7 @@ public final class MlCommons {
                 try {
                     downloadAndChunk(modelId, model, (String) body.get("url"));
                 } catch (Exception e) {
-                    LOGGER.warn("lucene-rust ml: registering model [{}] failed", modelId, e);
+                    LOGGER.warn("accelerated-search ml: registering model [{}] failed", modelId, e);
                     discardModel(modelId);
                     failTask(taskId, e);
                     return;
@@ -1362,7 +1362,7 @@ public final class MlCommons {
         MlIndices.system(client, l -> client.execute(DeleteByQueryAction.INSTANCE, chunks, l), ActionListener.<BulkByScrollResponse>wrap(d -> {
             DeleteRequest request = new DeleteRequest(MlIndices.MODEL, modelId).setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
             MlIndices.system(client, l -> client.delete(request, l), MlCommons.<DeleteResponse>logged("model discard"));
-        }, e -> LOGGER.warn("lucene-rust ml: cannot discard model [{}]", modelId, e)));
+        }, e -> LOGGER.warn("accelerated-search ml: cannot discard model [{}]", modelId, e)));
     }
 
     /** {@code model_config} as {@code TextEmbeddingModelConfig} writes it: enum values upper case. */
@@ -2240,7 +2240,7 @@ public final class MlCommons {
                     Map<String, Object> doc = local.model(id);
                     Map<String, Object> entry = new LinkedHashMap<>();
                     entry.put("model_state", "DEPLOYED");
-                    entry.put("predictor", "lucene-rust " + local.function(id));
+                    entry.put("predictor", "accelerated-search " + local.function(id));
                     if (doc != null && doc.get("model_content_size_in_bytes") instanceof Number size) {
                         long estimate = (long) (size.doubleValue() * 1.5);
                         entry.put("memory_size_estimation_cpu", estimate);
@@ -2296,7 +2296,7 @@ public final class MlCommons {
                     local.deploy(hit.getId(), logged("redeploy of " + hit.getId()));
                 }
             }
-        }, e -> LOGGER.warn("lucene-rust ml: cannot list deployed models", e)));
+        }, e -> LOGGER.warn("accelerated-search ml: cannot list deployed models", e)));
     }
 
     private boolean eligibleHere(String function) {
