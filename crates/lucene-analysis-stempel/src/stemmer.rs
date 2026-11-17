@@ -12,9 +12,10 @@ use crate::StempelError;
 /// `PolishAnalyzer.getDefaultTable()`: the table, read once.
 pub fn default_table() -> Arc<Table> {
     static TABLE: LazyLock<Arc<Table>> = LazyLock::new(|| {
-        let bytes =
-            miniz_oxide::inflate::decompress_to_vec_zlib(&crate::pack::get("stemmer_20000.tbl.z"))
-                .expect("the vendored stemmer table inflates");
+        let bytes = lucene_analysis::data_pack::inflate_vendored(
+            &crate::pack::get("stemmer_20000.tbl.z"),
+            "stemmer table",
+        );
         Arc::new(Table::load(&bytes).expect("the vendored stemmer table reads"))
     });
     Arc::clone(&TABLE)
