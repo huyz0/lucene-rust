@@ -147,56 +147,45 @@ final class ExtendedEncoder {
      */
     static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {
         try {
-            if (q instanceof FunctionScoreQuery fs) {
-                return functionScore(cx, fs, out, fieldOk, child);
-            }
-            if (q instanceof ScriptScoreQuery ss) {
-                minScore(field(ss, "minScore"), out);
-                return knnScore(cx, ss, out, child);
-            }
-            if (q instanceof MaxSimQuery ms) {
-                return maxSim(ms, out, child);
-            }
-            if (q instanceof PatternPhraseQuery pp) {
-                return patternPhrase(pp, out, child);
-            }
-            if (q instanceof AcceleratedWildcardQuery rw) {
-                return substring(rw, out);
-            }
-            if (q instanceof OpenSearchToParentBlockJoinQuery os) {
-                Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
-                if (f == null) {
-                    return FallbackReason.EXTENDED_REFLECT.key();
-                }
-                return toParent((ToParentBlockJoinQuery) f.get(os), out, child);
-            }
-            if (q.getClass() == ToParentBlockJoinQuery.class) {
-                return toParent((ToParentBlockJoinQuery) q, out, child);
-            }
-            if (q.getClass() == ToChildBlockJoinQuery.class) {
-                return toChild((ToChildBlockJoinQuery) q, out, child);
-            }
-            if (q instanceof org.lucenerust.opensearch.join.DeferredJoinQuery dj) {
-                return join(dj, out, child);
-            }
-            if (q instanceof SpanQuery sq) {
-                out.write(NODE_SPAN);
-                return span(sq, out, fieldOk);
-            }
-            if (q instanceof IntervalQuery iq) {
-                return interval(cx, iq, out);
-            }
-            if (q instanceof CombinedFieldQuery cf) {
-                return combinedField(cf, out, fieldOk);
-            }
-            if (q.getClass().getName().equals("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")) {
-                return painlessFilter(cx, q, out);
-            }
-            return NOT_EXTENDED;
+            String written = ROWS.encode(q, new Walk(cx, out, fieldOk, child));
+            return written == NodeRegistry.NOT_REGISTERED ? NOT_EXTENDED : written;
         } catch (ReflectiveOperationException | ClassCastException e) {
             return FallbackReason.EXTENDED_REFLECT.key();
         }
     }
+
+    /** What a row is handed: the request, the output, and how to write a child query. */
+    record Walk(EncodeContext cx, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {}
+
+    /** One row per query class, in the order they are tried. */
+    private static final NodeRegistry<Walk> ROWS = new NodeRegistry<Walk>()
+        .add(FunctionScoreQuery.class, (fs, w) -> functionScore(w.cx(), fs, w.out(), w.fieldOk(), w.child()))
+        .add(ScriptScoreQuery.class, (ss, w) -> {
+            minScore(field(ss, "minScore"), w.out());
+            return knnScore(w.cx(), ss, w.out(), w.child());
+        })
+        .add(MaxSimQuery.class, (ms, w) -> maxSim(ms, w.out(), w.child()))
+        .add(PatternPhraseQuery.class, (pp, w) -> patternPhrase(pp, w.out(), w.child()))
+        .add(AcceleratedWildcardQuery.class, (rw, w) -> substring(rw, w.out()))
+        .add(OpenSearchToParentBlockJoinQuery.class, (os, w) -> {
+            Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
+            if (f == null) {
+                return FallbackReason.EXTENDED_REFLECT.key();
+            }
+            return toParent((ToParentBlockJoinQuery) f.get(os), w.out(), w.child());
+        })
+        .addExact(ToParentBlockJoinQuery.class, (q, w) -> toParent(q, w.out(), w.child()))
+        .addExact(ToChildBlockJoinQuery.class, (q, w) -> toChild(q, w.out(), w.child()))
+        .add(org.lucenerust.opensearch.join.DeferredJoinQuery.class, (dj, w) -> join(dj, w.out(), w.child()))
+        .add(SpanQuery.class, (sq, w) -> {
+            w.out().write(NODE_SPAN);
+            return span(sq, w.out(), w.fieldOk());
+        })
+        .add(IntervalQuery.class, (iq, w) -> interval(w.cx(), iq, w.out()))
+        .add(CombinedFieldQuery.class, (cf, w) -> combinedField(cf, w.out(), w.fieldOk()))
+        .addWhen(Query.class,
+            (q, w) -> q.getClass().getName().equals("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery"),
+            (q, w) -> painlessFilter(w.cx(), q, w.out()));
 
     // ---------------------------------------------------------------------------------------------
     // nested
