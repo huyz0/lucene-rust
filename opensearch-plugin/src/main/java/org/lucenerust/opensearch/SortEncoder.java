@@ -147,6 +147,20 @@ public final class SortEncoder {
         return encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments, null);
     }
 
+    /** As the overload below, with what the request tells the encoders ({@link EncodeContext}). */
+    @SuppressWarnings("deprecation")
+    public static Encoded encode(
+        Sort sort,
+        FieldDoc after,
+        boolean trackMaxScore,
+        int[][] slices,
+        int terminateAfter,
+        boolean countSegments,
+        byte[] indexSorted
+    ) {
+        return encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments, indexSorted, EncodeContext.NONE);
+    }
+
     /**
      * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, where the
      * sort sits in its index sort ({@link #indexSorted}; null for none): where the segment's
@@ -161,7 +175,8 @@ public final class SortEncoder {
         int[][] slices,
         int terminateAfter,
         boolean countSegments,
-        byte[] indexSorted
+        byte[] indexSorted,
+        EncodeContext cx
     ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
@@ -187,7 +202,7 @@ public final class SortEncoder {
                 continue;
             }
             if (type == SCRIPT) {
-                String reason = scriptKey(key, f, out);
+                String reason = scriptKey(cx, key, f, out);
                 if (reason != null) {
                     return new Encoded(null, reason);
                 }
@@ -508,7 +523,7 @@ public final class SortEncoder {
     }
 
     /** A {@code _script} key: its type, flags and script, or why it runs in Java. */
-    private static String scriptKey(SortField key, SortField f, ByteArrayOutputStream out) {
+    private static String scriptKey(EncodeContext cx, SortField key, SortField f, ByteArrayOutputStream out) {
         try {
             if (NESTED == null || NESTED.get(f.getComparatorSource()) != null) {
                 return FallbackReason.SORT_SCRIPT_NESTED.key();
@@ -518,7 +533,7 @@ public final class SortEncoder {
         }
         out.write(SCRIPT);
         out.write(key == f && f.getReverse() ? REVERSE : 0);
-        return ExtendedEncoder.painlessSort(numberSortScript(f), out);
+        return ExtendedEncoder.painlessSort(cx, numberSortScript(f), out);
     }
 
     /**

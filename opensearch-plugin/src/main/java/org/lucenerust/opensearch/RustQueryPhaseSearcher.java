@@ -260,7 +260,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
-            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, ctx, () -> NativeAggregationTree.plan(ctx, field -> true));
+            : NativeAggregationTree.plan(ctx, field -> true);
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         if (reason == null || FallbackReason.SEARCH_AFTER.key().equals(reason)) {
             // A request Lucene's collector refuses: its error, as QueryPhase raises it.
@@ -279,10 +279,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // one is not the default.
             SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
             Query encoding = query;
-            QueryEncoder.Encoded enc = ExtendedEncoder.withFieldTypes(
-                ctx.mapperService()::fieldType, ctx,
-                () -> QueryEncoder.encode(encoding, similarities, searcher.getTopReaderContext())
-            );
+            QueryEncoder.Encoded enc = QueryEncoder.encode(encoding, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -299,10 +296,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             if (reason == null && postFilter != null) {
                 Query filteredQuery = postFiltered(query, postFilter);
-                QueryEncoder.Encoded filtered = ExtendedEncoder.withFieldTypes(
-                    ctx.mapperService()::fieldType, ctx,
-                    () -> QueryEncoder.encode(filteredQuery, similarities, searcher.getTopReaderContext())
-                );
+                QueryEncoder.Encoded filtered = QueryEncoder.encode(filteredQuery, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
                 reason = filtered.fallbackReason();
                 hitsBlob = filtered.blob();
                 fast = fast && filtered.fast();
@@ -401,10 +395,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int limit = terminateAfter;
             // A script key's script reads fields by the index's mappings.
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, FallbackReason.INTRA_SEGMENT.key())
-                : ExtendedEncoder.withFieldTypes(
-                    ctx.mapperService()::fieldType, ctx,
-                    () -> SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted)
-                );
+                : SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted, EncodeContext.of(ctx));
             reason = sorted.fallbackReason();
             sortBlob = sorted.blob();
         }
@@ -600,7 +591,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         NativeProfile.Report report = NativeProfile.run(handle, blob, phases.topScores, phases.topN, phases.countLimit, javaClock);
         ToLongFunction<Query> weights = q -> {
             long t0 = System.nanoTime();
-            ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, ctx, () -> QueryEncoder.encode(q, similarities, searcher.getTopReaderContext()));
+            QueryEncoder.encode(q, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
             return System.nanoTime() - t0;
         };
         int roots = layPostFilter(ctx, searcher, similarities, handle, weights);
@@ -643,7 +634,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         phases.slices = ctx.shouldUseConcurrentSearch() && searcher.getSlices() != null ? Math.max(1, searcher.getSlices().length) : 1;
         ToLongFunction<Query> weights = q -> {
             long t0 = System.nanoTime();
-            ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, ctx, () -> QueryEncoder.encode(q, similarities, searcher.getTopReaderContext()));
+            QueryEncoder.encode(q, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
             return System.nanoTime() - t0;
         };
         List<Query> subs = new ArrayList<>(hybrid.getSubQueries());
@@ -685,10 +676,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         Query filter = searcher.rewrite(ctx.parsedPostFilter().query());
         try {
-            QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
-                ctx.mapperService()::fieldType, ctx,
-                () -> QueryEncoder.encode(filter, similarities, searcher.getTopReaderContext())
-            );
+            QueryEncoder.Encoded encoded = QueryEncoder.encode(filter, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
             long[] filterClock = new long[1];
             NativeProfile.Report filtered = encoded.blob() == null
                 ? null
@@ -715,10 +703,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 if (r instanceof org.opensearch.search.rescore.QueryRescorer.QueryRescoreContext q) {
                     try {
                         Query rescoring = searcher.rewrite(q.parsedQuery().query());
-                        QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
-                            ctx.mapperService()::fieldType, ctx,
-                            () -> QueryEncoder.encode(rescoring, similarities, searcher.getTopReaderContext())
-                        );
+                        QueryEncoder.Encoded encoded = QueryEncoder.encode(rescoring, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
                         long[] rescoreClock = new long[1];
                         NativeProfile.Report rescored = encoded.blob() == null
                             ? null
@@ -792,7 +777,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty()
             ? null
-            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, ctx, () -> NativeAggregationTree.plan(ctx, field -> true));
+            : NativeAggregationTree.plan(ctx, field -> true);
         String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector, aggs != null || tree != null);
         if (reason != null) return reason;
         HybridQuery hybrid = (HybridQuery) query;
@@ -806,18 +791,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // only the first documents it visits, which the native engine would not reproduce.
         Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
         if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return FallbackReason.APPROXIMATE.key();
-        NativeHybrid.Encoded enc = ExtendedEncoder.withFieldTypes(
-            ctx.mapperService()::fieldType, ctx,
-            () -> NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes())
-        );
+        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes(), EncodeContext.of(ctx, searcher.getTopReaderContext()));
         if (enc.fallbackReason() != null) return enc.fallbackReason();
         byte[] filterBlob = null;
         if (postFilter != null) {
             Query filter = postFilter;
-            QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
-                ctx.mapperService()::fieldType, ctx,
-                () -> QueryEncoder.encode(filter, similarities, searcher.getTopReaderContext())
-            );
+            QueryEncoder.Encoded encoded = QueryEncoder.encode(filter, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
             if (encoded.fallbackReason() != null) return encoded.fallbackReason();
             filterBlob = similarities.prefix(encoded.blob());
         }
@@ -878,10 +857,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 }
             }
             byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), keys);
-            SortEncoder.Encoded sorted = ExtendedEncoder.withFieldTypes(
-                ctx.mapperService()::fieldType, ctx,
-                () -> SortEncoder.encode(keys, after, false, new int[0][], 0, false, indexSorted)
-            );
+            SortEncoder.Encoded sorted = SortEncoder.encode(keys, after, false, new int[0][], 0, false, indexSorted, EncodeContext.of(ctx));
             if (sorted.fallbackReason() != null) return sorted.fallbackReason();
             sortBlob = sorted.blob();
         }
