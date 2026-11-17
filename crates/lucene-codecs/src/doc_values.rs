@@ -76,6 +76,7 @@ const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
 const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
+const DISI_CODEC: &str = "Lucene90DocValuesDISI";
 /// The `tableSize` that marks a value array of [`crate::adaptive_values`]
 /// blocks, which only the `Adaptive90` format writes: below every
 /// `-2 - blockShift` Lucene90 writes. The rest of such an entry keeps
@@ -96,7 +97,13 @@ const ORDS_SLACK_PERCENT: usize = 3;
 const VERSION_START: i32 = 0;
 const VERSION_SKIPPER_SEPARATE_FILE: i32 = 1;
 const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
-const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
+/// Lucene 10.6: a sparse field's `IndexedDISI` moves from `.dvd` into its own
+/// `.dvp` file (`Lucene90DocValuesFormat.VERSION_DISI_SEPARATE_FILE`).
+const VERSION_DISI_SEPARATE_FILE: i32 = 3;
+const VERSION_CURRENT: i32 = VERSION_DISI_SEPARATE_FILE;
+/// The version a writer stamps by default: the last one stock Lucene 10.5.x
+/// can read.
+const VERSION_WRITE_DEFAULT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 
 const DOC_VALUES_TYPE_NUMERIC: u8 = 0;
 const DOC_VALUES_TYPE_BINARY: u8 = 1;
@@ -180,9 +187,62 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The bytes of a segment's `.dvp` file, shared by every entry whose sparse
+/// `IndexedDISI` lives there.
+#[derive(Clone)]
+pub struct DisiBytes(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>);
+
+impl DisiBytes {
+    pub fn new(bytes: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl std::fmt::Debug for DisiBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DisiBytes({} bytes)", (*self.0).as_ref().len())
+    }
+}
+
+/// Where an entry's docs-with-field region (`IndexedDISI`) is: in `.dvd`
+/// beside the values (format versions before 3), or in `.dvp` (from version
+/// 3, Lucene 10.6). A version-3 entry whose `.dvp` was never attached reads
+/// as an empty region, so a sparse lookup fails instead of misreading `.dvd`.
+#[derive(Debug, Clone, Default)]
+pub struct DisiLoc {
+    separate: bool,
+    bytes: Option<DisiBytes>,
+}
+
+impl DisiLoc {
+    /// The entry's DISI lives in `.dvp`, held by `bytes`.
+    pub fn in_separate_file(bytes: DisiBytes) -> Self {
+        Self {
+            separate: true,
+            bytes: Some(bytes),
+        }
+    }
+
+    /// Whether the region is in `.dvp` rather than `.dvd`.
+    pub fn is_separate(&self) -> bool {
+        self.separate
+    }
+
+    /// The bytes the entry's `docs_with_field_offset` indexes: `.dvp` for a
+    /// version-3 entry, otherwise `data` (the `.dvd`).
+    pub fn backing<'a>(&'a self, data: &'a [u8]) -> &'a [u8] {
+        if !self.separate {
+            return data;
+        }
+        self.bytes.as_ref().map_or(&[], |b| (*b.0).as_ref())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NumericEntry {
     pub field_number: i32,
+    /// Where the docs-with-field region is ([`DisiLoc`]).
+    pub disi: DisiLoc,
     pub docs_with_field_offset: i64,
     pub docs_with_field_length: i64,
     pub jump_table_entry_count: i16,
@@ -294,6 +354,16 @@ impl AdaptiveEntry {
 }
 
 impl NumericEntry {
+    /// The docs-with-field (`IndexedDISI`) region of a sparse field, out of
+    /// `data` (the `.dvd`) or the `.dvp` this entry was opened with.
+    pub fn docs_region<'a>(&'a self, data: &'a [u8]) -> Result<&'a [u8]> {
+        region(
+            self.disi.backing(data),
+            self.docs_with_field_offset,
+            self.docs_with_field_length,
+        )
+    }
+
     pub fn is_empty_field(&self) -> bool {
         self.docs_with_field_offset == DOCS_WITH_FIELD_EMPTY
     }
@@ -306,6 +376,8 @@ impl NumericEntry {
 #[derive(Debug, Clone)]
 pub struct BinaryEntry {
     pub field_number: i32,
+    /// Where the docs-with-field region is ([`DisiLoc`]).
+    pub disi: DisiLoc,
     pub docs_with_field_offset: i64,
     pub docs_with_field_length: i64,
     pub jump_table_entry_count: i16,
@@ -334,6 +406,15 @@ pub struct BinaryAddresses {
 }
 
 impl BinaryEntry {
+    /// [`NumericEntry::docs_region`] for a BINARY field.
+    pub fn docs_region<'a>(&'a self, data: &'a [u8]) -> Result<&'a [u8]> {
+        region(
+            self.disi.backing(data),
+            self.docs_with_field_offset,
+            self.docs_with_field_length,
+        )
+    }
+
     pub fn is_empty_field(&self) -> bool {
         self.docs_with_field_offset == DOCS_WITH_FIELD_EMPTY
     }
@@ -466,6 +547,36 @@ pub struct DocValuesMeta {
 }
 
 impl DocValuesMeta {
+    /// Gives every entry whose `IndexedDISI` is in `.dvp` the file's bytes.
+    pub fn attach_disi(&mut self, bytes: DisiBytes) {
+        self.for_each_disi_mut(|loc| {
+            if loc.separate {
+                loc.bytes = Some(bytes.clone());
+            }
+        });
+    }
+
+    fn for_each_disi_mut(&mut self, mut f: impl FnMut(&mut DisiLoc)) {
+        for e in &mut self.numeric {
+            f(&mut e.disi);
+        }
+        for e in &mut self.binary {
+            f(&mut e.disi);
+        }
+        for e in &mut self.sorted {
+            f(&mut e.ords.disi);
+        }
+        for e in &mut self.sorted_numeric {
+            f(&mut e.numeric.disi);
+        }
+        for e in &mut self.sorted_set {
+            match &mut e.kind {
+                SortedSetKind::Single(sorted) => f(&mut sorted.ords.disi),
+                SortedSetKind::Multi { ords, .. } => f(&mut ords.numeric.disi),
+            }
+        }
+    }
+
     pub fn numeric_entry(&self, field_number: i32) -> Option<&NumericEntry> {
         self.numeric.iter().find(|e| e.field_number == field_number)
     }
@@ -501,6 +612,13 @@ impl DocValuesMeta {
 /// Parses a whole `.dvm` metadata file already read into memory. `field_infos`
 /// must be the segment's already-parsed `.fnm` (used to reject unknown field
 /// numbers and to detect unsupported per-field doc-values skip indexes).
+/// Whether doc-values files of format `version` (from [`parse_meta`]) keep
+/// sparse fields' `IndexedDISI` in a `.dvp` file, which the caller then
+/// opens and hands to [`DocValuesMeta::attach_disi`].
+pub fn has_disi_file(version: i32) -> bool {
+    version >= VERSION_DISI_SEPARATE_FILE
+}
+
 pub fn parse_meta(
     buf: &[u8],
     segment_id: &[u8; ID_LENGTH],
@@ -559,6 +677,9 @@ pub fn parse_meta(
 
     if header.version < VERSION_SKIPPER_MAX_VALUE_COUNT {
         infer_max_value_counts(&mut meta, field_infos);
+    }
+    if header.version >= VERSION_DISI_SEPARATE_FILE {
+        meta.for_each_disi_mut(|loc| loc.separate = true);
     }
 
     codec_util::check_footer(&mut input, buf.len())?;
@@ -630,6 +751,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         let substring = crate::substring::read_meta(input)?;
         return Ok(BinaryEntry {
             mask: None,
+            disi: DisiLoc::default(),
             field_number,
             docs_with_field_offset,
             docs_with_field_length,
@@ -667,6 +789,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
     let _ = field_number;
     Ok(BinaryEntry {
         mask: None,
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -804,6 +927,7 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     let value_jump_table_offset = input.read_i64()?; // only meaningful for varying-bpv blocks
 
     Ok(NumericEntry {
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -844,6 +968,7 @@ fn read_adaptive_numeric_entry(
     let values_length = input.read_i64()?;
     let descriptor_offset = input.read_i64()?;
     Ok(NumericEntry {
+        disi: DisiLoc::default(),
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -885,6 +1010,34 @@ pub fn check_data_header_footer(
     )?;
     codec_util::retrieve_checksum(buf)?;
     Ok(header.version)
+}
+
+/// Validates a `.dvp` file's header and footer against the `.dvm`'s format
+/// `meta_version` (`Lucene90DocValuesProducer`'s `disiVersion` check).
+pub fn check_disi_header_footer(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    meta_version: i32,
+) -> Result<()> {
+    let mut input = SliceInput::new(buf);
+    let header = codec_util::check_index_header(
+        &mut input,
+        DISI_CODEC,
+        VERSION_DISI_SEPARATE_FILE,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    )?;
+    if header.version != meta_version {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "Format versions mismatch: meta={meta_version}, disi={}",
+            header.version
+        ))
+        .into());
+    }
+    codec_util::retrieve_checksum(buf)?;
+    Ok(())
 }
 
 /// Reads one `Lucene90DocValuesProducer.DocValuesSkipperEntry` out of
@@ -1298,11 +1451,7 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
         return Ok(Some(decode_value(data, entry, doc as i64)?));
     }
 
-    let region = region(
-        data,
-        entry.docs_with_field_offset,
-        entry.docs_with_field_length,
-    )?;
+    let region = entry.docs_region(data)?;
     // One forward-only pass over the block headers rather than decoding the
     // whole region: `DisiCursor` reads one 4-byte header per 65,536 documents
     // and then resolves the ordinal inside a single block. It allocates
@@ -1523,17 +1672,13 @@ impl<'a> NumericReader<'a> {
         let docs = if entry.is_empty_field() || entry.is_dense() {
             None
         } else {
-            usize::try_from(entry.docs_with_field_offset)
-                .ok()
-                .zip(usize::try_from(entry.docs_with_field_length).ok())
-                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
-                .map(|region| {
-                    indexed_disi::DisiCursor::new(
-                        region,
-                        entry.dense_rank_power,
-                        entry.jump_table_entry_count,
-                    )
-                })
+            entry.docs_region(data).ok().map(|region| {
+                indexed_disi::DisiCursor::new(
+                    region,
+                    entry.dense_rank_power,
+                    entry.jump_table_entry_count,
+                )
+            })
         };
         Self {
             data,
@@ -2420,11 +2565,7 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
         }
         doc as i64
     } else {
-        let region = region(
-            data,
-            entry.docs_with_field_offset,
-            entry.docs_with_field_length,
-        )?;
+        let region = entry.docs_region(data)?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(
             region,
@@ -2563,17 +2704,13 @@ impl<'a> BinaryReader<'a> {
         let docs = if entry.is_empty_field() || entry.is_dense() {
             None
         } else {
-            usize::try_from(entry.docs_with_field_offset)
-                .ok()
-                .zip(usize::try_from(entry.docs_with_field_length).ok())
-                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
-                .map(|region| {
-                    indexed_disi::DisiCursor::new(
-                        region,
-                        entry.dense_rank_power,
-                        entry.jump_table_entry_count,
-                    )
-                })
+            entry.docs_region(data).ok().map(|region| {
+                indexed_disi::DisiCursor::new(
+                    region,
+                    entry.dense_rank_power,
+                    entry.jump_table_entry_count,
+                )
+            })
         };
         let substring = entry.substring.as_deref().and_then(|e| {
             crate::substring::SubstringIndex::new(data, e)
@@ -2723,11 +2860,7 @@ pub fn sorted_numeric_values(
         }
         doc as i64
     } else {
-        let region = region(
-            data,
-            entry.numeric.docs_with_field_offset,
-            entry.numeric.docs_with_field_length,
-        )?;
+        let region = entry.numeric.docs_region(data)?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(
             region,
@@ -2814,13 +2947,7 @@ impl<'a> SortedNumericReader<'a> {
         let docs = if numeric.is_empty_field() || numeric.is_dense() {
             None
         } else {
-            region(
-                data,
-                numeric.docs_with_field_offset,
-                numeric.docs_with_field_length,
-            )
-            .ok()
-            .map(|region| {
+            numeric.docs_region(data).ok().map(|region| {
                 indexed_disi::DisiCursor::new(
                     region,
                     numeric.dense_rank_power,
@@ -3196,13 +3323,9 @@ impl<'a> SortedNumericReader<'a> {
             return Ok(());
         };
         let mut words = vec![0u64; words_len];
-        let filled = region(
-            self.data,
-            numeric.docs_with_field_offset,
-            numeric.docs_with_field_length,
-        )
-        .ok()
-        .and_then(|r| indexed_disi::or_into_words(r, numeric.dense_rank_power, &mut words).ok());
+        let filled = numeric.docs_region(self.data).ok().and_then(|r| {
+            indexed_disi::or_into_words(r, numeric.dense_rank_power, &mut words).ok()
+        });
         if filled.is_none() {
             return self.for_each_doc_slow(start, end, accept, f);
         }
@@ -3395,6 +3518,8 @@ pub enum WriteError {
     /// SORTED_NUMERIC, SORTED and SORTED_SET fields only.
     #[error("field {0}: a doc-values skip index cannot be written for a BINARY field")]
     SkipIndexOnBinary(i32),
+    #[error("this format writes a .dvp file: finish it with finish_files")]
+    DisiFileNotReturned,
     #[error("dense doc-values write requires values.len() == max_doc (every doc must have a value); got {values} values for max_doc={max_doc}")]
     NotDense { values: usize, max_doc: i32 },
     #[error("dense sorted-numeric write requires every doc to have at least one value; doc {0} has none")]
@@ -3705,6 +3830,44 @@ pub fn write_fields_with_skip_indexes(
     )
 }
 
+/// The `.dvd` buffer being written, and the `.dvp` one beside it when the
+/// format keeps sparse fields' `IndexedDISI` there ([`VERSION_DISI_SEPARATE_FILE`]).
+/// It derefs to the `.dvd` bytes, so a writer that never writes a DISI treats
+/// it as the plain buffer.
+#[derive(Debug, Default)]
+struct DvData {
+    buf: Vec<u8>,
+    disi: Option<Vec<u8>>,
+}
+
+impl DvData {
+    fn new(buf: Vec<u8>, disi: Option<Vec<u8>>) -> Self {
+        Self { buf, disi }
+    }
+
+    /// Appends one field's `IndexedDISI` and returns its `(offset, length)`
+    /// in the file it lands in (`.dvp`, or `.dvd` before format 3).
+    fn write_disi(&mut self, bytes: &[u8]) -> (i64, i64) {
+        let target = self.disi.as_mut().unwrap_or(&mut self.buf);
+        let offset = target.len() as i64;
+        target.extend_from_slice(bytes);
+        (offset, bytes.len() as i64)
+    }
+}
+
+impl std::ops::Deref for DvData {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Vec<u8> {
+        &self.buf
+    }
+}
+
+impl std::ops::DerefMut for DvData {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+}
+
 /// `Lucene90DocValuesFormat(skipIndexIntervalSize)`: the doc-values format a
 /// field is routed to (`PerFieldDocValuesFormat`). Its one setting is the
 /// number of documents a skip-index interval holds before it may close;
@@ -3732,9 +3895,44 @@ pub struct Lucene90DocValuesFormat {
     /// [`crate::substring`] blocks: the `Substring90` format
     /// ([`Self::rust_substring`]), which Lucene cannot read.
     substring: Option<u8>,
+    /// Writes format version 3 (Lucene 10.6): sparse fields' `IndexedDISI` in
+    /// a `.dvp` file. Off writes version 2, which Lucene 10.5 reads as well.
+    disi_file: bool,
+}
+
+/// The files of one written doc-values format instance.
+#[derive(Debug)]
+pub struct DocValuesFiles {
+    pub dvm: Vec<u8>,
+    pub dvd: Vec<u8>,
+    pub dvs: Vec<u8>,
+    /// `Some` for format version 3 ([`Lucene90DocValuesFormat::with_disi_file`]).
+    pub dvp: Option<Vec<u8>>,
 }
 
 impl Lucene90DocValuesFormat {
+    /// This format writing Lucene 10.6's version 3 (sparse fields'
+    /// `IndexedDISI` in a `.dvp` file) when `on`, version 2 otherwise.
+    pub fn with_disi_file(self, on: bool) -> Self {
+        Lucene90DocValuesFormat {
+            disi_file: on,
+            ..self
+        }
+    }
+
+    /// Whether this format writes a `.dvp` file.
+    pub fn has_disi_file(&self) -> bool {
+        self.disi_file
+    }
+
+    fn write_version(&self) -> i32 {
+        if self.disi_file {
+            VERSION_DISI_SEPARATE_FILE
+        } else {
+            VERSION_WRITE_DEFAULT
+        }
+    }
+
     /// `Lucene90DocValuesFormat.DEFAULT_SKIP_INDEX_INTERVAL_SIZE`.
     pub const DEFAULT_SKIP_INDEX_INTERVAL_SIZE: i32 = 4096;
     /// `Lucene90DocValuesFormat.getName()`.
@@ -3754,6 +3952,7 @@ impl Lucene90DocValuesFormat {
             name: Self::NAME,
             adaptive: false,
             substring: None,
+            disi_file: false,
         })
     }
 
@@ -3833,6 +4032,7 @@ impl Default for Lucene90DocValuesFormat {
             name: Self::NAME,
             adaptive: false,
             substring: None,
+            disi_file: false,
         }
     }
 }
@@ -3846,10 +4046,10 @@ pub fn write_no_fields(
     segment_suffix: &str,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
+    let mut data = DvData::new(new_data_output(segment_id, segment_suffix), None);
     let skip_index =
         finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    (meta, data, skip_index)
+    (meta, data.buf, skip_index)
 }
 
 /// [`write_fields_with_skip_indexes`] as `format` writes it -- its skip
@@ -3865,6 +4065,31 @@ pub fn write_fields_with_format(
     segment_suffix: &str,
     format: Lucene90DocValuesFormat,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if format.disi_file {
+        return Err(WriteError::DisiFileNotReturned);
+    }
+    let files = write_fields_with_format_files(
+        fields,
+        skip_index_fields,
+        max_doc,
+        segment_id,
+        segment_suffix,
+        format,
+    )?;
+    Ok((files.dvm, files.dvd, files.dvs))
+}
+
+/// [`write_fields_with_format`] returning every file, `.dvp` included.
+// ARITH: as `write_dense_fields`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn write_fields_with_format_files(
+    fields: &[DenseField<'_>],
+    skip_index_fields: &[i32],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    format: Lucene90DocValuesFormat,
+) -> WriteResult<DocValuesFiles> {
     if fields.is_empty() {
         return Err(WriteError::EmptyFieldList);
     }
@@ -3916,7 +4141,7 @@ pub fn write_fields_with_format(
     for field in fields {
         writer.write_field(field)?;
     }
-    writer.finish()
+    writer.finish_files()
 }
 
 /// [`write_fields_with_format`] one field at a time, so a merge can build each
@@ -3926,7 +4151,7 @@ pub fn write_fields_with_format(
 /// ascending field number, as the slice form is given them.
 pub struct FieldsWriter<'f> {
     meta: Vec<u8>,
-    data: Vec<u8>,
+    data: DvData,
     skip_index: Vec<u8>,
     skip_index_fields: &'f [i32],
     max_doc: i32,
@@ -3942,10 +4167,22 @@ impl<'f> FieldsWriter<'f> {
         segment_suffix: &str,
         format: Lucene90DocValuesFormat,
     ) -> Self {
+        let version = format.write_version();
+        let disi = format.disi_file.then(|| {
+            let mut disi: Vec<u8> = Vec::new();
+            codec_util::write_index_header(
+                &mut disi,
+                DISI_CODEC,
+                version,
+                segment_id,
+                segment_suffix,
+            );
+            disi
+        });
         Self {
-            meta: new_meta_output(segment_id, segment_suffix),
-            data: new_data_output(segment_id, segment_suffix),
-            skip_index: new_skip_index_output(segment_id, segment_suffix),
+            meta: new_meta_output_v(segment_id, segment_suffix, version),
+            data: DvData::new(new_data_output_v(segment_id, segment_suffix, version), disi),
+            skip_index: new_skip_index_output(segment_id, segment_suffix, version),
             skip_index_fields,
             max_doc,
             format,
@@ -4006,24 +4243,49 @@ impl<'f> FieldsWriter<'f> {
     }
 
     /// The finished `(dvm, dvd, dvs)`; `EmptyFieldList` when no field was written.
-    pub fn finish(mut self) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    ///
+    /// For a format with a `.dvp` ([`Lucene90DocValuesFormat::with_disi_file`])
+    /// use [`Self::finish_files`]: this refuses rather than drop the file.
+    pub fn finish(self) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        if self.format.disi_file {
+            return Err(WriteError::DisiFileNotReturned);
+        }
+        let files = self.finish_files()?;
+        Ok((files.dvm, files.dvd, files.dvs))
+    }
+
+    /// The finished files, `.dvp` included when the format writes one.
+    pub fn finish_files(mut self) -> WriteResult<DocValuesFiles> {
         if self.written.is_empty() {
             return Err(WriteError::EmptyFieldList);
         }
         self.meta.write_i32(-1); // field list terminator
         codec_util::write_footer(&mut self.meta);
-        codec_util::write_footer(&mut self.data);
+        codec_util::write_footer(&mut self.data.buf);
         codec_util::write_footer(&mut self.skip_index);
-        Ok((self.meta, self.data, self.skip_index))
+        let dvp = self.data.disi.take().map(|mut dvp| {
+            codec_util::write_footer(&mut dvp);
+            dvp
+        });
+        Ok(DocValuesFiles {
+            dvm: self.meta,
+            dvd: self.data.buf,
+            dvs: self.skip_index,
+            dvp,
+        })
     }
 }
 
-fn new_skip_index_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
+fn new_skip_index_output(
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    version: i32,
+) -> Vec<u8> {
     let mut skip_index: Vec<u8> = Vec::new();
     codec_util::write_index_header(
         &mut skip_index,
         SKIP_INDEX_META_CODEC,
-        VERSION_CURRENT,
+        version,
         segment_id,
         segment_suffix,
     );
@@ -4036,7 +4298,7 @@ fn new_skip_index_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
 #[allow(clippy::arithmetic_side_effects)]
 fn write_field_entry(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     field: &DenseField<'_>,
     max_doc: i32,
     format: &Lucene90DocValuesFormat,
@@ -4445,7 +4707,7 @@ fn sort_sparse_pairs<V: Clone>(pairs: &[(i32, V)], max_doc: i32) -> WriteResult<
 // i64 - offset` subtracts an offset recorded from an earlier `data.len()` of
 // the same, only-ever-appended buffer.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_docs_with_field(meta: &mut Vec<u8>, data: &mut Vec<u8>, doc_ids: &[i32], max_doc: i32) {
+fn write_docs_with_field(meta: &mut Vec<u8>, data: &mut DvData, doc_ids: &[i32], max_doc: i32) {
     if doc_ids.is_empty() {
         write_empty_docs_with_field(meta);
     } else if doc_ids.len() == max_doc as usize {
@@ -4458,11 +4720,9 @@ fn write_docs_with_field(meta: &mut Vec<u8>, data: &mut Vec<u8>, doc_ids: &[i32]
             doc_ids,
             indexed_disi::DEFAULT_DENSE_RANK_POWER,
         );
-        let docs_with_field_offset = data.len() as i64;
-        data.extend_from_slice(&disi_bytes);
         // `docsWithFieldLength` spans the jump table too -- it is what the
         // reader subtracts the table's bytes from (`createBlockSlice`).
-        let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
+        let (docs_with_field_offset, docs_with_field_length) = data.write_disi(&disi_bytes);
         meta.write_i64(docs_with_field_offset);
         meta.write_i64(docs_with_field_length);
         meta.write_i16(jump_table_entry_count);
@@ -4506,7 +4766,7 @@ fn end_offsets(lengths: impl ExactSizeIterator<Item = usize>) -> Vec<i64> {
 /// when every document has exactly one value.
 fn write_numeric_entry_body_with(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     values: &[i64],
     max_doc: i32,
@@ -4519,7 +4779,7 @@ fn write_numeric_entry_body_with(
 /// SORTED_SET field when `ords`: see [`ORDS_SLACK_PERCENT`].
 fn write_numeric_entry_body_as(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     values: &[i64],
     max_doc: i32,
@@ -4641,7 +4901,7 @@ fn write_numeric_values_body_with(
 #[allow(clippy::arithmetic_side_effects)]
 fn write_substring_entry_body<'v>(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     value: impl Fn(usize) -> &'v [u8],
     max_doc: i32,
@@ -4669,7 +4929,7 @@ fn write_substring_entry_body<'v>(
 #[allow(clippy::arithmetic_side_effects)]
 fn write_binary_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     values: &[Vec<u8>],
     max_doc: i32,
@@ -4712,7 +4972,7 @@ fn write_binary_entry_body(
 #[allow(clippy::arithmetic_side_effects)]
 fn write_binary_column_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     column: &BinaryColumn,
     max_doc: i32,
 ) {
@@ -4745,7 +5005,7 @@ fn write_binary_column_body(
 /// A SORTED_NUMERIC entry body for a column that may be sparse.
 fn write_sorted_numeric_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     per_doc: &[Vec<i64>],
     max_doc: i32,
@@ -4786,12 +5046,12 @@ fn check_ascending_docs(docs: &[i32], max_doc: i32) -> WriteResult<()> {
 #[allow(clippy::arithmetic_side_effects)]
 fn write_sorted_set_ords_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     column: &SortedSetOrdsColumn,
     max_doc: i32,
     adaptive: bool,
 ) {
-    let ords = |meta: &mut Vec<u8>, data: &mut Vec<u8>| {
+    let ords = |meta: &mut Vec<u8>, data: &mut DvData| {
         write_numeric_entry_body_as(
             meta,
             data,
@@ -4833,7 +5093,7 @@ fn write_sorted_set_ords_entry_body(
 /// too -- see [`write_docs_with_field`].
 fn write_sorted_set_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     per_doc: &[Vec<Vec<u8>>],
     max_doc: i32,
@@ -4994,7 +5254,7 @@ fn write_dense_sorted_numeric_entry_body(
 #[allow(clippy::arithmetic_side_effects)]
 fn write_dense_sorted_set_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     values: &[Vec<Vec<u8>>],
     adaptive: bool,
 ) {
@@ -5123,17 +5383,15 @@ fn write_empty_docs_with_field(meta: &mut Vec<u8>) {
 #[allow(clippy::arithmetic_side_effects)]
 fn write_sparse_numeric_entry_body(
     meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    data: &mut DvData,
     doc_ids: &[i32],
     values: &[i64],
 ) {
     let (disi_bytes, jump_table_entry_count) =
         indexed_disi::write_with_dense_rank_power(doc_ids, indexed_disi::DEFAULT_DENSE_RANK_POWER);
-    let docs_with_field_offset = data.len() as i64;
-    data.extend_from_slice(&disi_bytes);
     // `docsWithFieldLength` spans the jump table too -- it is what the reader
     // subtracts the table's bytes from (`createBlockSlice`).
-    let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
+    let (docs_with_field_offset, docs_with_field_length) = data.write_disi(&disi_bytes);
 
     meta.write_i64(docs_with_field_offset);
     meta.write_i64(docs_with_field_length);
@@ -5444,23 +5702,25 @@ fn write_numeric_block(data: &mut Vec<u8>, block: &[i64], gcd: i64) {
 }
 
 fn new_meta_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
+    new_meta_output_v(segment_id, segment_suffix, VERSION_WRITE_DEFAULT)
+}
+
+fn new_meta_output_v(segment_id: &[u8; ID_LENGTH], segment_suffix: &str, version: i32) -> Vec<u8> {
     let mut meta: Vec<u8> = Vec::new();
-    codec_util::write_index_header(
-        &mut meta,
-        META_CODEC,
-        VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
+    codec_util::write_index_header(&mut meta, META_CODEC, version, segment_id, segment_suffix);
     meta
 }
 
 fn new_data_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
+    new_data_output_v(segment_id, segment_suffix, VERSION_WRITE_DEFAULT)
+}
+
+fn new_data_output_v(segment_id: &[u8; ID_LENGTH], segment_suffix: &str, version: i32) -> Vec<u8> {
     let mut data: Vec<u8> = Vec::new();
     codec_util::write_index_header(
         &mut data,
         DATA_META_CODEC,
-        VERSION_CURRENT,
+        version,
         segment_id,
         segment_suffix,
     );
@@ -5481,7 +5741,7 @@ fn finish_field_list_and_footers(
     codec_util::write_index_header(
         &mut skip_index,
         SKIP_INDEX_META_CODEC,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         segment_suffix,
     );
@@ -5581,7 +5841,7 @@ pub fn write_single_sparse_numeric_field(
     let values: Vec<i64> = sorted.iter().map(|&(_, v)| v).collect();
 
     let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
+    let mut data = DvData::new(new_data_output(segment_id, segment_suffix), None);
 
     meta.write_i32(field_number);
     meta.push(DOC_VALUES_TYPE_NUMERIC);
@@ -5594,7 +5854,7 @@ pub fn write_single_sparse_numeric_field(
 
     let skip_index =
         finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    Ok((meta, data.buf, skip_index))
 }
 
 /// Port of `Lucene90DocValuesConsumer.addBinaryField`, scoped to exactly one

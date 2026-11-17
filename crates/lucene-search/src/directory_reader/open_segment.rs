@@ -425,7 +425,13 @@ fn open_doc_values(
             // digit as a bogus suffix (`_0.dvm` -> strip leading `_` ->
             // `0.dvm` -> suffix `"0"`, wrong).
             let dv_suffix = codec_suffix_of(&dvm_file_name, segment_name, ".dvm");
-            let (_, meta) = doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, field_infos)?;
+            let (version, mut meta) =
+                doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, field_infos)?;
+            if doc_values::has_disi_file(version) {
+                let dvp = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvp"))?
+                    .ok_or_else(|| missing_dvp(segment_name))?;
+                meta.attach_disi(doc_values::DisiBytes::new(dvp));
+            }
             let meta = Arc::new(meta);
             if let Some(bytes) =
                 open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvs"))?
@@ -463,7 +469,12 @@ fn open_doc_values(
         let (Some(meta_bytes), Some(data)) = (open(".dvm")?, open(".dvd")?) else {
             continue;
         };
-        let (_, meta) = doc_values::parse_meta(&meta_bytes, &segment_id, suffix, field_infos)?;
+        let (version, mut meta) =
+            doc_values::parse_meta(&meta_bytes, &segment_id, suffix, field_infos)?;
+        if doc_values::has_disi_file(version) {
+            let dvp = open(".dvp")?.ok_or_else(|| missing_dvp(segment_name))?;
+            meta.attach_disi(doc_values::DisiBytes::new(dvp));
+        }
         let meta = Arc::new(meta);
         if let Some(bytes) = open(".dvs")? {
             dvs.push((bytes, suffix.clone(), Arc::clone(&meta)));
@@ -498,7 +509,12 @@ fn open_doc_values(
         let only = FieldInfos {
             fields: vec![field.clone()],
         };
-        let (_, meta) = doc_values::parse_meta(&meta_bytes, &segment_id, &suffix, &only)?;
+        let (version, mut meta) = doc_values::parse_meta(&meta_bytes, &segment_id, &suffix, &only)?;
+        if doc_values::has_disi_file(version) {
+            let disi_name =
+                field_updates::generation_file_name(segment_name, gen, &per_field, "dvp");
+            meta.attach_disi(doc_values::DisiBytes::new(Arc::new(dir.open(&disi_name)?)));
+        }
         dv_generations.push(DocValuesGeneration {
             field_number: field.number,
             meta: Arc::new(meta),
@@ -511,6 +527,14 @@ fn open_doc_values(
         dvs,
         generations: dv_generations,
     })
+}
+
+/// A format-3 `.dvm` without its `.dvp`: the segment lost a file.
+fn missing_dvp(segment_name: &str) -> super::Error {
+    lucene_store::Error::Corrupted(format!(
+        "segment {segment_name}: doc values are format 3 but the .dvp file is missing"
+    ))
+    .into()
 }
 
 // `.nvm`/`.nvd`: present together or not at all, like `.tim`/`.tip`/

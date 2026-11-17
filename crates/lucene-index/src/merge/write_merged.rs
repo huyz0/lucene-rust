@@ -666,7 +666,8 @@ impl SegmentWriter<'_> {
                             writer.write_field(&column.as_dense_field())?;
                         }
                     }
-                    let (dvm, dvd, dvs) = writer.finish()?;
+                    let doc_values::DocValuesFiles { dvm, dvd, dvs, dvp } =
+                        writer.finish_files()?;
                     let field_infos = field_infos::FieldInfos {
                         fields: merged_fields
                             .iter()
@@ -687,7 +688,11 @@ impl SegmentWriter<'_> {
                             dvs: &dvs,
                         },
                     )?;
-                    for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+                    let dvp_file = dvp.as_ref().map(|dvp| ("dvp", dvp));
+                    for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)]
+                        .into_iter()
+                        .chain(dvp_file)
+                    {
                         let name = format!("{merged_segment_name}_{codec_suffix}.{ext}");
                         write_file(dir, &name, bytes)?;
                         files.push(name);

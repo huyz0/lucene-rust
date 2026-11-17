@@ -1015,7 +1015,7 @@ impl SegmentFormat {
             SegmentFormat::Postings => &[
                 "tim", "tip", "tmd", "doc", "psm", "pos", "pay", "lkp", "cmp",
             ],
-            SegmentFormat::DocValues => &["dvd", "dvm", "dvs"],
+            SegmentFormat::DocValues => &["dvd", "dvm", "dvs", "dvp"],
             SegmentFormat::Norms => &["nvd", "nvm"],
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
@@ -3771,6 +3771,8 @@ pub struct MergeOptions {
     /// nothing else routes
     /// ([`crate::index_writer::IndexWriter::set_default_doc_values_format`]).
     pub default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// The Lucene release whose index formats the merged segment is written in.
+    pub index_format: lucene_codecs::index_format::IndexFormat,
     /// What replaces the default `Lucene104PostingsFormat()` for a field
     /// nothing else routes
     /// ([`crate::index_writer::IndexWriter::set_default_postings_format`]).
@@ -3943,13 +3945,14 @@ impl MergeOptions {
 
     /// The doc-values format `field` is routed to.
     fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
+        let disi_file = self.index_format.doc_values_disi_file();
         // A field routed explicitly keeps its format, even the default one.
         if let Some((_, format)) = self
             .doc_values_formats
             .iter()
             .find(|(name, _)| name == field)
         {
-            return *format;
+            return format.with_disi_file(disi_file);
         }
         let routed = self
             .codec
@@ -3961,6 +3964,7 @@ impl MergeOptions {
         } else {
             routed
         }
+        .with_disi_file(disi_file)
     }
 
     /// The postings format `field` is routed to.
@@ -4005,6 +4009,7 @@ impl Default for MergeOptions {
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
             default_doc_values_format: Default::default(),
+            index_format: Default::default(),
             default_postings_format: Default::default(),
             stored_fields_lz4_high_compression: false,
             ivf_partition_clusters: None,

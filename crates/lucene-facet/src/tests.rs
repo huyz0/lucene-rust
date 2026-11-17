@@ -1001,6 +1001,7 @@ fn double_range_facet_counts_shares_the_missing_value_and_order_rules() {
 #[test]
 fn double_range_facet_counts_propagates_decode_errors() {
     let entry = doc_values::NumericEntry {
+        disi: Default::default(),
         field_number: 0,
         docs_with_field_offset: -1,
         docs_with_field_length: 0,
@@ -1235,6 +1236,7 @@ fn top_n_facets_empty_input_yields_empty_output() {
 #[test]
 fn facet_counts_propagates_decode_errors() {
     let mut numeric = doc_values::NumericEntry {
+        disi: Default::default(),
         field_number: 0,
         docs_with_field_offset: -1,
         docs_with_field_length: 0,
@@ -1543,6 +1545,7 @@ fn range_facet_counts_preserves_caller_specified_range_order() {
 #[test]
 fn range_facet_counts_propagates_decode_errors() {
     let mut entry = doc_values::NumericEntry {
+        disi: Default::default(),
         field_number: 0,
         docs_with_field_offset: -1,
         docs_with_field_length: 0,

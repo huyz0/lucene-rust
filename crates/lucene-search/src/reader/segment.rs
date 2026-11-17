@@ -215,7 +215,7 @@ impl DocSet {
     fn of_numeric(reader: &SegmentReader, data: &[u8], e: &NumericEntry) -> Result<Self> {
         Self::cached(
             reader,
-            data,
+            e.disi.backing(data),
             e.docs_with_field_offset,
             e.docs_with_field_length,
             e.dense_rank_power,
@@ -1494,7 +1494,22 @@ impl SegmentReader {
             },
             _ => return None,
         };
-        Some((region, data))
+        let backing = match fi.doc_values_type {
+            DocValuesType::Numeric => meta.numeric_entry(fi.number)?.disi.backing(data),
+            DocValuesType::Binary => meta.binary_entry(fi.number)?.disi.backing(data),
+            DocValuesType::Sorted => meta.sorted_entry(fi.number)?.ords.disi.backing(data),
+            DocValuesType::SortedNumeric => meta
+                .sorted_numeric_entry(fi.number)?
+                .numeric
+                .disi
+                .backing(data),
+            DocValuesType::SortedSet => match &meta.sorted_set_entry(fi.number)?.kind {
+                SortedSetKind::Single(s) => s.ords.disi.backing(data),
+                SortedSetKind::Multi { ords, .. } => ords.numeric.disi.backing(data),
+            },
+            _ => return None,
+        };
+        Some((region, backing))
     }
 
     fn dv_field<'s, E>(
@@ -1563,7 +1578,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegNumeric {
-            cur: DvCursor::open(self, data, DocsRegion::numeric(e))?,
+            cur: DvCursor::open(self, e.disi.backing(data), DocsRegion::numeric(e))?,
             reader: NumericReader::new(data, e),
             value: 0,
         })))
@@ -1590,14 +1605,14 @@ impl LeafReader for SegmentReader {
                 );
             }
             return Ok(Some(Box::new(SegSubstring {
-                cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
+                cur: DvCursor::open(self, e.disi.backing(data), DocsRegion::binary(e))?,
                 index: lucene_codecs::substring::SubstringIndex::new(data, sub)?,
                 block: lucene_codecs::substring::Block::new(),
                 at: None,
             })));
         }
         Ok(Some(Box::new(SegBinary {
-            cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
+            cur: DvCursor::open(self, e.disi.backing(data), DocsRegion::binary(e))?,
             reader: BinaryReader::new(data, e),
             value: &[],
             shown: Vec::new(),
@@ -1620,7 +1635,11 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSorted {
-            cur: DvCursor::open(self, data, DocsRegion::numeric(&e.ords))?,
+            cur: DvCursor::open(
+                self,
+                e.ords.disi.backing(data),
+                DocsRegion::numeric(&e.ords),
+            )?,
             ords: NumericReader::new(data, &e.ords),
             terms: TermsDict::open(data, &e.terms)?,
             ord: -1,
@@ -1648,7 +1667,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSortedNumeric {
-            cur: DvCursor::open(self, data, DocsRegion::multi(e))?,
+            cur: DvCursor::open(self, e.numeric.disi.backing(data), DocsRegion::multi(e))?,
             reader: SortedNumericReader::new(data, e),
             values: Vec::new(),
             upto: 0,
@@ -1675,12 +1694,20 @@ impl LeafReader for SegmentReader {
         };
         let (docs, ords, terms) = match &e.kind {
             SortedSetKind::Single(s) => (
-                DvCursor::open(self, data, DocsRegion::numeric(&s.ords))?,
+                DvCursor::open(
+                    self,
+                    s.ords.disi.backing(data),
+                    DocsRegion::numeric(&s.ords),
+                )?,
                 SetOrds::Single(NumericReader::new(data, &s.ords)),
                 &s.terms,
             ),
             SortedSetKind::Multi { ords, terms } => (
-                DvCursor::open(self, data, DocsRegion::multi(ords))?,
+                DvCursor::open(
+                    self,
+                    ords.numeric.disi.backing(data),
+                    DocsRegion::multi(ords),
+                )?,
                 SetOrds::Multi(SortedNumericReader::new(data, ords)),
                 terms,
             ),

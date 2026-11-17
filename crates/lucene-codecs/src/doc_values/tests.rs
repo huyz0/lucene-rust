@@ -224,7 +224,7 @@ fn build_dvm(id: &[u8; ID_LENGTH], entries: &[EntryBuilder]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut out, META_CODEC);
-    out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    out.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     out.extend_from_slice(id);
     out.push(0); // empty suffix
     for e in entries {
@@ -242,7 +242,7 @@ fn build_dvd(id: &[u8; ID_LENGTH], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut out, "Lucene90DocValuesData");
-    out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    out.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     out.extend_from_slice(id);
     out.push(0);
     out.extend_from_slice(payload);
@@ -284,7 +284,7 @@ fn empty_meta_parses_no_fields() {
     let buf = build_dvm(&id, &[]);
     let fis = field_infos_with(&[]);
     let (version, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
     assert_eq!(meta.numeric.len(), 0);
     assert_eq!(meta.binary.len(), 0);
 }
@@ -320,7 +320,7 @@ fn invalid_table_size_rejected() {
     let mut out = Vec::new();
     out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut out, META_CODEC);
-    out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    out.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     out.extend_from_slice(&id);
     out.push(0);
     out.extend_from_slice(&0i32.to_le_bytes()); // field number
@@ -344,7 +344,7 @@ fn invalid_varying_bpv_shift_rejected() {
     let mut out = Vec::new();
     out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut out, META_CODEC);
-    out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    out.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     out.extend_from_slice(&id);
     out.push(0);
     out.extend_from_slice(&0i32.to_le_bytes()); // field number
@@ -444,7 +444,7 @@ fn a_block_shift_of_63_masks_without_overflowing() {
     let mut meta = Vec::new();
     meta.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut meta, META_CODEC);
-    meta.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    meta.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     meta.extend_from_slice(&id);
     meta.push(0);
     let mut e = EntryBuilder::dense(0, 0, 2);
@@ -508,7 +508,7 @@ fn unsupported_field_type_rejected() {
     let mut buf = Vec::new();
     buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut buf, META_CODEC);
-    buf.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    buf.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     buf.extend_from_slice(&id);
     buf.push(0);
     buf.extend_from_slice(&0i32.to_le_bytes());
@@ -555,7 +555,13 @@ fn interval_bytes(levels: &[SkipIndexLevelInterval]) -> Vec<u8> {
 
 fn dvs_bytes(id: &[u8; ID_LENGTH], intervals_body: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    codec_util::write_index_header(&mut out, SKIP_INDEX_META_CODEC, VERSION_CURRENT, id, "");
+    codec_util::write_index_header(
+        &mut out,
+        SKIP_INDEX_META_CODEC,
+        VERSION_WRITE_DEFAULT,
+        id,
+        "",
+    );
     out.extend_from_slice(intervals_body);
     codec_util::write_footer(&mut out);
     out
@@ -580,7 +586,7 @@ fn skip_index_meta_parsed_instead_of_rejected() {
     let mut buf = Vec::new();
     buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut buf, META_CODEC);
-    buf.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    buf.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     buf.extend_from_slice(&id);
     buf.push(0);
     buf.extend_from_slice(&e.field_number.to_le_bytes());
@@ -890,7 +896,7 @@ fn pre_version_2_numeric_skipper_max_value_count_is_inferred_as_one() {
     assert_eq!(meta.skipper_meta(0).unwrap().max_value_count, 1);
 }
 
-/// The same file at [`VERSION_CURRENT`] stores `maxValueCount` explicitly,
+/// The same file at [`VERSION_WRITE_DEFAULT`] stores `maxValueCount` explicitly,
 /// so the inference pass must not run and must not overwrite it.
 #[test]
 fn current_version_skipper_max_value_count_is_read_not_inferred() {
@@ -910,7 +916,7 @@ fn current_version_skipper_max_value_count_is_read_not_inferred() {
     EntryBuilder::dense(0, 8, 3).build_body(&mut body);
     let buf = dvm_with_skipper(
         &id,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         DOC_VALUES_TYPE_NUMERIC,
         &skipper,
         &body,
@@ -1015,7 +1021,13 @@ fn parse_skip_index_decodes_multi_level_intervals() {
 
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_CURRENT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1046,7 +1058,13 @@ fn parse_skip_index_rejects_zero_level_count() {
     let body = vec![0u8]; // level count 0 is invalid (must be 1..=4)
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_CURRENT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1071,7 +1089,13 @@ fn parse_skip_index_rejects_level_count_above_max() {
     let body = vec![SKIP_INDEX_MAX_LEVEL + 1];
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_CURRENT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1098,7 +1122,13 @@ fn parse_skip_index_rejects_truncated_level_body() {
     body.extend_from_slice(&[0u8; 10]);
     let header_len = {
         let mut probe = Vec::new();
-        codec_util::write_index_header(&mut probe, SKIP_INDEX_META_CODEC, VERSION_CURRENT, &id, "");
+        codec_util::write_index_header(
+            &mut probe,
+            SKIP_INDEX_META_CODEC,
+            VERSION_WRITE_DEFAULT,
+            &id,
+            "",
+        );
         probe.len()
     };
     let dvs = dvs_bytes(&id, &body);
@@ -1307,7 +1337,7 @@ fn check_data_header_footer_valid() {
     let id = [2u8; ID_LENGTH];
     let data = build_dvd(&id, b"payload-bytes");
     let version = check_data_header_footer(&data, &id, "").unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
 }
 
 #[test]
@@ -1343,6 +1373,7 @@ fn binary_entry_fixed(
     data_length: i64,
 ) -> BinaryEntry {
     BinaryEntry {
+        disi: Default::default(),
         mask: None,
         field_number,
         docs_with_field_offset,
@@ -1403,6 +1434,7 @@ fn binary_dense_variable_length() {
 
     let blob = b"abcdefghi";
     let entry = BinaryEntry {
+        disi: Default::default(),
         mask: None,
         field_number: 0,
         docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
@@ -1458,7 +1490,7 @@ fn read_binary_entry_fixed_length_via_full_dvm_parse() {
     let mut out = Vec::new();
     out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut out, META_CODEC);
-    out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    out.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     out.extend_from_slice(&id);
     out.push(0);
     out.extend_from_slice(&0i32.to_le_bytes()); // field number
@@ -1541,7 +1573,7 @@ fn sorted_field_parses_and_resolves_ordinal_to_term() {
     let mut dvm = Vec::new();
     dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut dvm, META_CODEC);
-    dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    dvm.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     dvm.extend_from_slice(&id);
     dvm.push(0);
     dvm.extend_from_slice(&0i32.to_le_bytes()); // field number
@@ -1736,7 +1768,7 @@ fn parse_meta_sorted_numeric_and_sorted_set_multi_round_trip() {
     let mut dvm = Vec::new();
     dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut dvm, META_CODEC);
-    dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    dvm.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     dvm.extend_from_slice(&id);
     dvm.push(0);
 
@@ -1805,15 +1837,15 @@ fn write_single_dense_numeric_field_round_trips_through_own_reader() {
     // .dvs is header+footer only in this slice's scope.
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
 
     let fis = field_infos_with(&[0]);
     let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
-    assert_eq!(meta_version, VERSION_CURRENT);
+    assert_eq!(meta_version, VERSION_WRITE_DEFAULT);
     let entry = meta.numeric_entry(0).unwrap();
     assert!(entry.is_dense());
     for (doc, &want) in values.iter().enumerate() {
@@ -2079,7 +2111,7 @@ fn write_single_sparse_numeric_field_round_trips_through_own_reader() {
         write_single_sparse_numeric_field(0, &doc_values, max_doc, &id, "").unwrap();
 
     let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
 
     let fis = field_infos_with(&[0]);
     let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
@@ -2293,6 +2325,7 @@ fn fill_window_agrees_with_value_on_every_shape() {
 #[test]
 fn numeric_reader_sparse_region_outside_the_data_is_an_error() {
     let entry = NumericEntry {
+        disi: Default::default(),
         field_number: 0,
         docs_with_field_offset: 4,
         docs_with_field_length: 1_000,
@@ -2384,14 +2417,14 @@ fn write_single_dense_numeric_field_still_dense_after_sparse_addition() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
 
     let fis = field_infos_with(&[0]);
     let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
-    assert_eq!(meta_version, VERSION_CURRENT);
+    assert_eq!(meta_version, VERSION_WRITE_DEFAULT);
     let entry = meta.numeric_entry(0).unwrap();
     assert!(entry.is_dense());
     for (doc, &want) in values.iter().enumerate() {
@@ -2415,7 +2448,7 @@ fn check_data_header_footer_generic(
         &mut input,
         codec,
         VERSION_START,
-        VERSION_CURRENT,
+        VERSION_WRITE_DEFAULT,
         segment_id,
         "",
     )?;
@@ -2429,7 +2462,7 @@ fn invalid_multi_valued_flag_rejected() {
     let mut dvm = Vec::new();
     dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
     write_string(&mut dvm, META_CODEC);
-    dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+    dvm.extend_from_slice(&(VERSION_WRITE_DEFAULT as u32).to_be_bytes());
     dvm.extend_from_slice(&id);
     dvm.push(0);
     dvm.extend_from_slice(&0i32.to_le_bytes());
@@ -2542,11 +2575,11 @@ fn write_single_dense_binary_field_fixed_length_round_trips() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = binary_field_infos();
@@ -2653,11 +2686,11 @@ fn write_single_sparse_binary_field_interspersed_missing_docs_round_trips() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = binary_field_infos();
@@ -2833,11 +2866,11 @@ fn write_single_dense_sorted_numeric_field_multi_valued_round_trips() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_numeric_field_infos();
@@ -2967,11 +3000,11 @@ fn write_single_sparse_sorted_numeric_field_interspersed_missing_docs_round_trip
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_numeric_field_infos();
@@ -3130,11 +3163,11 @@ fn write_single_dense_sorted_numeric_field_still_dense_after_sparse_addition() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_numeric_field_infos();
@@ -3217,6 +3250,7 @@ fn a_sorted_numeric_address_range_past_the_value_array_is_a_decode_error_not_a_t
     let entry = SortedNumericEntry {
         field_number: 0,
         numeric: NumericEntry {
+            disi: Default::default(),
             field_number: 0,
             docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
             docs_with_field_length: 0,
@@ -3451,11 +3485,11 @@ fn write_single_dense_sorted_field_round_trips_small_dictionary() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_field_infos();
@@ -3594,11 +3628,11 @@ fn write_single_sparse_sorted_field_interspersed_missing_docs_round_trips() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_field_infos();
@@ -3720,11 +3754,11 @@ fn write_single_dense_sorted_field_still_dense_after_sparse_addition() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_field_infos();
@@ -3805,11 +3839,11 @@ fn write_single_dense_sorted_set_field_small_dictionary_shared_across_docs() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_set_field_infos();
@@ -3986,11 +4020,11 @@ fn write_single_sparse_sorted_set_field_interspersed_missing_docs_round_trips() 
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = sorted_set_field_infos();
@@ -4225,7 +4259,7 @@ fn no_field_close_matches_actual_java_files_and_empty_metadata() {
         include_bytes!("../../../../fixtures/testframework/data/cranky_doc_values_empty.dvs")
     );
     let (version, fields) = parse_meta(&meta, &id, "s", &FieldInfos { fields: vec![] }).unwrap();
-    assert_eq!(version, VERSION_CURRENT);
+    assert_eq!(version, VERSION_WRITE_DEFAULT);
     assert!(fields.numeric.is_empty());
     assert!(fields.binary.is_empty());
     assert!(fields.sorted.is_empty());
@@ -4287,16 +4321,16 @@ fn write_dense_fields_two_numeric_fields_round_trip_independently() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
     assert_eq!(
         check_data_header_footer(&data_bytes, &id, "").unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = field_infos_with(&[0, 1]);
     let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
-    assert_eq!(meta_version, VERSION_CURRENT);
+    assert_eq!(meta_version, VERSION_WRITE_DEFAULT);
     assert_eq!(meta.numeric.len(), 2);
 
     let entry_a = meta.numeric_entry(0).unwrap();
@@ -4723,7 +4757,7 @@ fn write_dense_fields_all_five_types_together_round_trip() {
 
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
-        VERSION_CURRENT
+        VERSION_WRITE_DEFAULT
     );
 
     let fis = mixed_field_infos(
@@ -5263,4 +5297,92 @@ fn cursor_readers_agree_with_the_one_shot_decoders() {
             "doc {doc}"
         );
     }
+}
+
+/// Format version 3 (Lucene 10.6): the sparse fields' `IndexedDISI` is in a
+/// `.dvp` file, and every field reads back the same as from version 2.
+#[test]
+fn version_3_keeps_sparse_presence_in_a_dvp_file_and_reads_back_like_version_2() {
+    let id = [7u8; ID_LENGTH];
+    let numeric: Vec<(i32, i64)> = (0..5000)
+        .step_by(7)
+        .map(|d| (d, i64::from(d) * 3))
+        .collect();
+    let binary: Vec<(i32, Vec<u8>)> = (0..5000)
+        .step_by(11)
+        .map(|d| (d, d.to_string().into_bytes()))
+        .collect();
+    let multi: Vec<(i32, Vec<i64>)> = (0..5000)
+        .step_by(13)
+        .map(|d| (d, vec![i64::from(d), i64::from(d) + 1]))
+        .collect();
+    let fields = [
+        DenseField::SparseNumeric(0, &numeric),
+        DenseField::SparseBinary(1, &binary),
+        DenseField::SparseSortedNumeric(2, &multi),
+    ];
+    let mut infos = field_infos_with(&[0, 1, 2]);
+    infos.fields[1].doc_values_type = DocValuesType::Binary;
+    infos.fields[2].doc_values_type = DocValuesType::SortedNumeric;
+    let write = |v3: bool| {
+        write_fields_with_format_files(
+            &fields,
+            &[],
+            5000,
+            &id,
+            "",
+            Lucene90DocValuesFormat::default().with_disi_file(v3),
+        )
+        .unwrap()
+    };
+    let v2 = write(false);
+    let v3 = write(true);
+    assert!(v2.dvp.is_none());
+    let dvp = v3.dvp.expect("version 3 writes a .dvp");
+    assert!(v3.dvd.len() < v2.dvd.len(), "the DISI left the .dvd");
+
+    let (ver2, meta2) = parse_meta(&v2.dvm, &id, "", &infos).unwrap();
+    let (ver3, mut meta3) = parse_meta(&v3.dvm, &id, "", &infos).unwrap();
+    assert_eq!((ver2, ver3), (2, 3));
+    assert!(!has_disi_file(ver2) && has_disi_file(ver3));
+    check_disi_header_footer(&dvp, &id, "", ver3).unwrap();
+    assert!(check_disi_header_footer(&dvp, &id, "", 2).is_err());
+    check_data_header_footer(&v3.dvd, &id, "").unwrap();
+
+    // Before the `.dvp` is attached a sparse read fails instead of reading `.dvd`.
+    assert!(numeric_value(&v3.dvd, meta3.numeric_entry(0).unwrap(), 7).is_err());
+    meta3.attach_disi(DisiBytes::new(std::sync::Arc::new(dvp)));
+
+    for doc in 0..5000 {
+        assert_eq!(
+            numeric_value(&v2.dvd, meta2.numeric_entry(0).unwrap(), doc).unwrap(),
+            numeric_value(&v3.dvd, meta3.numeric_entry(0).unwrap(), doc).unwrap(),
+            "numeric doc {doc}"
+        );
+        assert_eq!(
+            binary_value(&v2.dvd, meta2.binary_entry(1).unwrap(), doc).unwrap(),
+            binary_value(&v3.dvd, meta3.binary_entry(1).unwrap(), doc).unwrap(),
+            "binary doc {doc}"
+        );
+        assert_eq!(
+            sorted_numeric_values(&v2.dvd, meta2.sorted_numeric_entry(2).unwrap(), doc).unwrap(),
+            sorted_numeric_values(&v3.dvd, meta3.sorted_numeric_entry(2).unwrap(), doc).unwrap(),
+            "sorted numeric doc {doc}"
+        );
+    }
+    let mut reader = NumericReader::new(&v3.dvd, meta3.numeric_entry(0).unwrap());
+    assert_eq!(reader.value(14).unwrap(), Some(42));
+    assert_eq!(reader.value(15).unwrap(), None);
+}
+
+#[test]
+fn the_tuple_writers_refuse_a_format_that_needs_a_dvp() {
+    let id = [1u8; ID_LENGTH];
+    let numeric = [(1i32, 5i64)];
+    let fields = [DenseField::SparseNumeric(0, &numeric)];
+    let format = Lucene90DocValuesFormat::default().with_disi_file(true);
+    assert!(matches!(
+        write_fields_with_format(&fields, &[], 4, &id, "", format),
+        Err(WriteError::DisiFileNotReturned)
+    ));
 }

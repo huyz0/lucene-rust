@@ -784,7 +784,20 @@ pub(crate) fn read_current_column(
                 gen,
                 ext: "dvd",
             })?;
-        let (_, meta) = doc_values::parse_meta(&meta_bytes, &sci.segment_id, &suffix, &only)?;
+        let (version, mut meta) =
+            doc_values::parse_meta(&meta_bytes, &sci.segment_id, &suffix, &only)?;
+        if doc_values::has_disi_file(version) {
+            let disi_name = generation_file_name(&sci.segment_name, gen, per_field, "dvp");
+            let disi_bytes = dir
+                .open(&disi_name)
+                .map_err(|_| Error::MissingGenerationFile {
+                    segment: sci.segment_name.clone(),
+                    field_number,
+                    gen,
+                    ext: "dvp",
+                })?;
+            meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(disi_bytes)));
+        }
         return Ok(Some((meta, data_bytes)));
     }
 
@@ -822,7 +835,22 @@ pub(crate) fn read_current_column(
         })?;
     let meta_bytes = dir.open(meta_name)?;
     let data_bytes = dir.open(data_name)?;
-    let (_, meta) = doc_values::parse_meta(&meta_bytes, &sci.segment_id, per_field, infos)?;
+    let (version, mut meta) =
+        doc_values::parse_meta(&meta_bytes, &sci.segment_id, per_field, infos)?;
+    if doc_values::has_disi_file(version) {
+        let disi_name = si_files
+            .iter()
+            .find(|f| {
+                f.ends_with(".dvp") && base_codec_suffix(f, &sci.segment_name, ".dvp") == per_field
+            })
+            .ok_or_else(|| Error::MissingBaseColumn {
+                segment: sci.segment_name.clone(),
+                field_number,
+                suffix: per_field.to_string(),
+            })?;
+        let disi_bytes = dir.open(disi_name)?;
+        meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(disi_bytes)));
+    }
     // The `Input` itself, not a copy: the base `.dvd` holds every
     // doc-values field of the segment, and under `MmapDirectory` it is a
     // mapping a copy would read in full once per updated field.

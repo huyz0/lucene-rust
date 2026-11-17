@@ -33,6 +33,9 @@
 //!   FieldInfosFiles --> SetOfStrings
 //!   NumDVFields    --> BEi32
 //!   per DV field: FieldNumber --> BEi32, Files --> SetOfStrings
+//!   NumOverlayFields --> BEi32 (only if format >= VERSION_10_6)
+//!   per overlay field: FieldNumber --> BEi32, BaseGen --> BEi64,
+//!                      NumDeltas --> BEi32, DeltaGen --> BEi64 (x NumDeltas)
 //! UserData     --> MapOfStrings
 //! Footer
 //! ```
@@ -45,7 +48,10 @@ use lucene_store::directory::Directory;
 const CODEC_NAME: &str = "segments";
 pub const VERSION_74: i32 = 9;
 pub const VERSION_86: i32 = 10;
-const VERSION_CURRENT: i32 = VERSION_86;
+/// Lucene 10.6: every `segments_N` carries per-field doc-values overlay
+/// generations after each segment's update files.
+pub const VERSION_10_6: i32 = 11;
+const VERSION_CURRENT: i32 = VERSION_10_6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -194,6 +200,11 @@ pub struct SegmentCommitInfo {
     pub field_infos_files: Vec<String>,
     /// field number -> doc-values update files for that field.
     pub dv_update_files: Vec<(i32, Vec<String>)>,
+    /// Incremental doc-values overlays (format >= [`VERSION_10_6`]):
+    /// `(field number, base generation, delta generations newest first)`.
+    /// Empty unless the writer that made the commit enabled overlays
+    /// (`IndexWriterConfig.setMaxDocValuesOverlays`).
+    pub dv_overlays: Vec<(i32, i64, Vec<i64>)>,
     /// `SegmentCommitInfo.nextWriteDelGen`: the generation the *next* `.liv`
     /// this segment produces will be written at. Java's constructor derives
     /// it as `delGen == -1 ? 1 : delGen + 1` and
@@ -247,6 +258,7 @@ impl Default for SegmentCommitInfo {
             sci_id: None,
             field_infos_files: Vec::new(),
             dv_update_files: Vec::new(),
+            dv_overlays: Vec::new(),
             next_write_del_gen: 0,
             next_write_field_infos_gen: 0,
             next_write_doc_values_gen: 0,
@@ -680,6 +692,37 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
             let files = input.read_set_of_strings()?;
             dv_update_files.push((field_number, files));
         }
+        let mut dv_overlays = Vec::new();
+        if header.version >= VERSION_10_6 {
+            let num_overlay_fields = input.read_be_i32()?;
+            if num_overlay_fields < 0 || num_overlay_fields as usize > input.remaining() {
+                return Err(Error::InvalidDocValuesFieldCount(
+                    num_overlay_fields,
+                    segment_name,
+                ));
+            }
+            for _ in 0..num_overlay_fields {
+                let field_number = input.read_be_i32()?;
+                let base_gen = check_generation(
+                    "overlay baseGen",
+                    input.read_be_u64()? as i64,
+                    &segment_name,
+                )?;
+                let num_deltas = input.read_be_i32()?;
+                if num_deltas < 0 || num_deltas as usize > input.remaining() {
+                    return Err(Error::InvalidDocValuesFieldCount(num_deltas, segment_name));
+                }
+                let mut deltas = Vec::with_capacity(num_deltas as usize);
+                for _ in 0..num_deltas {
+                    deltas.push(check_generation(
+                        "overlay deltaGen",
+                        input.read_be_u64()? as i64,
+                        &segment_name,
+                    )?);
+                }
+                dv_overlays.push((field_number, base_gen, deltas));
+            }
+        }
 
         segments.push(SegmentCommitInfo {
             segment_name,
@@ -693,6 +736,7 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
             sci_id,
             field_infos_files,
             dv_update_files,
+            dv_overlays,
             // Java's `SegmentCommitInfo` constructor derives all three from
             // the generations it just read; the `0` sentinel does that
             // lazily (see `SegmentCommitInfo::next_write_del_gen`).
@@ -872,13 +916,8 @@ fn segments_file_name(segment_infos: &SegmentInfos) -> Result<String> {
 pub fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let suffix = lucene_util::base36::to_base36(segment_infos.generation);
-    codec_util::write_index_header(
-        &mut out,
-        CODEC_NAME,
-        VERSION_CURRENT,
-        &segment_infos.id,
-        &suffix,
-    );
+    let version = write_version(segment_infos);
+    codec_util::write_index_header(&mut out, CODEC_NAME, version, &segment_infos.id, &suffix);
 
     write_vint_version(&mut out, segment_infos.lucene_version);
     out.write_vint(segment_infos.index_created_version_major);
@@ -904,7 +943,7 @@ pub fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
         out.write_be_u64(seg.doc_values_gen as u64);
         out.write_be_u32(seg.soft_del_count as u32);
 
-        // Always emitting VERSION_CURRENT (> VERSION_74), so the SciId marker
+        // Every written version is above VERSION_74, so the SciId marker
         // is always present, matching `parse`'s expectation for this format.
         match seg.sci_id {
             Some(sci_id) => {
@@ -923,11 +962,38 @@ pub fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
                 out.write_string(f);
             }
         }
+        if version >= VERSION_10_6 {
+            out.write_be_u32(seg.dv_overlays.len() as u32);
+            for (field_number, base_gen, deltas) in &seg.dv_overlays {
+                out.write_be_u32(*field_number as u32);
+                out.write_be_u64(*base_gen as u64);
+                out.write_be_u32(deltas.len() as u32);
+                for g in deltas {
+                    out.write_be_u64(*g as u64);
+                }
+            }
+        }
     }
 
     out.write_map_of_strings(&segment_infos.user_data);
     codec_util::write_footer(&mut out);
     out
+}
+
+/// The `segments_N` format a commit is written in: [`VERSION_10_6`] when
+/// `format_version` asks for it (Lucene 10.6 and later read it; 10.5 cannot) or
+/// a segment carries overlays, which only that format can record; otherwise
+/// [`VERSION_86`], which every Lucene 10 reads.
+fn write_version(segment_infos: &SegmentInfos) -> i32 {
+    let overlays = segment_infos
+        .segments
+        .iter()
+        .any(|s| !s.dv_overlays.is_empty());
+    if segment_infos.format_version >= VERSION_10_6 || overlays {
+        VERSION_10_6
+    } else {
+        VERSION_86
+    }
 }
 
 fn write_vint_version(out: &mut Vec<u8>, v: LuceneVersion) {

@@ -1821,7 +1821,7 @@ pub fn buffer_segment_files(
                     out.push((reader, true, ChunkFiles::None));
                     continue;
                 }
-                LeanSegment::Written(sci, lazy) => (sci, lazy),
+                LeanSegment::Written(sci, lazy) => (*sci, lazy),
             },
             None => (
                 writer.live_buffer_segment(
