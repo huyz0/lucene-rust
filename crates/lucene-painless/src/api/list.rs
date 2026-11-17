@@ -252,3 +252,6 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Res
     })();
     r.or_else(|| collection::call(vm, recv, name, args))
 }
+
+#[cfg(test)]
+mod tests;

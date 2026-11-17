@@ -22,6 +22,9 @@ pub mod score;
 pub mod string;
 pub mod time;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use std::rc::Rc;
 
 use crate::ir;

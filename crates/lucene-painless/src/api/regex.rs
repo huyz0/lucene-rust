@@ -681,3 +681,6 @@ fn split(re: &regex::Regex, s: &str, limit: i32) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests;

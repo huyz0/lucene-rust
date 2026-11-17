@@ -188,3 +188,6 @@ fn deep_hash(v: &Value) -> i32 {
         o => o.java_hash(),
     }
 }
+
+#[cfg(test)]
+mod tests;
