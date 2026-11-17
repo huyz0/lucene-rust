@@ -18,8 +18,6 @@ workspace = true
 
 [dependencies]
 lucene-analysis = { path = "../lucene-analysis" }
-# Inflates the vendored stemmer table (src/resources/stemmer_20000.tbl.z).
-miniz_oxide.workspace = true
 
 [dev-dependencies]
 # The shared factory-configuration harness (lucene-analysis/tests/support).

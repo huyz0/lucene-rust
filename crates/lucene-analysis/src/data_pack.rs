@@ -109,6 +109,22 @@ pub fn require(resources: &[Resource]) -> Result<(), FactoryError> {
     }
 }
 
+/// The bytes of `file` in a module's `resources`; the caller checked
+/// [`require`], so a file that cannot be read is a broken install and panics.
+pub fn get(resources: &[Resource], file: &str) -> std::borrow::Cow<'static, [u8]> {
+    let r = resources
+        .iter()
+        .find(|r| r.file == file)
+        .expect("a file of the pack");
+    load(r).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Inflates a vendored zlib resource, which is known to be well formed.
+pub fn inflate_vendored(z: &[u8], what: &str) -> Vec<u8> {
+    miniz_oxide::inflate::decompress_to_vec_zlib(z)
+        .unwrap_or_else(|_| panic!("the vendored {what} inflates"))
+}
+
 /// A [`Resource`] of the calling crate: `pack_resource!("kuromoji",
 /// "../resources/x.dat.z")` names pack `kuromoji`'s file `x.dat.z`, with the
 /// file at that path (relative to the calling source file, as
