@@ -4,6 +4,9 @@
 //! `faiss_bench <prefix> <l2|cosine> [queries] [hnsw|ivf|both]`.
 //! Prints `index,config,build_s,recall@10,latency_us,qps,pinned_mb,vectors_mb`.
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use lucene_faiss::{build_index, write_index, Metric, SearchParams};
 use std::time::Instant;
 

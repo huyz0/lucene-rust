@@ -5,7 +5,7 @@
 
 use rayon::prelude::*;
 
-use crate::distance::{distance, dot};
+use crate::distance::{distance, distance4, dot};
 use crate::format::{Flat, Metric};
 
 const ITERATIONS: usize = 25;
@@ -50,6 +50,29 @@ pub(crate) fn nearest(centroids: &Flat, v: &[f32]) -> usize {
     best
 }
 
+/// [`nearest`] for each of `group` (four at a time share the centroid loads).
+fn nearest_group(centroids: &Flat, group: &[&[f32]]) -> Vec<usize> {
+    let [a, b, c, d] = group else {
+        return group.iter().map(|v| nearest(centroids, v)).collect();
+    };
+    let mut best = [0usize; 4];
+    let mut best_d = distance4(centroids.metric, [a, b, c, d], centroids.vector(0));
+    for ci in 1..centroids.len() {
+        let ds = distance4(centroids.metric, [a, b, c, d], centroids.vector(ci));
+        for r in 0..4 {
+            let better = match centroids.metric {
+                Metric::L2 => ds[r] < best_d[r],
+                Metric::InnerProduct => ds[r] > best_d[r],
+            };
+            if better {
+                best[r] = ci;
+                best_d[r] = ds[r];
+            }
+        }
+    }
+    best.to_vec()
+}
+
 fn normalize(v: &mut [f32]) {
     let norm = dot(v, v).sqrt();
     if norm > 0.0 {
@@ -87,7 +110,10 @@ pub(crate) fn train(x: &[f32], d: usize, nlist: usize, metric: Metric, seed: u64
         centroids.data.chunks_exact_mut(d).for_each(normalize);
     }
     for _ in 0..ITERATIONS {
-        let assigned: Vec<usize> = sample.par_iter().map(|v| nearest(&centroids, v)).collect();
+        let assigned: Vec<usize> = sample
+            .par_chunks(4)
+            .flat_map_iter(|group| nearest_group(&centroids, group))
+            .collect();
         let mut sums = vec![0f64; nlist * d];
         let mut counts = vec![0usize; nlist];
         for (v, &c) in sample.iter().zip(&assigned) {

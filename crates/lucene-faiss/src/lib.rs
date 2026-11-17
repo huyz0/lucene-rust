@@ -26,6 +26,7 @@ mod kmeans;
 // ARITH: ids and list positions come from an index `read_index` validated (sizes against the remaining bytes, ids against `ntotal`); loops run over those bounds.
 #[allow(clippy::arithmetic_side_effects)]
 pub mod search;
+mod visited;
 
 pub use build::build_index;
 pub use error::{Error, Result};

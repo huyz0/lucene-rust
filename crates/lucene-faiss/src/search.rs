@@ -7,6 +7,7 @@ use crate::distance::distance;
 use crate::error::{Error, Result};
 use crate::format::{Flat, Hnsw, Index, IvfFlat, Metric};
 use crate::heap::{Max, Min, Minimax, Order, TopK};
+use crate::visited::VISITED;
 
 /// Search settings Faiss takes as `SearchParameters`; `None` keeps what the
 /// index holds (`efSearch`, `nprobe`).
@@ -117,18 +118,38 @@ fn search_ivf(
         .into_iter()
         .filter_map(|(l, _)| usize::try_from(l).ok())
         .collect();
-    let scan = probes.into_iter().flat_map(|l| {
-        let list = &ivf.lists[l];
-        list.ids
-            .iter()
-            .enumerate()
-            .map(move |(i, &id)| (id, &list.codes[i * ivf.d..(i + 1) * ivf.d]))
-    });
-    let scored = scan.map(|(id, code)| (id, distance(ivf.metric, q, code)));
     match ivf.metric {
-        Metric::L2 => collect::<Max>(scored, k, filter),
-        Metric::InnerProduct => collect::<Min>(scored, k, filter),
+        Metric::L2 => scan_lists::<Max>(ivf, &probes, q, k, filter),
+        Metric::InnerProduct => scan_lists::<Min>(ivf, &probes, q, k, filter),
     }
+}
+
+/// Scans the probed lists in order, skipping the heap for any vector no
+/// nearer than the current `k`-th, and prefetching the next list's start.
+fn scan_lists<C: Order>(
+    ivf: &IvfFlat,
+    probes: &[usize],
+    q: &[f32],
+    k: usize,
+    filter: Option<Selector<'_>>,
+) -> Vec<(i64, f32)> {
+    let mut top = TopK::<C>::new(k);
+    for (at, &l) in probes.iter().enumerate() {
+        if let Some(&next) = probes.get(at + 1) {
+            let codes = &ivf.lists[next].codes;
+            for line in 0..4 {
+                lucene_util::simd::prefetch(codes, line * 16);
+            }
+        }
+        let list = &ivf.lists[l];
+        for (code, &id) in list.codes.chunks_exact(ivf.d).zip(&list.ids) {
+            let d = distance(ivf.metric, q, code);
+            if C::worse(top.threshold(), d) && filter.is_none_or(|f| f(id)) {
+                top.add(d, id);
+            }
+        }
+    }
+    top.finish()
 }
 
 fn neighbor_range(h: &Hnsw, no: usize, level: usize) -> std::ops::Range<usize> {
@@ -183,7 +204,8 @@ fn search_hnsw(
     let ef = ef_search.max(k);
     let mut candidates = Minimax::new(ef);
     candidates.push(nearest as i64, d_nearest);
-    let mut visited = vec![false; storage.len()];
+    let mut visited = VISITED.with(|v| v.take());
+    visited.begin(storage.len());
     let mut res = TopK::<Max>::new(k);
     let member = |id: usize| filter.is_none_or(|f| f(id as i64));
 
@@ -192,7 +214,7 @@ fn search_hnsw(
         if member(v) && d < res.threshold() {
             res.add(d, v as i64);
         }
-        visited[v] = true;
+        visited.set(v);
     }
     seed.clear();
     let mut nstep = 0usize;
@@ -204,16 +226,26 @@ fn search_hnsw(
         if candidates.count_below(d0) >= ef_search {
             break;
         }
+        let mut batch = [0usize; 64];
+        let mut count = 0usize;
         for slot in neighbor_range(h, v0 as usize, 0) {
             let n = h.neighbors[slot];
             if n < 0 {
                 break;
             }
             let n = n as usize;
-            if visited[n] {
+            if visited.seen(n) {
                 continue;
             }
-            visited[n] = true;
+            visited.set(n);
+            if let Some(slot) = batch.get_mut(count) {
+                *slot = n;
+                count += 1;
+                // Start every vector's cache misses before computing any.
+                storage.prefetch(n);
+            }
+        }
+        for &n in &batch[..count] {
             let d = dis(n);
             if member(n) && d < res.threshold() {
                 res.add(d, n as i64);
@@ -223,6 +255,7 @@ fn search_hnsw(
         nstep += 1;
         let _ = nstep;
     }
+    VISITED.with(|v| v.set(visited));
     res.finish()
         .into_iter()
         .map(|(id, d)| (id, sign * d))

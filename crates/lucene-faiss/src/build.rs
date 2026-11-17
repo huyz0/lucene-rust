@@ -14,6 +14,7 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicI32, Ordering as Atomic};
 use std::sync::Mutex;
 
+use crate::visited::Visited;
 use rayon::prelude::*;
 
 use crate::distance::distance;
@@ -183,6 +184,8 @@ fn random_level(h: &Hnsw, rng: &mut Rng) -> i32 {
     h.assign_probas.len() as i32 - 1
 }
 
+const CHUNK: usize = 32;
+
 struct Shared<'a> {
     h: &'a Hnsw,
     storage: &'a Flat,
@@ -320,7 +323,7 @@ impl Shared<'_> {
             drop(_guard);
             for v in nbrs {
                 let v = v as usize;
-                if visited.get(v) {
+                if visited.seen(v) {
                     continue;
                 }
                 visited.set(v);
@@ -368,34 +371,6 @@ impl Shared<'_> {
     }
 }
 
-/// The visited set of one search, cleared by bumping an epoch.
-struct Visited {
-    marks: Vec<u32>,
-    epoch: u32,
-}
-
-impl Visited {
-    fn new(n: usize) -> Self {
-        Visited {
-            marks: vec![0; n],
-            epoch: 1,
-        }
-    }
-    fn clear(&mut self) {
-        self.epoch = self.epoch.wrapping_add(1);
-        if self.epoch == 0 {
-            self.marks.fill(0);
-            self.epoch = 1;
-        }
-    }
-    fn set(&mut self, i: usize) {
-        self.marks[i] = self.epoch;
-    }
-    fn get(&self, i: usize) -> bool {
-        self.marks[i] == self.epoch
-    }
-}
-
 /// `hnsw_add_vertices`: levels first, then every vertex, highest level first.
 fn insert_all(hnsw: &mut Hnsw, storage: &Flat) {
     let n = storage.len();
@@ -426,11 +401,22 @@ fn insert_all(hnsw: &mut Hnsw, storage: &Flat) {
         },
     };
     let entry = order[0];
-    // The entry point alone, then everything else in parallel.
-    order[1..].par_iter().for_each_init(
-        || Visited::new(n),
-        |visited, &pt| shared.insert(pt, levels[pt] as usize, entry, max_level, visited),
-    );
+    // The entry point alone, then everything else on one worker per core,
+    // each with one visited set, taking vertices in chunks.
+    let rest = &order[1..];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    rayon::broadcast(|_| {
+        let mut visited = Visited::new(n);
+        loop {
+            let from = next.fetch_add(CHUNK, Atomic::Relaxed);
+            if from >= rest.len() {
+                break;
+            }
+            for &pt in &rest[from..(from + CHUNK).min(rest.len())] {
+                shared.insert(pt, levels[pt] as usize, entry, max_level, &mut visited);
+            }
+        }
+    });
     let neighbors: Vec<i32> = shared
         .neighbors
         .iter()
