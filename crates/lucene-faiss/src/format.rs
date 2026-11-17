@@ -141,9 +141,93 @@ pub struct IvfFlat {
     pub lists: Vec<InvList>,
 }
 
+/// `faiss::ScalarQuantizer` of type `QT_8bit` (`SQ8`): one byte per
+/// component, between a per-dimension minimum and range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sq8 {
+    /// `RangeStat` the quantizer was trained with (kept to write it back).
+    pub range_stat: u32,
+    /// `rangestat_arg` (kept to write it back).
+    pub range_stat_arg: f32,
+    /// Smallest value seen per dimension.
+    pub vmin: Vec<f32>,
+    /// Range (`max - min`) per dimension.
+    pub vdiff: Vec<f32>,
+}
+
+impl Sq8 {
+    /// Dimension.
+    pub fn d(&self) -> usize {
+        self.vmin.len()
+    }
+}
+
+/// `faiss::IndexScalarQuantizer` (`SQ8`): the vectors as one byte per
+/// component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqFlat {
+    /// Distance.
+    pub metric: Metric,
+    /// The quantizer.
+    pub sq: Sq8,
+    /// `ntotal * d` codes, row-major.
+    pub codes: Vec<u8>,
+}
+
+impl SqFlat {
+    /// Vectors held.
+    pub fn len(&self) -> usize {
+        self.codes.len().checked_div(self.sq.d()).unwrap_or(0)
+    }
+
+    /// Whether no vector is held.
+    pub fn is_empty(&self) -> bool {
+        self.codes.is_empty()
+    }
+}
+
+/// One inverted list of an [`IvfSq`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SqList {
+    /// Vector ordinals of the list's entries.
+    pub ids: Vec<i64>,
+    /// The entries' codes, `ids.len() * d` bytes.
+    pub codes: Vec<u8>,
+}
+
+/// `faiss::IndexIVFScalarQuantizer` (`IVF<n>,SQ8`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IvfSq {
+    /// Dimension.
+    pub d: usize,
+    /// Distance.
+    pub metric: Metric,
+    /// Lists probed per search.
+    pub nprobe: usize,
+    /// The coarse centroids, one per list.
+    pub quantizer: Flat,
+    /// The quantizer of the codes.
+    pub sq: Sq8,
+    /// Whether the codes hold the vector minus its list's centroid.
+    pub by_residual: bool,
+    /// The lists.
+    pub lists: Vec<SqList>,
+}
+
 /// A Faiss index of a supported kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Index {
+    /// `IndexScalarQuantizer`.
+    Sq(SqFlat),
+    /// `IndexHNSWSQ`: graph plus scalar-quantized vectors.
+    HnswSq {
+        /// The graph.
+        hnsw: Hnsw,
+        /// The codes the graph is over.
+        storage: SqFlat,
+    },
+    /// `IndexIVFScalarQuantizer`.
+    IvfSq(IvfSq),
     /// `IndexFlat`.
     Flat(Flat),
     /// `IndexHNSWFlat`: graph plus the vectors.
@@ -172,6 +256,9 @@ impl Index {
             Index::Hnsw { storage, .. } => storage.d,
             Index::IvfFlat(i) => i.d,
             Index::IdMap { sub, .. } => sub.d(),
+            Index::Sq(f) => f.sq.d(),
+            Index::HnswSq { storage, .. } => storage.sq.d(),
+            Index::IvfSq(i) => i.d,
         }
     }
 
@@ -182,6 +269,9 @@ impl Index {
             Index::Hnsw { storage, .. } => storage.metric,
             Index::IvfFlat(i) => i.metric,
             Index::IdMap { sub, .. } => sub.metric(),
+            Index::Sq(f) => f.metric,
+            Index::HnswSq { storage, .. } => storage.metric,
+            Index::IvfSq(i) => i.metric,
         }
     }
 
@@ -192,6 +282,9 @@ impl Index {
             Index::Hnsw { storage, .. } => storage.len(),
             Index::IvfFlat(i) => i.lists.iter().map(|l| l.ids.len()).sum(),
             Index::IdMap { ids, .. } => ids.len(),
+            Index::Sq(f) => f.len(),
+            Index::HnswSq { storage, .. } => storage.len(),
+            Index::IvfSq(i) => i.lists.iter().map(|l| l.ids.len()).sum(),
         }
     }
 }
@@ -216,8 +309,22 @@ impl<'a> Reader<'a> {
         Ok(s)
     }
 
+    /// `n` entries of `width` bytes, which must fit what is left.
+    fn take_checked(&mut self, n: usize, width: usize) -> Result<&'a [u8]> {
+        match n.checked_mul(width) {
+            Some(bytes) if bytes <= self.buf.len() - self.pos => self.take(bytes),
+            _ => corrupt("inverted list codes overrun the index"),
+        }
+    }
+
     fn u8(&mut self) -> Result<u8> {
         Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().unwrap_or_default(),
+        ))
     }
 
     fn i32(&mut self) -> Result<i32> {
@@ -383,6 +490,69 @@ fn read_hnsw(r: &mut Reader<'_>, ntotal: usize) -> Result<Hnsw> {
     Ok(hnsw)
 }
 
+fn read_sq(r: &mut Reader<'_>, d: usize) -> Result<Sq8> {
+    let qtype = r.u32()?;
+    if qtype != 0 {
+        return Err(Error::Unsupported(format!(
+            "scalar quantizer type {qtype} (only QT_8bit, SQ8, is implemented)"
+        )));
+    }
+    let range_stat = r.u32()?;
+    let range_stat_arg = r.f32()?;
+    if r.size()? != d || r.size()? != d {
+        return corrupt("scalar quantizer does not match the index dimension");
+    }
+    let n = r.count(4)?;
+    if n != d.saturating_mul(2) {
+        return corrupt("scalar quantizer trained values");
+    }
+    let trained = r.floats(n)?;
+    let (vmin, vdiff) = trained.split_at(d);
+    Ok(Sq8 {
+        range_stat,
+        range_stat_arg,
+        vmin: vmin.to_vec(),
+        vdiff: vdiff.to_vec(),
+    })
+}
+
+fn read_sq_flat_body(r: &mut Reader<'_>, h: &Header) -> Result<SqFlat> {
+    let sq = read_sq(r, h.d)?;
+    let n = r.count(1)?;
+    if h.d == 0 || n != h.d.saturating_mul(h.ntotal) {
+        return corrupt(format!(
+            "scalar quantized index of {n} codes for {} vectors of {} dimensions",
+            h.ntotal, h.d
+        ));
+    }
+    Ok(SqFlat {
+        metric: h.metric,
+        sq,
+        codes: r.take(n)?.to_vec(),
+    })
+}
+
+/// The coarse quantizer, direct map and inverted lists every IVF index ends
+/// with, after its `nlist`/`nprobe`.
+fn read_ivf_quantizer(r: &mut Reader<'_>, h: &Header, depth: u32) -> Result<(usize, usize, Flat)> {
+    let nlist = r.size()?;
+    let nprobe = r.size()?;
+    let Index::Flat(quantizer) = read_index_at(r, depth + 1)? else {
+        return corrupt("ivf quantizer is not a flat index");
+    };
+    if quantizer.len() != nlist || quantizer.d != h.d {
+        return corrupt("ivf quantizer does not hold nlist centroids");
+    }
+    let direct_map = r.u8()?;
+    let direct_array = r.vec_i64()?;
+    if direct_map != 0 || !direct_array.is_empty() {
+        return Err(Error::Unsupported(format!(
+            "ivf direct map type {direct_map}"
+        )));
+    }
+    Ok((nlist, nprobe, quantizer))
+}
+
 fn read_index_at(r: &mut Reader<'_>, depth: u32) -> Result<Index> {
     if depth > 4 {
         return corrupt("index nesting too deep");
@@ -405,22 +575,17 @@ fn read_index_at(r: &mut Reader<'_>, depth: u32) -> Result<Index> {
         }
         b"IwFl" => {
             let h = read_header(r)?;
-            let nlist = r.size()?;
-            let nprobe = r.size()?;
-            let Index::Flat(quantizer) = read_index_at(r, depth + 1)? else {
-                return corrupt("ivf quantizer is not a flat index");
-            };
-            if quantizer.len() != nlist || quantizer.d != h.d {
-                return corrupt("ivf quantizer does not hold nlist centroids");
-            }
-            let direct_map = r.u8()?;
-            let direct_array = r.vec_i64()?;
-            if direct_map != 0 || !direct_array.is_empty() {
-                return Err(Error::Unsupported(format!(
-                    "ivf direct map type {direct_map}"
-                )));
-            }
-            let lists = read_invlists(r, nlist, h.d)?;
+            let (nlist, nprobe, quantizer) = read_ivf_quantizer(r, &h, depth)?;
+            let lists = read_invlists(r, nlist, h.d.saturating_mul(4))?
+                .into_iter()
+                .map(|(ids, bytes)| InvList {
+                    ids,
+                    codes: bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap_or_default()))
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
             let total: usize = lists.iter().map(|l| l.ids.len()).sum();
             if total != h.ntotal {
                 return corrupt("ivf lists do not hold ntotal vectors");
@@ -430,6 +595,49 @@ fn read_index_at(r: &mut Reader<'_>, depth: u32) -> Result<Index> {
                 metric: h.metric,
                 nprobe,
                 quantizer,
+                lists,
+            }))
+        }
+        b"IxSQ" => {
+            let h = read_header(r)?;
+            Ok(Index::Sq(read_sq_flat_body(r, &h)?))
+        }
+        b"IHNs" => {
+            let h = read_header(r)?;
+            let hnsw = read_hnsw(r, h.ntotal)?;
+            match read_index_at(r, depth + 1)? {
+                Index::Sq(storage) if storage.len() == h.ntotal && storage.sq.d() == h.d => {
+                    Ok(Index::HnswSq { hnsw, storage })
+                }
+                _ => corrupt("hnsw storage is not a scalar quantized index of the graph's vectors"),
+            }
+        }
+        b"IwSq" => {
+            let h = read_header(r)?;
+            let (nlist, nprobe, quantizer) = read_ivf_quantizer(r, &h, depth)?;
+            let sq = read_sq(r, h.d)?;
+            if r.size()? != h.d {
+                return corrupt("ivf scalar quantizer code size");
+            }
+            let by_residual = r.u8()? != 0;
+            let lists = read_invlists(r, nlist, h.d)?
+                .into_iter()
+                .map(|(ids, bytes)| SqList {
+                    ids,
+                    codes: bytes.to_vec(),
+                })
+                .collect::<Vec<_>>();
+            let total: usize = lists.iter().map(|l| l.ids.len()).sum();
+            if total != h.ntotal {
+                return corrupt("ivf lists do not hold ntotal vectors");
+            }
+            Ok(Index::IvfSq(IvfSq {
+                d: h.d,
+                metric: h.metric,
+                nprobe,
+                quantizer,
+                sq,
+                by_residual,
                 lists,
             }))
         }
@@ -452,11 +660,18 @@ fn read_index_at(r: &mut Reader<'_>, depth: u32) -> Result<Index> {
     }
 }
 
-fn read_invlists(r: &mut Reader<'_>, nlist: usize, d: usize) -> Result<Vec<InvList>> {
+/// One inverted list as read: its ids and its codes' bytes.
+type RawList<'a> = (Vec<i64>, &'a [u8]);
+
+fn read_invlists<'a>(
+    r: &mut Reader<'a>,
+    nlist: usize,
+    code_size: usize,
+) -> Result<Vec<RawList<'a>>> {
     if r.take(4)? != b"ilar" {
         return Err(Error::Unsupported("inverted lists other than ilar".into()));
     }
-    if r.size()? != nlist || r.size()? != d.saturating_mul(4) {
+    if r.size()? != nlist || r.size()? != code_size {
         return corrupt("inverted lists do not match the index");
     }
     let sizes = match r.take(4)? {
@@ -482,16 +697,16 @@ fn read_invlists(r: &mut Reader<'_>, nlist: usize, d: usize) -> Result<Vec<InvLi
     if sizes.len() != nlist {
         return corrupt("inverted list sizes do not match nlist");
     }
-    let mut lists = Vec::with_capacity(nlist);
+    let mut lists: Vec<RawList<'a>> = Vec::with_capacity(nlist);
     for &s in &sizes {
         let Ok(n) = usize::try_from(s) else {
             return corrupt("inverted list size");
         };
         if n == 0 {
-            lists.push(InvList::default());
+            lists.push((Vec::new(), &[]));
             continue;
         }
-        let codes = r.floats(n.saturating_mul(d))?;
+        let codes = r.take_checked(n, code_size)?;
         let id_bytes = r.take(n.saturating_mul(8).min(r.buf.len()))?;
         if id_bytes.len() != n * 8 {
             return corrupt("inverted list ids overrun the index");
@@ -500,7 +715,7 @@ fn read_invlists(r: &mut Reader<'_>, nlist: usize, d: usize) -> Result<Vec<InvLi
             .chunks_exact(8)
             .map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()))
             .collect();
-        lists.push(InvList { ids, codes });
+        lists.push((ids, codes));
     }
     Ok(lists)
 }
@@ -560,55 +775,126 @@ pub fn write_index(index: &Index) -> Vec<u8> {
     out
 }
 
+fn write_hnsw(out: &mut Vec<u8>, hnsw: &Hnsw) {
+    write_vec(out, &hnsw.assign_probas, |o, v| {
+        o.extend_from_slice(&v.to_le_bytes())
+    });
+    write_vec(out, &hnsw.cum_nneighbor_per_level, put_i32);
+    write_vec(out, &hnsw.levels, put_i32);
+    write_vec(out, &hnsw.offsets, put_u64);
+    write_vec(out, &hnsw.neighbors, put_i32);
+    for v in [
+        hnsw.entry_point,
+        hnsw.max_level,
+        hnsw.ef_construction,
+        hnsw.ef_search,
+        hnsw.upper_beam,
+    ] {
+        put_i32(out, v);
+    }
+}
+
+fn write_sq(out: &mut Vec<u8>, sq: &Sq8) {
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&sq.range_stat.to_le_bytes());
+    out.extend_from_slice(&sq.range_stat_arg.to_le_bytes());
+    put_u64(out, sq.d() as u64);
+    put_u64(out, sq.d() as u64);
+    put_u64(out, (sq.d() * 2) as u64);
+    for v in sq.vmin.iter().chain(&sq.vdiff) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+fn write_sq_flat(out: &mut Vec<u8>, f: &SqFlat) {
+    out.extend_from_slice(b"IxSQ");
+    write_header(out, f.sq.d(), f.len(), f.metric);
+    write_sq(out, &f.sq);
+    put_u64(out, f.codes.len() as u64);
+    out.extend_from_slice(&f.codes);
+}
+
+/// The inverted lists every IVF index ends with: `code_size` bytes per code,
+/// each list's codes then its ids.
+fn write_invlists<'a>(
+    out: &mut Vec<u8>,
+    code_size: usize,
+    lists: impl ExactSizeIterator<Item = (&'a [i64], Vec<u8>)>,
+) {
+    out.extend_from_slice(b"ilar");
+    put_u64(out, lists.len() as u64);
+    put_u64(out, code_size as u64);
+    out.extend_from_slice(b"full");
+    let lists: Vec<(&[i64], Vec<u8>)> = lists.collect();
+    let sizes: Vec<u64> = lists.iter().map(|(ids, _)| ids.len() as u64).collect();
+    write_vec(out, &sizes, put_u64);
+    for (ids, codes) in &lists {
+        if ids.is_empty() {
+            continue;
+        }
+        out.extend_from_slice(codes);
+        for id in *ids {
+            out.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+}
+
+fn write_ivf_head(
+    out: &mut Vec<u8>,
+    tag: &[u8; 4],
+    ntotal: usize,
+    nprobe: usize,
+    quantizer: &Flat,
+) {
+    out.extend_from_slice(tag);
+    write_header(out, quantizer.d, ntotal, quantizer.metric);
+    put_u64(out, quantizer.len() as u64);
+    put_u64(out, nprobe as u64);
+    write_flat(out, quantizer);
+    out.push(0);
+    put_u64(out, 0);
+}
+
 fn write_index_to(out: &mut Vec<u8>, index: &Index) {
     match index {
         Index::Flat(f) => write_flat(out, f),
         Index::Hnsw { hnsw, storage } => {
             out.extend_from_slice(b"IHNf");
             write_header(out, storage.d, storage.len(), storage.metric);
-            write_vec(out, &hnsw.assign_probas, |o, v| {
-                o.extend_from_slice(&v.to_le_bytes())
-            });
-            write_vec(out, &hnsw.cum_nneighbor_per_level, put_i32);
-            write_vec(out, &hnsw.levels, put_i32);
-            write_vec(out, &hnsw.offsets, put_u64);
-            write_vec(out, &hnsw.neighbors, put_i32);
-            for v in [
-                hnsw.entry_point,
-                hnsw.max_level,
-                hnsw.ef_construction,
-                hnsw.ef_search,
-                hnsw.upper_beam,
-            ] {
-                put_i32(out, v);
-            }
+            write_hnsw(out, hnsw);
             write_flat(out, storage);
         }
+        Index::Sq(f) => write_sq_flat(out, f),
+        Index::HnswSq { hnsw, storage } => {
+            out.extend_from_slice(b"IHNs");
+            write_header(out, storage.sq.d(), storage.len(), storage.metric);
+            write_hnsw(out, hnsw);
+            write_sq_flat(out, storage);
+        }
         Index::IvfFlat(ivf) => {
-            out.extend_from_slice(b"IwFl");
-            write_header(out, ivf.d, index.ntotal(), ivf.metric);
-            put_u64(out, ivf.lists.len() as u64);
-            put_u64(out, ivf.nprobe as u64);
-            write_flat(out, &ivf.quantizer);
-            out.push(0);
-            put_u64(out, 0);
-            out.extend_from_slice(b"ilar");
-            put_u64(out, ivf.lists.len() as u64);
-            put_u64(out, (ivf.d * 4) as u64);
-            out.extend_from_slice(b"full");
-            let sizes: Vec<u64> = ivf.lists.iter().map(|l| l.ids.len() as u64).collect();
-            write_vec(out, &sizes, put_u64);
-            for l in &ivf.lists {
-                if l.ids.is_empty() {
-                    continue;
-                }
-                for v in &l.codes {
-                    out.extend_from_slice(&v.to_le_bytes());
-                }
-                for id in &l.ids {
-                    out.extend_from_slice(&id.to_le_bytes());
-                }
-            }
+            write_ivf_head(out, b"IwFl", index.ntotal(), ivf.nprobe, &ivf.quantizer);
+            write_invlists(
+                out,
+                ivf.d * 4,
+                ivf.lists.iter().map(|l| {
+                    let mut bytes = Vec::with_capacity(l.codes.len() * 4);
+                    for v in &l.codes {
+                        bytes.extend_from_slice(&v.to_le_bytes());
+                    }
+                    (&l.ids[..], bytes)
+                }),
+            );
+        }
+        Index::IvfSq(ivf) => {
+            write_ivf_head(out, b"IwSq", index.ntotal(), ivf.nprobe, &ivf.quantizer);
+            write_sq(out, &ivf.sq);
+            put_u64(out, ivf.d as u64);
+            out.push(u8::from(ivf.by_residual));
+            write_invlists(
+                out,
+                ivf.d,
+                ivf.lists.iter().map(|l| (&l.ids[..], l.codes.clone())),
+            );
         }
         Index::IdMap { sub, ids } => {
             out.extend_from_slice(b"IxMp");

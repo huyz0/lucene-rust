@@ -34,6 +34,26 @@ fn main() {
             "nprobe=6",
             Metric::InnerProduct,
         ),
+        ("ours_sq8_l2", "IDMap,SQ8", "", Metric::L2),
+        (
+            "ours_hnswsq8_l2",
+            "IDMap,HNSW8,SQ8",
+            "efConstruction=40,efSearch=48",
+            Metric::L2,
+        ),
+        (
+            "ours_hnswsq8_ip",
+            "IDMap,HNSW8,SQ8",
+            "efConstruction=40,efSearch=48",
+            Metric::InnerProduct,
+        ),
+        ("ours_ivfsq8_l2", "IDMap,IVF16,SQ8", "nprobe=6", Metric::L2),
+        (
+            "ours_ivfsq8_ip",
+            "IDMap,IVF16,SQ8",
+            "nprobe=6",
+            Metric::InnerProduct,
+        ),
     ] {
         let index = build_index(desc, params, metric, 24, &x, &ids).unwrap();
         std::fs::write(format!("{out}/{name}.idx"), write_index(&index)).unwrap();
