@@ -901,3 +901,6 @@ fn reads(op: &Op) -> Vec<Reg> {
         _ => Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod tests;

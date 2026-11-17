@@ -161,21 +161,112 @@ pub fn parse_long_radix(s: &str, radix: u32, min: i64, max: i64) -> Option<i64> 
     Some(v as i64)
 }
 
-/// `Double.parseDouble`: Java's grammar (leading/trailing whitespace,
-/// `d`/`f` suffixes, hex floats left out), `None` where Java throws.
-pub fn parse_double(s: &str) -> Option<f64> {
-    let t = s.trim_matches(|c: char| c <= ' ');
+/// The numeric text of a Java float string: trimmed, one `d`/`f` suffix
+/// dropped, `None` where Java's grammar rejects it. The special values and
+/// hex floats are handled by the callers.
+fn decimal_text(t: &str) -> Option<&str> {
     let t = t.strip_suffix(['d', 'D', 'f', 'F']).unwrap_or(t);
-    match t {
-        "NaN" | "+NaN" | "-NaN" => return Some(f64::NAN),
-        "Infinity" | "+Infinity" => return Some(f64::INFINITY),
-        "-Infinity" => return Some(f64::NEG_INFINITY),
-        _ => {}
-    }
     if t.is_empty() || t.contains(|c: char| c.is_ascii_alphabetic() && c != 'e' && c != 'E') {
         return None;
     }
-    t.parse::<f64>().ok()
+    Some(t)
+}
+
+fn special(t: &str) -> Option<f64> {
+    match t {
+        "NaN" | "+NaN" | "-NaN" => Some(f64::NAN),
+        "Infinity" | "+Infinity" => Some(f64::INFINITY),
+        "-Infinity" => Some(f64::NEG_INFINITY),
+        _ => None,
+    }
+}
+
+/// A hex float, `[+-]0x<hex>[.<hex>]p[+-]<digits>[fFdD]`, rounded to nearest.
+fn parse_hex_float(t: &str) -> Option<f64> {
+    let (negative, t) = match t.as_bytes().first()? {
+        b'-' => (true, &t[1..]),
+        b'+' => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))?;
+    let t = t.strip_suffix(['d', 'D', 'f', 'F']).unwrap_or(t);
+    let (mantissa, exponent) = t.split_once(['p', 'P'])?;
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if int.is_empty() && frac.is_empty() {
+        return None;
+    }
+    let exponent: i32 = {
+        let digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        exponent.parse().unwrap_or(if exponent.starts_with('-') {
+            i32::MIN / 2
+        } else {
+            i32::MAX / 2
+        })
+    };
+    let (mut m, mut sticky, mut scale) = (0u128, false, 0i32);
+    for (i, c) in int.chars().chain(frac.chars()).enumerate() {
+        let d = u128::from(c.to_digit(16)?);
+        if m >> 120 == 0 {
+            m = (m << 4) | d;
+            if i >= int.len() {
+                scale -= 4;
+            }
+        } else {
+            sticky |= d != 0;
+            if i < int.len() {
+                scale += 4;
+            }
+        }
+    }
+    if m == 0 {
+        return Some(if negative { -0.0 } else { 0.0 });
+    }
+    // Fold what did not fit into the lowest bit so rounding sees it.
+    if sticky {
+        m |= 1;
+    }
+    let v = m as f64;
+    let mut e = i64::from(exponent) + i64::from(scale);
+    let mut v = v;
+    while e > 0 {
+        let step = e.min(1000);
+        v *= 2f64.powi(step as i32);
+        e -= step;
+    }
+    while e < 0 {
+        let step = (-e).min(1000);
+        v *= 2f64.powi(-(step as i32));
+        e += step;
+    }
+    Some(if negative { -v } else { v })
+}
+
+/// `Double.parseDouble`: Java's grammar (surrounding whitespace, a `d`/`f`
+/// suffix, hex floats), `None` where Java throws.
+pub fn parse_double(s: &str) -> Option<f64> {
+    let t = s.trim_matches(|c: char| c <= ' ');
+    if let Some(v) = special(t) {
+        return Some(v);
+    }
+    if let Some(v) = parse_hex_float(t) {
+        return Some(v);
+    }
+    decimal_text(t)?.parse::<f64>().ok()
+}
+
+/// `Float.parseFloat`: the grammar of [`parse_double`], rounded once to `f32`.
+pub fn parse_float(s: &str) -> Option<f32> {
+    let t = s.trim_matches(|c: char| c <= ' ');
+    if let Some(v) = special(t) {
+        return Some(v as f32);
+    }
+    if let Some(v) = parse_hex_float(t) {
+        return Some(v as f32);
+    }
+    decimal_text(t)?.parse::<f32>().ok()
 }
 
 #[cfg(test)]

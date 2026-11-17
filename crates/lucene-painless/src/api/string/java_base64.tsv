@@ -1,0 +1,33 @@
+	ok:
+A	IAE:Input byte[] should at least have 2 bytes for base64 bytes
+AB	ok:00
+ABC	ok:0010
+ABCD	ok:001083
+QQ==	ok:41
+QQ=	IAE:Input byte array has wrong 4-byte ending unit
+Q===	IAE:Last unit does not have enough valid bits
+=	IAE:Input byte[] should at least have 2 bytes for base64 bytes
+==	IAE:Input byte array has wrong 4-byte ending unit
+=QQQ	IAE:Input byte array has wrong 4-byte ending unit
+QQ==x	IAE:Input byte array has incorrect ending byte at 4
+QUI=	ok:4142
+QUI	ok:4142
+QUJD	ok:414243
+QUJDRA	ok:41424344
+QUJDRA=	IAE:Input byte array has wrong 4-byte ending unit
+QUJDRA==	ok:41424344
+QUJDRA===	IAE:Input byte array has incorrect ending byte at 8
+Q=Q=	IAE:Last unit does not have enough valid bits
+QUJD====	IAE:Input byte array has wrong 4-byte ending unit
+a-b_	IAE:Illegal base64 character 2d
+QU JD	IAE:Illegal base64 character 20
+QUJD\n	IAE:Illegal base64 character a
+?AAA	IAE:Illegal base64 character -17
+?AAA	IAE:Illegal base64 character 3f
++/+/	ok:fbffbf
+aGVsbG8=	ok:68656c6c6f
+aGVsbG8	ok:68656c6c6f
+aGVsbG	ok:68656c6c
+aG=k	IAE:Input byte array has wrong 4-byte ending unit
+QQ=x	IAE:Input byte array has wrong 4-byte ending unit
+QUI=QUI=	IAE:Input byte array has incorrect ending byte at 4

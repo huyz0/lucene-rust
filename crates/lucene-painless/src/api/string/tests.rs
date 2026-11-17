@@ -92,7 +92,7 @@ fn splitting_and_base64() {
     assert_eq!(t(&s("aGVsbG8="), "decodeBase64", &[]), "hello");
     assert!(t(&s("***"), "decodeBase64", &[]).contains("IllegalArgument"));
     assert_eq!(base64_encode(b""), "");
-    assert_eq!(base64_decode("aGk=").as_deref(), Some(&b"hi"[..]));
+    assert_eq!(base64_decode("aGk="), Ok(b"hi".to_vec()));
 }
 
 #[test]

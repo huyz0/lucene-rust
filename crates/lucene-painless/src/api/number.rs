@@ -372,12 +372,9 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         },
         ("Float", "parseFloat", 1) | ("Float", "valueOf", 1) => |_vm, a| match &a[0] {
             Value::Null => Err(null_decimal()),
-            Value::Str(s) => s
-                .trim()
-                .trim_end_matches(['f', 'F', 'd', 'D'])
-                .parse::<f32>()
+            Value::Str(s) => crate::number::parse_float(s)
                 .map(Value::Float)
-                .map_err(|_| nfe(s)),
+                .ok_or_else(|| nfe(s)),
             v => Ok(convert(v, Prim::Float).ok_or_else(npe)?),
         },
         ("Double", "toString", 1) => {
@@ -530,6 +527,11 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
             let c = char_arg(&a[0])?;
             let s = char_string(c).to_lowercase();
             let mut u = s.encode_utf16();
+            // U+0130 lower-cases to `i` plus a combining dot; Java's
+            // one-char mapping is `i`.
+            if c == 0x130 {
+                return Ok(Value::Char(u16::from(b'i')));
+            }
             Ok(Value::Char(match (u.next(), u.next()) {
                 (Some(x), None) => x,
                 _ => c,

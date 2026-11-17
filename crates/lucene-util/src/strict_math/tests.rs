@@ -495,3 +495,25 @@ fn close_to_libm_everywhere() {
         a += 0.00093;
     }
 }
+
+#[test]
+fn cbrt_matches_the_jdk() {
+    // `StrictMath.cbrt` values from JDK 21, where `f64::cbrt` is one ulp off.
+    for (x, want) in [
+        (2.5, 1.3572088082974532),
+        (-2.5, -1.3572088082974532),
+        (123456789.123, 497.93385938353833),
+        (27.0, 3.0),
+        (-8.0, -2.0),
+        (0.001, 0.1),
+    ] {
+        assert_eq!(cbrt(x), want, "{x}");
+    }
+    assert!(cbrt(f64::NAN).is_nan());
+    assert_eq!(cbrt(f64::INFINITY), f64::INFINITY);
+    assert_eq!(cbrt(f64::NEG_INFINITY), f64::NEG_INFINITY);
+    assert!(cbrt(-0.0).is_sign_negative() && cbrt(-0.0) == 0.0);
+    // A subnormal is scaled up first.
+    assert_eq!(cbrt(8.0 * f64::from_bits(1)), 2.0 * cbrt(f64::from_bits(1)));
+    assert!((cbrt(f64::from_bits(1)) - 1.7031839360032603e-108).abs() < 1e-120);
+}

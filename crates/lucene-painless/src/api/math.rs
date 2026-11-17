@@ -88,6 +88,49 @@ fn next_up(x: f64) -> f64 {
     }
 }
 
+/// `StrictMath.IEEEremainder` (fdlibm `e_remainder.c`): `x - n * p` for the
+/// integer `n` nearest `x / p`, exactly.
+fn ieee_remainder(x: f64, p: f64) -> f64 {
+    if p == 0.0 || !x.is_finite() || p.is_nan() {
+        return f64::NAN;
+    }
+    if p.is_infinite() {
+        return x;
+    }
+    let negative = x.is_sign_negative();
+    let mut x = x;
+    let mut p = p.abs();
+    if p < f64::from_bits(0x7fe0_0000_0000_0000) {
+        x %= p + p;
+    }
+    if x.abs() == p {
+        return 0.0 * x;
+    }
+    x = x.abs();
+    if p < f64::from_bits(0x0020_0000_0000_0000) {
+        if x + x > p {
+            x -= p;
+            if x + x >= p {
+                x -= p;
+            }
+        }
+    } else {
+        let half = 0.5 * p;
+        if x > half {
+            x -= p;
+            if x >= half {
+                x -= p;
+            }
+        }
+    }
+    p = x;
+    if negative {
+        -p
+    } else {
+        p
+    }
+}
+
 fn next_down(x: f64) -> f64 {
     -next_up(-x)
 }
@@ -127,7 +170,7 @@ methods!(
     "acos" => sm::acos,
     "asin" => sm::asin,
     "atan" => sm::atan,
-    "cbrt" => f64::cbrt,
+    "cbrt" => sm::cbrt,
     "ceil" => f64::ceil,
     "cos" => sm::cos,
     "cosh" => sm::cosh,
@@ -153,7 +196,7 @@ methods!(
     "atan2" => sm::atan2,
     "copySign" => f64::copysign,
     "hypot" => sm::hypot,
-    "IEEEremainder" => |x: f64, y: f64| x - (x / y).round_ties_even() * y,
+    "IEEEremainder" => ieee_remainder,
     "max" => java_max,
     "min" => java_min,
     "nextAfter" => next_after,
