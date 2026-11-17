@@ -495,11 +495,18 @@ pub fn format(fmt: &str, args: &[Value]) -> Result<String, Throw> {
                     s
                 }
             }
-            'b' | 'B' => match &arg {
-                Value::Null => "false".into(),
-                Value::Bool(b) => b.to_string(),
-                _ => "true".into(),
-            },
+            'b' | 'B' => {
+                let s = match &arg {
+                    Value::Null => "false".to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => "true".to_string(),
+                };
+                if conv == 'B' {
+                    s.to_uppercase()
+                } else {
+                    s
+                }
+            }
             'c' => match &arg {
                 Value::Char(c) => char_string(*c),
                 Value::Int(i) => char::from_u32(*i as u32)
@@ -671,7 +678,8 @@ pub fn format_fixed(v: f64, p: usize) -> String {
         .iter()
         .map(|d| (d + b'0') as char)
         .collect();
-    let neg = v.is_sign_negative() && (int_part != "0" || frac.bytes().any(|b| b != b'0'));
+    // Java signs by the value, so `-0.001` prints `-0.00`.
+    let neg = v.is_sign_negative();
     let mut out = String::new();
     if neg {
         out.push('-');
@@ -928,5 +936,7 @@ impl JObject for JStringBuilder {
     }
 }
 
+#[cfg(test)]
+mod format_tests;
 #[cfg(test)]
 mod tests;

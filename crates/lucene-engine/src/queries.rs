@@ -880,3 +880,6 @@ pub fn visit_record(
     }
     Ok(VisitRecord { events })
 }
+
+#[cfg(test)]
+mod tests;
