@@ -813,6 +813,7 @@ fn bench_sparse_numeric_reader(c: &mut Criterion) {
         let doc_ids: Vec<i32> = (0..n).map(|i| (i * 7) as i32).collect();
         let (data, data_jumps) = lucene_codecs::indexed_disi::write(&doc_ids);
         let entry = ndv::NumericEntry {
+            disi: Default::default(),
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: data.len() as i64,

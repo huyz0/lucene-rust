@@ -50,6 +50,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 /// Every fixture version `scripts/gen-bwc-fixtures.sh` writes, oldest first.
 const VERSIONS: &[&str] = &[
     "9.0.0", "9.1.0", "9.3.0", "9.4.2", "9.8.0", "9.11.1", "9.12.2", "10.0.0", "10.2.2", "10.4.0",
+    "10.5.1", "10.6.0",
 ];
 
 /// Lines this port does not reproduce yet: `(version, kind, field)`, where
@@ -1082,10 +1083,19 @@ fn segment_lines(dir: &dyn Directory, seg: &Segment, out: &mut Lines) {
             .open(seg.file_with(".dvd").ok_or("no .dvd")?)
             .map_err(err)?;
         let suffix = seg.suffix_of(dvm_name, ".dvm");
-        let (_, meta) =
+        let (version, mut meta) =
             doc_values::parse_meta(&dvm, &seg.commit.segment_id, &suffix, &seg.field_infos)
                 .map_err(err)?;
         doc_values::check_data_header_footer(&dvd, &seg.commit.segment_id, &suffix).map_err(err)?;
+        if doc_values::has_disi_file(version) {
+            // Lucene 10.6 and later: sparse fields' `IndexedDISI` is in `.dvp`.
+            let dvp = dir
+                .open(seg.file_with(".dvp").ok_or("no .dvp")?)
+                .map_err(err)?;
+            doc_values::check_disi_header_footer(&dvp, &seg.commit.segment_id, &suffix, version)
+                .map_err(err)?;
+            meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(dvp)));
+        }
         Ok((meta, dvd))
     })();
     let point_files = (|| -> Result<(Input, Input, Input), String> {

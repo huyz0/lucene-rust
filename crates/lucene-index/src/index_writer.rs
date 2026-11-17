@@ -1054,6 +1054,9 @@ pub(crate) struct IndexingConfig {
     /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
     /// -- see [`IndexWriter::set_default_doc_values_format`].
     default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// The Lucene release whose index formats this writer produces -- see
+    /// [`IndexWriter::set_index_format`].
+    index_format: lucene_codecs::index_format::IndexFormat,
     /// `index.codec.adaptive_doc_values: auto`: the choice between stock and
     /// adaptive doc values for the fields that get the default format, made
     /// from the index's first documents -- see
@@ -1111,6 +1114,8 @@ pub(crate) struct DocValuesGroupOutput {
     pub(crate) dvm: Vec<u8>,
     pub(crate) dvd: Vec<u8>,
     pub(crate) dvs: Vec<u8>,
+    /// The `.dvp` of a version-3 group (Lucene 10.6).
+    pub(crate) dvp: Option<Vec<u8>>,
 }
 
 /// [`IndexWriter::begin_merge`]'s snapshot: the sources as the merge reads
@@ -1574,6 +1579,8 @@ pub struct LazyDocValues {
 pub struct EncodedDocValues {
     pub dvm: Vec<u8>,
     pub dvd: Vec<u8>,
+    /// The `.dvp` of a version-3 pair (Lucene 10.6), `None` before.
+    pub dvp: Option<Vec<u8>>,
     /// The pair's codec suffix (`Lucene90_0`), for parsing the `.dvm`.
     pub segment_suffix: String,
 }
@@ -1668,6 +1675,7 @@ impl LazyDocValues {
             segment_suffix: format!("{}_{}", g.format_name, g.suffix),
             dvm: g.dvm,
             dvd: g.dvd,
+            dvp: g.dvp,
         }))
     }
 }
@@ -2595,13 +2603,14 @@ impl IndexingConfig {
         name: &str,
         default: per_field_doc_values::Lucene90DocValuesFormat,
     ) -> per_field_doc_values::Lucene90DocValuesFormat {
+        let disi_file = self.index_format.doc_values_disi_file();
         // A field routed explicitly keeps its format, even the default one.
         if let Some((_, format)) = self
             .doc_values_formats
             .iter()
             .find(|(field, _)| field == name)
         {
-            return *format;
+            return format.with_disi_file(disi_file);
         }
         let routed = self
             .codec
@@ -2613,11 +2622,13 @@ impl IndexingConfig {
         } else {
             routed
         }
+        .with_disi_file(disi_file)
     }
 
     /// [`Self::default_doc_values_format`], or under `auto` its choice:
     /// adaptive once chosen so, stock until then or when chosen not.
     fn resolved_default_doc_values_format(&self) -> per_field_doc_values::Lucene90DocValuesFormat {
+        let disi_file = self.index_format.doc_values_disi_file();
         match &self.adaptive_auto {
             None => self.default_doc_values_format,
             Some(auto) if auto.decided() == Some(true) => {
@@ -2625,6 +2636,7 @@ impl IndexingConfig {
             }
             Some(_) => per_field_doc_values::Lucene90DocValuesFormat::default(),
         }
+        .with_disi_file(disi_file)
     }
 
     /// Feeds `auto`'s sample with a segment about to be written from
@@ -2748,13 +2760,7 @@ impl IndexingConfig {
             segment_fields,
             segment_id,
             |group_configs, suffix, format| {
-                IndexWriter::build_doc_values_output(
-                    docs,
-                    group_configs,
-                    segment_id,
-                    suffix,
-                    format,
-                )
+                IndexWriter::build_doc_values_files(docs, group_configs, segment_id, suffix, format)
             },
         )
     }
@@ -2800,7 +2806,7 @@ impl IndexingConfig {
                         column(c.field_number).map(|col| col.as_dense_field(c.field_number))
                     })
                     .collect();
-                Ok(doc_values::write_fields_with_format(
+                Ok(doc_values::write_fields_with_format_files(
                     &fields,
                     &skip_indexes,
                     max_doc,
@@ -2867,7 +2873,7 @@ impl IndexingConfig {
             &[DocValuesFieldConfig],
             u32,
             per_field_doc_values::Lucene90DocValuesFormat,
-        ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        ) -> Result<doc_values::DocValuesFiles>,
     ) -> Result<Vec<DocValuesGroupOutput>> {
         let walk = crate::indexing_chain::field_hash_order(segment_fields);
         let rank = |name: &str| {
@@ -2891,7 +2897,8 @@ impl IndexingConfig {
                     .filter(|c| group.field_numbers.contains(&c.field_number))
                     .map(|c| (*c).clone())
                     .collect();
-                let (dvm, dvd, dvs) = build(&group_configs, group.suffix, group.format)?;
+                let doc_values::DocValuesFiles { dvm, dvd, dvs, dvp } =
+                    build(&group_configs, group.suffix, group.format)?;
                 let field_infos = lucene_codecs::field_infos::FieldInfos {
                     fields: self
                         .fields
@@ -2920,6 +2927,7 @@ impl IndexingConfig {
                     dvm,
                     dvd,
                     dvs,
+                    dvp,
                 })
             })
             .collect()
@@ -5371,6 +5379,30 @@ impl<'d> IndexWriter<'d> {
     /// default back restores stock-readable segments from then on.
     ///
     /// [`Lucene90DocValuesFormat::rust_adaptive`]: per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive
+    /// The Lucene release whose index formats segments and commits are written
+    /// in: [`IndexFormat::Lucene105`] (the default) is readable by every
+    /// Lucene 10.x, [`IndexFormat::Lucene106`] only by 10.6 and later. Takes
+    /// effect for what is written from now on; segments already written keep
+    /// the format they have (a reader opens both).
+    ///
+    /// [`IndexFormat::Lucene105`]: lucene_codecs::index_format::IndexFormat::Lucene105
+    /// [`IndexFormat::Lucene106`]: lucene_codecs::index_format::IndexFormat::Lucene106
+    pub fn set_index_format(&mut self, format: lucene_codecs::index_format::IndexFormat) {
+        self.cfg_mut().index_format = format;
+    }
+
+    fn segment_infos_format_version(&self) -> i32 {
+        match self.cfg.index_format {
+            lucene_codecs::index_format::IndexFormat::Lucene105 => segment_infos::VERSION_86,
+            lucene_codecs::index_format::IndexFormat::Lucene106 => segment_infos::VERSION_10_6,
+        }
+    }
+
+    /// [`Self::set_index_format`]'s value.
+    pub fn index_format(&self) -> lucene_codecs::index_format::IndexFormat {
+        self.cfg.index_format
+    }
+
     pub fn set_default_doc_values_format(
         &mut self,
         format: per_field_doc_values::Lucene90DocValuesFormat,
@@ -5783,6 +5815,7 @@ impl<'d> IndexWriter<'d> {
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
+                index_format: Default::default(),
                 adaptive_auto: None,
                 default_postings_format: Default::default(),
                 merge_lz4_high_compression: false,
@@ -7961,6 +7994,7 @@ impl IndexWriter<'_> {
         // This commits on its own: sync what the commit names first
         // (`startCommit`).
         self.deleter.sync_commit_files(&new_segment_infos)?;
+        new_segment_infos.format_version = self.segment_infos_format_version();
         let written = segment_infos::write(&new_segment_infos, self.dir);
         // `updateGeneration` on error as on success (`startCommit`).
         self.segment_infos.generation = new_segment_infos.generation;
@@ -8299,6 +8333,7 @@ impl IndexWriter<'_> {
         // and `finish_commit` leaves the previous commit current and this one
         // an inert orphan -- never a truncated `segments_N` that makes the
         // whole index unopenable.
+        new_segment_infos.format_version = self.segment_infos_format_version();
         let written = segment_infos::write_pending(&new_segment_infos, self.dir);
         // `startCommit`'s `finally`: `segmentInfos.updateGeneration(toSync)`
         // "on error or success so we don't double-write a segments_N file".
@@ -9702,6 +9737,56 @@ impl IndexWriter<'_> {
             };
         }
 
+        let files = Self::build_doc_values_files_multi(
+            docs,
+            configs,
+            &skip_indexes,
+            segment_id,
+            suffix,
+            format,
+        )?;
+        Ok((files.dvm, files.dvd, files.dvs))
+    }
+
+    /// [`Self::build_doc_values_output`] for a format that may write a `.dvp`
+    /// ([`Lucene90DocValuesFormat::with_disi_file`]): every file the group has.
+    /// A single field takes the multi-field writer, the one-field builders
+    /// write version 2 only.
+    ///
+    /// [`Lucene90DocValuesFormat::with_disi_file`]: per_field_doc_values::Lucene90DocValuesFormat::with_disi_file
+    fn build_doc_values_files<D: DocValueFields>(
+        docs: &[D],
+        configs: &[DocValuesFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+        suffix: u32,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
+    ) -> Result<doc_values::DocValuesFiles> {
+        if !format.has_disi_file() {
+            let (dvm, dvd, dvs) =
+                Self::build_doc_values_output(docs, configs, segment_id, suffix, format)?;
+            return Ok(doc_values::DocValuesFiles {
+                dvm,
+                dvd,
+                dvs,
+                dvp: None,
+            });
+        }
+        let skip_indexes: Vec<i32> = configs
+            .iter()
+            .filter(|c| c.skip_index)
+            .map(|c| c.field_number)
+            .collect();
+        Self::build_doc_values_files_multi(docs, configs, &skip_indexes, segment_id, suffix, format)
+    }
+
+    fn build_doc_values_files_multi<D: DocValueFields>(
+        docs: &[D],
+        configs: &[DocValuesFieldConfig],
+        skip_indexes: &[i32],
+        segment_id: &[u8; ID_LENGTH],
+        suffix: u32,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
+    ) -> Result<doc_values::DocValuesFiles> {
         let mut routed = dv_columns::collect_columns(docs, configs)
             .unwrap_or_default()
             .into_iter();
@@ -9714,9 +9799,9 @@ impl IndexWriter<'_> {
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
-        Ok(doc_values::write_fields_with_format(
+        Ok(doc_values::write_fields_with_format_files(
             &fields,
-            &skip_indexes,
+            skip_indexes,
             docs.len() as i32,
             segment_id,
             &format!("{}_{suffix}", format.name()),
@@ -10784,13 +10869,18 @@ impl IndexWriter<'_> {
         group: &DocValuesGroupOutput,
     ) -> Result<Vec<String>> {
         let seg = format!("{segment_name}_{}_{}", group.format_name, group.suffix);
-        let names = vec![
+        let mut names = vec![
             format!("{seg}.dvm"),
             format!("{seg}.dvd"),
             format!("{seg}.dvs"),
         ];
         for (name, bytes) in names.iter().zip([&group.dvm, &group.dvd, &group.dvs]) {
             write_file(dir, name, bytes)?;
+        }
+        if let Some(dvp) = &group.dvp {
+            let name = format!("{seg}.dvp");
+            write_file(dir, &name, dvp)?;
+            names.push(name);
         }
         Ok(names)
     }
@@ -12344,6 +12434,7 @@ impl IndexWriter<'_> {
         // This commits on its own: sync what the commit names first
         // (`startCommit`).
         self.deleter.sync_commit_files(&new_segment_infos)?;
+        new_segment_infos.format_version = self.segment_infos_format_version();
         let written = segment_infos::write(&new_segment_infos, self.dir);
         // `updateGeneration` on error as on success (`startCommit`).
         self.segment_infos.generation = new_segment_infos.generation;

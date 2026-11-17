@@ -60,7 +60,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0)
+VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0 10.5.1 10.6.0)
 QUANTIZED_VERSIONS=(9.9.2 9.12.2 10.2.2)
 COMPLETION_VERSIONS=(9.0.0 9.11.1 9.12.2 10.2.2 10.3.2)
 ONLY=""

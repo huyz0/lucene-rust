@@ -1531,7 +1531,7 @@ impl ConcurrentIndexWriter<'_> {
             name,
         )
         .and_then(|s| match s {
-            LeanSegment::Written(sci, _) => Ok(sci),
+            LeanSegment::Written(sci, _) => Ok(*sci),
             LeanSegment::Parts(..) => Err(Error::LiveSearch(
                 "a chunk for a search alone was asked for another".into(),
             )),
@@ -1810,7 +1810,7 @@ impl ConcurrentIndexWriter<'_> {
             },
             started.elapsed(),
         );
-        Ok(LeanSegment::Written(sci, lazy_doc_values))
+        Ok(LeanSegment::Written(Box::new(sci), lazy_doc_values))
     }
 
     /// The directory the writer's segments are in.
@@ -2149,7 +2149,7 @@ pub enum LeanSegment {
     ),
     /// Written to the directory, with its doc values when they were not.
     Written(
-        crate::segment_infos::SegmentCommitInfo,
+        Box<crate::segment_infos::SegmentCommitInfo>,
         Option<crate::index_writer::LazyDocValues>,
     ),
 }

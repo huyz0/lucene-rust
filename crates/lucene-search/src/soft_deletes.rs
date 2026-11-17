@@ -129,8 +129,9 @@ fn present_docs(field: &SoftDeletesField<'_>, max_doc: usize) -> Result<PresentD
             entry.docs_with_field_length
         ))
     })?;
-    let region = field
-        .data
+    let region = entry
+        .disi
+        .backing(field.data)
         .get(start..start.saturating_add(len))
         .ok_or_else(|| {
             corrupt(&format!(
