@@ -1013,6 +1013,7 @@ version = "0.1.0"
 dependencies = [
  "lucene-store",
  "lucene-util",
+ "mimalloc",
  "rayon",
  "thiserror",
 ]

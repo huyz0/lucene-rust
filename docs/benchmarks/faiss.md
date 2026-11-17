@@ -37,3 +37,32 @@ engines the Faiss-format indexes cost 4-5x the pinned memory and 2-3x the
 latency at equal recall, because they scan full-precision vectors. Faiss
 stays an explicit, opt-in engine for stock-Lucene format compatibility; it
 is not a default and does not replace IVF/HNSW.
+
+## After optimisation (2026-11-18)
+
+Same data and harness; the container is shared and noisy, so each latency is the
+median of three runs (best run in brackets) and python Faiss was re-run in the same
+window. What changed: the example and plugin allocator is mimalloc (the HNSW build
+was glibc-malloc bound: 2 min of system time), one visited set per build worker and
+a thread-local epoch set per search thread (a 390 KB memset per query before),
+neighbour vectors prefetched before their distances are computed, fused multiply-add
+distances, IVF lists scanned without touching the heap for non-qualifying vectors,
+and k-means assignment four vectors per centroid load. Results are unchanged
+(same ranked ids as Faiss in the fixture tests; recall matches before/after).
+
+| index | setting | recall@10 | latency µs (median, best) | before |
+|---|---|---|---|---|
+| native HNSW | ef 64 | 0.876 | 148 (123) | 238 |
+| native HNSW | ef 128 | 0.933 | 354 (268) | 445 |
+| native HNSW | ef 256 | 0.965 | 624 (508) | 920 |
+| python Faiss HNSW | ef 128 | 0.909 | 288 | 411 |
+| python Faiss HNSW | ef 256 | 0.947 | 495 | 684 |
+| native IVF-flat | nprobe 32 | 0.942 | 711 (663) | 787 |
+| native IVF-flat | nprobe 64 | 0.975 | 1337 (1266) | 1111 |
+| python Faiss IVF-flat | nprobe 64 | 0.975 | 1102 | 993 |
+
+Build: HNSW 156 s → 34.5 s (python Faiss 39 s, four threads). IVF-flat 22.5 s → 26 s,
+unchanged within noise: it is 25 k-means iterations of brute-force assignment
+(about 660 GFLOP), where Faiss's BLAS is ahead (7.5 s). A 4x2 register tile was tried
+and was 3x slower (spills), so it was dropped. IVF search at nprobe 64 is memory
+bound (10 MB of lists per query) and sits within about 15% of Faiss.

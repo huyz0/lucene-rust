@@ -5,7 +5,9 @@ fn data(n: usize, d: usize) -> Vec<f32> {
     let mut s = 99u64;
     (0..n * d)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 33) as f32 / (1u64 << 31) as f32) - 0.5
         })
         .collect()
@@ -21,8 +23,18 @@ fn odd_dimension_and_every_kind_search() {
         ("IDMap,HNSW8", Metric::InnerProduct),
         ("IDMap,IVF4,Flat", Metric::L2),
     ] {
-        let idx = build_index(desc, "efConstruction=30,nprobe=4,efSearch=40", m, d, &v, &ids).unwrap();
-        let hits = idx.search(&v[..d], 3, &SearchParams::default(), None).unwrap();
+        let idx = build_index(
+            desc,
+            "efConstruction=30,nprobe=4,efSearch=40",
+            m,
+            d,
+            &v,
+            &ids,
+        )
+        .unwrap();
+        let hits = idx
+            .search(&v[..d], 3, &SearchParams::default(), None)
+            .unwrap();
         assert_eq!(hits.len(), 3, "{desc}");
     }
 }
@@ -33,9 +45,20 @@ fn empty_and_tiny_builds() {
         let idx = build_index(desc, "", Metric::L2, 4, &[], &[]).unwrap();
         assert_eq!(idx.ntotal(), 0);
         let back = read_index(&write_index(&idx)).unwrap();
-        assert!(back.search(&[0.0; 4], 5, &SearchParams::default(), None).unwrap().is_empty());
+        assert!(back
+            .search(&[0.0; 4], 5, &SearchParams::default(), None)
+            .unwrap()
+            .is_empty());
     }
-    let idx = build_index("IDMap,IVF64,Flat", "", Metric::L2, 4, &data(3, 4), &[1, 2, 3]).unwrap();
+    let idx = build_index(
+        "IDMap,IVF64,Flat",
+        "",
+        Metric::L2,
+        4,
+        &data(3, 4),
+        &[1, 2, 3],
+    )
+    .unwrap();
     assert_eq!(idx.ntotal(), 3);
 }
 
@@ -50,10 +73,17 @@ fn duplicate_vectors_leave_clusters_empty() {
     }
     let ids: Vec<i64> = (0..(v.len() / d) as i64).collect();
     let idx = build_index("IDMap,IVF16,Flat", "nprobe=16", Metric::L2, d, &v, &ids).unwrap();
-    let hits = idx.search(&first, 5, &SearchParams::default(), None).unwrap();
+    let hits = idx
+        .search(&first, 5, &SearchParams::default(), None)
+        .unwrap();
     assert!(hits[0].1 < 1e-9);
     let ip = build_index("IDMap,IVF16,Flat", "", Metric::InnerProduct, d, &v, &ids).unwrap();
-    assert_eq!(ip.search(&first, 5, &SearchParams::default(), None).unwrap().len(), 5);
+    assert_eq!(
+        ip.search(&first, 5, &SearchParams::default(), None)
+            .unwrap()
+            .len(),
+        5
+    );
 }
 
 #[test]
