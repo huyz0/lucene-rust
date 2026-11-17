@@ -14,6 +14,7 @@ pub mod doc_id_sort;
 pub mod fixed_bit_set;
 pub mod float_heap;
 pub mod fx_hash;
+pub mod gemm;
 pub mod geo;
 pub mod group_top;
 pub mod half_float;

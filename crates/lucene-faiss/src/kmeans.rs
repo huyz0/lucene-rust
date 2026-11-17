@@ -5,8 +5,9 @@
 
 use rayon::prelude::*;
 
-use crate::distance::{distance, distance4, dot};
+use crate::distance::dot;
 use crate::format::{Flat, Metric};
+use lucene_util::gemm;
 
 const ITERATIONS: usize = 25;
 const MAX_POINTS_PER_CENTROID: usize = 256;
@@ -32,45 +33,46 @@ impl Rng {
     }
 }
 
-/// The index of the centroid nearest to `v` under `metric`.
-pub(crate) fn nearest(centroids: &Flat, v: &[f32]) -> usize {
-    let mut best = 0;
-    let mut best_d = distance(centroids.metric, v, centroids.vector(0));
-    for c in 1..centroids.len() {
-        let d = distance(centroids.metric, v, centroids.vector(c));
-        let better = match centroids.metric {
-            Metric::L2 => d < best_d,
-            Metric::InnerProduct => d > best_d,
-        };
-        if better {
-            best = c;
-            best_d = d;
-        }
-    }
-    best
-}
+/// Rows per matrix-product block: the block's scores (`BLOCK * nlist`
+/// floats) stay near the cache.
+const BLOCK: usize = 256;
 
-/// [`nearest`] for each of `group` (four at a time share the centroid loads).
-fn nearest_group(centroids: &Flat, group: &[&[f32]]) -> Vec<usize> {
-    let [a, b, c, d] = group else {
-        return group.iter().map(|v| nearest(centroids, v)).collect();
+/// Every row of `x`'s nearest centroid by one matrix product per block, as
+/// Faiss does with BLAS: Euclidean ranks `c.c / 2 - x.c`, inner product
+/// `-x.c`. Ties go to the lower centroid.
+pub(crate) fn assign_all(x: &[f32], d: usize, centroids: &Flat) -> Vec<usize> {
+    let k = centroids.len();
+    let half_norms: Vec<f32> = match centroids.metric {
+        Metric::L2 => centroids
+            .data
+            .chunks_exact(d)
+            .map(|c| 0.5 * dot(c, c))
+            .collect(),
+        Metric::InnerProduct => vec![0.0; k],
     };
-    let mut best = [0usize; 4];
-    let mut best_d = distance4(centroids.metric, [a, b, c, d], centroids.vector(0));
-    for ci in 1..centroids.len() {
-        let ds = distance4(centroids.metric, [a, b, c, d], centroids.vector(ci));
-        for r in 0..4 {
-            let better = match centroids.metric {
-                Metric::L2 => ds[r] < best_d[r],
-                Metric::InnerProduct => ds[r] > best_d[r],
-            };
-            if better {
-                best[r] = ci;
-                best_d[r] = ds[r];
-            }
-        }
-    }
-    best.to_vec()
+    let blocks: Vec<Vec<usize>> = x
+        .par_chunks(BLOCK * d)
+        .map(|rows| {
+            let mut scores = vec![0f32; rows.len() / d * k];
+            gemm::dot_rows(rows, &centroids.data, d, &mut scores);
+            scores
+                .chunks_exact(k)
+                .map(|row| {
+                    let mut best = 0;
+                    let mut best_s = f32::INFINITY;
+                    for (c, (&dot, &h)) in row.iter().zip(&half_norms).enumerate() {
+                        let s = h - dot;
+                        if s < best_s {
+                            best = c;
+                            best_s = s;
+                        }
+                    }
+                    best
+                })
+                .collect()
+        })
+        .collect();
+    blocks.concat()
 }
 
 fn normalize(v: &mut [f32]) {
@@ -91,10 +93,10 @@ pub(crate) fn train(x: &[f32], d: usize, nlist: usize, metric: Metric, seed: u64
         let j = i + rng.below(n - i);
         order.swap(i, j);
     }
-    let sample: Vec<&[f32]> = order[..want]
-        .iter()
-        .map(|&i| &x[i * d..(i + 1) * d])
-        .collect();
+    let mut sample: Vec<f32> = Vec::with_capacity(want * d);
+    for &i in &order[..want] {
+        sample.extend_from_slice(&x[i * d..(i + 1) * d]);
+    }
     let mut centroids = Flat {
         d,
         metric,
@@ -104,21 +106,18 @@ pub(crate) fn train(x: &[f32], d: usize, nlist: usize, metric: Metric, seed: u64
         // Fewer points than centroids: points repeat, as Faiss warns.
         centroids
             .data
-            .extend_from_slice(sample[c % sample.len().max(1)]);
+            .extend_from_slice(&sample[(c % want.max(1)) * d..][..d]);
     }
     if metric == Metric::InnerProduct {
         centroids.data.chunks_exact_mut(d).for_each(normalize);
     }
     for _ in 0..ITERATIONS {
-        let assigned: Vec<usize> = sample
-            .par_chunks(4)
-            .flat_map_iter(|group| nearest_group(&centroids, group))
-            .collect();
+        let assigned = assign_all(&sample, d, &centroids);
         let mut sums = vec![0f64; nlist * d];
         let mut counts = vec![0usize; nlist];
-        for (v, &c) in sample.iter().zip(&assigned) {
+        for (v, &c) in sample.chunks_exact(d).zip(&assigned) {
             counts[c] += 1;
-            for (s, &x) in sums[c * d..(c + 1) * d].iter_mut().zip(*v) {
+            for (s, &x) in sums[c * d..(c + 1) * d].iter_mut().zip(v) {
                 *s += f64::from(x);
             }
         }

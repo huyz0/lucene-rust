@@ -13,6 +13,7 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [dependencies]
 thiserror.workspace = true
+matrixmultiply = { version = "0.3.11", default-features = false, features = ["std"] }
 
 [features]
 # Exposes `test_support::TempDir` -- the shared RAII scratch-directory guard --
