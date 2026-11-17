@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""How much of a cluster's search traffic the lucene-rust plugin runs native,
+"""How much of a cluster's search traffic the accelerated-search plugin runs native,
 and why the rest falls back -- from every node's
 `GET /_plugins/accelerated/stats` (docs/feature-matrix.md).
 

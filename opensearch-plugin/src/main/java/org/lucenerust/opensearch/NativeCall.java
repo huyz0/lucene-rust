@@ -49,7 +49,7 @@ final class NativeCall {
         if (t instanceof RuntimeException e) {
             throw e;
         }
-        throw new IllegalStateException("lucene-rust: downcall failed", t);
+        throw new IllegalStateException("accelerated-search: downcall failed", t);
     }
 
     // ---- Per-thread native scratch memory ---------------------------------------------
@@ -70,7 +70,7 @@ final class NativeCall {
             // Every `usize` crosses as a `long`, and an owned buffer's slot is a pointer then a
             // `long`: both assume 64-bit pointers, which every platform with a library has.
             if (ADDRESS.byteSize() != Long.BYTES) {
-                throw new UnsatisfiedLinkError("lucene-rust needs 64-bit pointers, this JVM has " + ADDRESS.byteSize() * 8);
+                throw new UnsatisfiedLinkError("accelerated-search needs 64-bit pointers, this JVM has " + ADDRESS.byteSize() * 8);
             }
         }
 

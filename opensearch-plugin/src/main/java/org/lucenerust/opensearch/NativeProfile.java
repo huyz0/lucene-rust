@@ -170,7 +170,7 @@ final class NativeProfile {
         int rc = NativeSearch.profile(handle, blob, topScores, topN, countLimit, out);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
-            logger.warn("lucene-rust: the native profile failed ({}): {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: the native profile failed ({}): {}", rc, NativeBridge.lastError());
             return null;
         }
         return Report.decode(out[0]);
@@ -531,7 +531,7 @@ final class NativeProfile {
                 roots.remove(roots.size() - 1);
             }
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.debug("lucene-rust: profile roots left as they were", e);
+            logger.debug("accelerated-search: profile roots left as they were", e);
         }
     }
 
@@ -597,7 +597,7 @@ final class NativeProfile {
                 }
             }
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.debug("lucene-rust: aggregation profile left as it was", e);
+            logger.debug("accelerated-search: aggregation profile left as it was", e);
         }
     }
 

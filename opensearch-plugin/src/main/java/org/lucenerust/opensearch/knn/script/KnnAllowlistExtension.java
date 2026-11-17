@@ -3,7 +3,7 @@
  */
 package org.lucenerust.opensearch.knn.script;
 
-import org.lucenerust.opensearch.RustSearchPlugin;
+import org.lucenerust.opensearch.AcceleratedSearchPlugin;
 import org.opensearch.painless.spi.Allowlist;
 import org.opensearch.painless.spi.AllowlistLoader;
 import org.opensearch.painless.spi.PainlessExtension;
@@ -23,7 +23,7 @@ import java.util.Map;
 public final class KnnAllowlistExtension implements PainlessExtension {
     @Override
     public Map<ScriptContext<?>, List<Allowlist>> getContextAllowlists() {
-        if (RustSearchPlugin.stockKnnInstalled()) {
+        if (AcceleratedSearchPlugin.stockKnnInstalled()) {
             return Map.of();
         }
         List<Allowlist> list = List.of(AllowlistLoader.loadFromResourceFiles(KnnAllowlistExtension.class, "knn_allowlist.txt"));

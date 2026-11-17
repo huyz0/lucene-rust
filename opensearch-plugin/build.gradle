@@ -1,4 +1,4 @@
-// The lucene-rust OpenSearch plugin.
+// The accelerated-search OpenSearch plugin.
 //
 // It compiles against the jars of the OpenSearch distribution it installs
 // into -- `lib/` of the pinned `opensearchproject/opensearch` image, which
@@ -122,7 +122,7 @@ dependencies {
     }
 }
 
-// lucene-rust-build.properties: which variant this jar is (StoreCrypto.buildIsFips).
+// accelerated-search-build.properties: which variant this jar is (StoreCrypto.buildIsFips).
 def buildProperties = layout.buildDirectory.dir('generated/build-properties')
 def writeBuildProperties = tasks.register('writeBuildProperties') {
     def out = buildProperties
@@ -130,7 +130,7 @@ def writeBuildProperties = tasks.register('writeBuildProperties') {
     inputs.property('fips', isFips)
     outputs.dir(out)
     doLast {
-        def f = out.get().file('lucene-rust-build.properties').asFile
+        def f = out.get().file('accelerated-search-build.properties').asFile
         f.parentFile.mkdirs()
         f.text = "fips=${isFips}\n"
     }
@@ -200,7 +200,7 @@ def torchShim = tasks.register('torchShim', Exec) {
 tasks.register('bundlePlugin', Zip) {
     description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
     dependsOn tasks.named('jar'), cargoBuild
-    archiveFileName = fips ? "lucene-rust-fips-${version}.zip" : "lucene-rust-${version}.zip"
+    archiveFileName = fips ? "accelerated-search-fips-${version}.zip" : "accelerated-search-${version}.zip"
     destinationDirectory = layout.buildDirectory.dir('distributions')
     from(tasks.named('jar'))
     from('src/plugin-metadata') {
@@ -216,7 +216,7 @@ tasks.register('bundlePlugin', Zip) {
     from(file("${repoRoot}/NOTICE"))
     // -PdataPacks: the analysis modules' data packs ship in the zip
     // (packs/<pack>/...), about 21 MB; without it a node adds them under
-    // <config>/lucene-rust/packs/.
+    // <config>/accelerated-search/packs/.
     if (findProperty('dataPacks')) {
         dependsOn makeDataPacks
         from(dataPacks) { into 'packs' }
@@ -250,7 +250,7 @@ def selfTest = tasks.register('selfTest', JavaExec) {
 }
 // The Rust engine's writer against Lucene's IndexWriter, document by document.
 def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
-    description = 'Differential test: RustIndexWriter against Lucene IndexWriter on the same operations.'
+    description = 'Differential test: AcceleratedIndexWriter against Lucene IndexWriter on the same operations.'
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.EngineWriterDiffTest'
@@ -282,10 +282,10 @@ tasks.register('nativeBench', JavaExec) {
     args findProperty('docs') ?: '500000'
 }
 
-// The indexing path stage by stage (encode, native prepare, RustIndexWriter) against Lucene's
+// The indexing path stage by stage (encode, native prepare, AcceleratedIndexWriter) against Lucene's
 // IndexWriter on OpenSearch-shaped documents. A measurement, not part of `check`.
 tasks.register('indexingBench', JavaExec) {
-    description = 'Indexing throughput by stage: DocumentEncoder, native prepare, RustIndexWriter, Lucene.'
+    description = 'Indexing throughput by stage: DocumentEncoder, native prepare, AcceleratedIndexWriter, Lucene.'
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.IndexingBench'
@@ -346,7 +346,7 @@ tasks.register('yamlRestTest', Test) {
 }
 
 // OpenSearch's own engine tests (InternalEngineTests), derived to run on
-// RustEngine by tools/derive_engine_tests.py. Needs Maven Central for the test
+// AcceleratedEngine by tools/derive_engine_tests.py. Needs Maven Central for the test
 // framework, as the YAML runner does.
 sourceSets {
     engineTest {
@@ -367,7 +367,7 @@ tasks.named('compileEngineTestJava') {
     options.compilerArgs += ['-Xlint:none', '-nowarn']
 }
 tasks.register('engineTest', Test) {
-    description = "OpenSearch's InternalEngineTests, run on RustEngine."
+    description = "OpenSearch's InternalEngineTests, run on AcceleratedEngine."
     dependsOn cargoBuild
     testClassesDirs = sourceSets.engineTest.output.classesDirs
     classpath = sourceSets.engineTest.runtimeClasspath

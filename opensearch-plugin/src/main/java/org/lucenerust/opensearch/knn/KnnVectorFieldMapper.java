@@ -4,7 +4,7 @@
 package org.lucenerust.opensearch.knn;
 
 import org.opensearch.index.mapper.MapperParsingException;
-import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.FieldType;
@@ -195,7 +195,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             builder.parse(name, parserContext, node);
             KnnFieldConfig config = builder.config();
             Settings settings = parserContext.getSettings();
-            if (config.rustEngine() && RustEngineSupport.servedByRust(settings) == false) {
+            if (config.rustEngine() && AcceleratedEngineSupport.servedByRust(settings) == false) {
                 // OpenSearch's own engine would write the raw vectors (and graph) alone, never the IVF index or the codes.
                 throw new MapperParsingException(
                     "["

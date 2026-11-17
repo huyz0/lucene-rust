@@ -54,7 +54,7 @@ public final class KnnHitsMemo {
             return MethodHandles.privateLookupIn(ContextIndexSearcher.class, MethodHandles.lookup())
                 .findVarHandle(ContextIndexSearcher.class, "searchContext", SearchContext.class);
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.warn("lucene-rust: cannot read a searcher's search context; [knn] searches again in each phase", e);
+            logger.warn("accelerated-search: cannot read a searcher's search context; [knn] searches again in each phase", e);
             return null;
         }
     }

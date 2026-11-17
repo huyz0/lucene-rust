@@ -8,7 +8,7 @@
 //! [`crate::jvm_reader`] open: a bound path gets an
 //! [`EncryptedDirectory`], which reads and writes the LRSE format
 //! (`lucene-store-crypto/src/format.rs`) that the plugin's Java
-//! `RustEncryptedDirectory` reads and writes too. Its files are read
+//! `AcceleratedEncryptedDirectory` reads and writes too. Its files are read
 //! through the demand pager ([`PagedFsDirectory`]) where `userfaultfd` is
 //! available: ciphertext is read with `O_DIRECT`, each chunk is decrypted
 //! and authenticated once as its page is read in, and the plaintext lives

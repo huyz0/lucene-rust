@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenSearch's own engine tests (InternalEngineTests, 3.9.0), run on the Rust
 # engine: opensearch-plugin/tools/derive_engine_tests.py rewrote them to build
-# RustEngine, and every test not listed in its SKIPPED map must pass.
+# AcceleratedEngine, and every test not listed in its SKIPPED map must pass.
 #
 #   scripts/opensearch-engine-tests.sh [-Dtests.method=testFoo] [-Dtests.seed=...]
 #
@@ -27,6 +27,6 @@ cd "$stage/tmp"
     -Dtests.security.manager=false -Djava.io.tmpdir="$stage/tmp" \
     -Daccelerated.library.path="$stage/cp/liblucene_ffi.so" \
     "$@" -cp "$stage/cp:$stage/cp/*" \
-    org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.RustEngineTests \
+    org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.AcceleratedEngineTests \
     org.lucenerust.opensearch.engine.SeqNoLayoutTests \
-    org.lucenerust.opensearch.engine.RustIndexerFactoryTests
+    org.lucenerust.opensearch.engine.AcceleratedIndexerFactoryTests

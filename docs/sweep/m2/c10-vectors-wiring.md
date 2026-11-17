@@ -647,7 +647,7 @@ Swept clean; the layering inversion c5 recorded is closed.
 
 ### What vectors cost per document
 
-`benchmarks/rust-runner`'s `index-bench` gained a `LUCENE_RUST_VECTOR_DIM` knob
+`benchmarks/rust-runner`'s `index-bench` gained a `ACCELERATED_VECTOR_DIM` knob
 that gives every document a FLOAT32 `KnnFloatVectorField` of that dimension.
 Same corpus, same machine, one core, `--release`, `M = 16`, `beamWidth = 100`,
 default 16 MB RAM buffer.

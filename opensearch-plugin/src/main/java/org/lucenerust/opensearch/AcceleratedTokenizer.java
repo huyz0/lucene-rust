@@ -21,12 +21,12 @@ import java.util.Map;
 
 /**
  * A Rust tokenizer, by its SPI name and factory arguments, run from Java: the plugin's
- * {@code rust_*} tokenizers ({@link RustAnalysis}). Java calls the same Rust code the native
+ * {@code rust_*} tokenizers ({@link AcceleratedAnalysis}). Java calls the same Rust code the native
  * index path runs, so a field indexed natively and the query text OpenSearch analyzes in Java
  * split alike, and {@link AnalyzerSpec} maps the tokenizer to its SPI name and arguments as they
  * are, so the chain around it runs natively too.
  */
-public final class RustTokenizer extends Tokenizer {
+public final class AcceleratedTokenizer extends Tokenizer {
     /** The plugin's name for it ({@code thai_dictionary}), for errors. */
     final String name;
     /** The Rust factory's SPI name ({@code thai}). */
@@ -45,14 +45,14 @@ public final class RustTokenizer extends Tokenizer {
     private int finalOffset;
 
     /** {@code spec} must be {@link #spec}{@code (spi, args)}; build it once per factory. */
-    RustTokenizer(String name, String spi, Map<String, String> args, byte[] spec) {
+    AcceleratedTokenizer(String name, String spi, Map<String, String> args, byte[] spec) {
         this.name = name;
         this.spi = spi;
         this.args = args;
         this.spec = spec;
     }
 
-    RustTokenizer(String name, String spi, Map<String, String> args) {
+    AcceleratedTokenizer(String name, String spi, Map<String, String> args) {
         this(name, spi, args, spec(spi, args));
     }
 

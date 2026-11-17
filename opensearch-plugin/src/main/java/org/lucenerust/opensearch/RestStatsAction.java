@@ -3,7 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
-import org.lucenerust.opensearch.engine.RustEngineFactory;
+import org.lucenerust.opensearch.engine.AcceleratedEngineFactory;
 
 import org.opensearch.core.rest.RestStatus;
 import org.opensearch.common.xcontent.json.JsonXContent;
@@ -108,14 +108,14 @@ public final class RestStatsAction extends BaseRestHandler {
             b.endObject();
             // Engines this node has created for accelerated-engine indices, by kind.
             b.startObject("engines");
-            b.field("accelerated", RustEngineFactory.RUST.get());
-            b.field("standard", RustEngineFactory.JAVA.get());
-            b.field("nrt_replica", RustEngineFactory.NRT_REPLICA.get());
-            b.field("accelerated_indexer", org.lucenerust.opensearch.engine.RustIndexerFactory.INDEXERS.get());
-            b.field("segrep_primary", org.lucenerust.opensearch.engine.RustIndexerFactory.NATIVE ? "accelerated" : "indexer_factory");
+            b.field("accelerated", AcceleratedEngineFactory.RUST.get());
+            b.field("standard", AcceleratedEngineFactory.JAVA.get());
+            b.field("nrt_replica", AcceleratedEngineFactory.NRT_REPLICA.get());
+            b.field("accelerated_indexer", org.lucenerust.opensearch.engine.AcceleratedIndexerFactory.INDEXERS.get());
+            b.field("segrep_primary", org.lucenerust.opensearch.engine.AcceleratedIndexerFactory.NATIVE ? "accelerated" : "indexer_factory");
             b.endObject();
             // Text field values the accelerated writer analyzed on its own path and on the fallback.
-            long[] analyzed = RustEngineFactory.analyzedValues();
+            long[] analyzed = AcceleratedEngineFactory.analyzedValues();
             b.startObject("analyzed_values");
             b.field("accelerated", analyzed[0]);
             b.field("fallback", analyzed[1]);

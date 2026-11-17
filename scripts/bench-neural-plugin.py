@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Neural search through the lucene-rust plugin against stock: ingest and query latency.
+"""Neural search through the accelerated-search plugin against stock: ingest and query latency.
 
 Uses the nodes scripts/check-neural-plugin.py --keep (with the semantic section) leaves running (the
 plugin on 19241, stock on 19242), the fixtures/ml tiny-bert text embedding

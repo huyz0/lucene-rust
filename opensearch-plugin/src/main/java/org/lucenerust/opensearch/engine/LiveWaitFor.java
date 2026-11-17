@@ -45,11 +45,11 @@ final class LiveWaitFor implements Closeable {
 
     private final RefreshListeners listeners;
     private final ThreadPool threadPool;
-    private final RustIndexWriter writer;
+    private final AcceleratedIndexWriter writer;
     private final AtomicBoolean releasing = new AtomicBoolean();
     private volatile boolean closed;
 
-    private LiveWaitFor(RefreshListeners listeners, ThreadPool threadPool, RustIndexWriter writer) {
+    private LiveWaitFor(RefreshListeners listeners, ThreadPool threadPool, AcceleratedIndexWriter writer) {
         this.listeners = listeners;
         this.threadPool = threadPool;
         this.writer = writer;
@@ -57,7 +57,7 @@ final class LiveWaitFor implements Closeable {
 
     /** Releases {@code config}'s waiting refresh listeners as above, or null when the index has none to release. */
     static LiveWaitFor start(EngineConfig config, Object writer) {
-        if (!(writer instanceof RustIndexWriter w) || w.liveSearch() == false || config.getThreadPool() == null) {
+        if (!(writer instanceof AcceleratedIndexWriter w) || w.liveSearch() == false || config.getThreadPool() == null) {
             return null;
         }
         for (ReferenceManager.RefreshListener l : config.getExternalRefreshListener()) {
@@ -91,16 +91,16 @@ final class LiveWaitFor implements Closeable {
                 threadPool.generic().execute(this::release);
             } catch (RuntimeException e) {
                 releasing.set(false);
-                logger.debug("lucene-rust: could not release wait_for listeners", e);
+                logger.debug("accelerated-search: could not release wait_for listeners", e);
             }
         }
     }
 
     /**
      * Releases the waiting listeners. Under a staleness bound ({@link
-     * RustIndexWriter#liveStalenessNanos}) the translog's last write location is read first, then
+     * AcceleratedIndexWriter#liveStalenessNanos}) the translog's last write location is read first, then
      * every later search is made to read a view opened after it ({@link
-     * RustIndexWriter#refreshLiveShared}), which holds the writes up to that location; when that cannot
+     * AcceleratedIndexWriter#refreshLiveShared}), which holds the writes up to that location; when that cannot
      * be done now, the listeners wait for the next look.
      */
     private void release() {
@@ -113,9 +113,9 @@ final class LiveWaitFor implements Closeable {
                 }
             }
         } catch (AlreadyClosedException e) {
-            logger.debug("lucene-rust: the shard closed while releasing wait_for listeners", e);
+            logger.debug("accelerated-search: the shard closed while releasing wait_for listeners", e);
         } catch (IOException | RuntimeException e) {
-            logger.warn("lucene-rust: releasing wait_for listeners failed", e);
+            logger.warn("accelerated-search: releasing wait_for listeners failed", e);
         } finally {
             releasing.set(false);
         }

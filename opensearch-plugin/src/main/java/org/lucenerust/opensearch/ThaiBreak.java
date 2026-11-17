@@ -45,7 +45,7 @@ final class ThaiBreak {
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
             int rc = NativeAnalysis.thaiSetBreakUpcall(stub);
             if (rc != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the Thai break upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the Thai break upcall failed: " + NativeBridge.lastError());
             }
             installed = true;
         } catch (ReflectiveOperationException e) {

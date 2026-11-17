@@ -339,7 +339,7 @@ final class NativeSelfTestSecurity {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-security");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-security");
         NativeReaders readers = new NativeReaders(c -> c.getClassLoader() != NativeSelfTestSecurity.class.getClassLoader()
             || c.getName().startsWith("org.apache.lucene"), Set.of(HidingLeaf.class.getName()));
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {

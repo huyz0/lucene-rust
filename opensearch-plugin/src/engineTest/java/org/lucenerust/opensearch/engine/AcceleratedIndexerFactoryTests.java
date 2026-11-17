@@ -30,13 +30,13 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 
 /**
- * {@link RustIndexerFactory}: a segment-replication primary's {@code Indexer} answers the refresh
- * checkpoint {@code CopyState} asks for, and a {@link RustEngine} built any other way refuses to
+ * {@link AcceleratedIndexerFactory}: a segment-replication primary's {@code Indexer} answers the refresh
+ * checkpoint {@code CopyState} asks for, and a {@link AcceleratedEngine} built any other way refuses to
  * be one; and an engine plugin's {@link PrimaryOperationPolicy} is refused by the Rust engine, or
  * handed to OpenSearch's where the index only inherits the node default. Hand-written, beside the
- * derived {@code RustEngineTests}.
+ * derived {@code AcceleratedEngineTests}.
  */
-public class RustIndexerFactoryTests extends RustEngineTestCase {
+public class AcceleratedIndexerFactoryTests extends AcceleratedEngineTestCase {
 
     private EngineConfig segrepConfig(Store store) throws IOException {
         IndexSettings segrep = IndexSettingsModule.newIndexSettings(
@@ -61,17 +61,17 @@ public class RustIndexerFactoryTests extends RustEngineTestCase {
     public void testASegmentReplicationPrimaryIsBuiltThroughTheFactory() throws IOException {
         try (Store store = createStore(newFSDirectory(createTempDir()))) {
             EngineConfig config = segrepConfig(store);
-            IllegalArgumentException refused = expectThrows(IllegalArgumentException.class, () -> new RustEngine(config));
-            assertThat(refused.getMessage(), containsString("was not built through RustIndexerFactory"));
+            IllegalArgumentException refused = expectThrows(IllegalArgumentException.class, () -> new AcceleratedEngine(config));
+            assertThat(refused.getMessage(), containsString("was not built through AcceleratedIndexerFactory"));
 
-            long before = RustIndexerFactory.INDEXERS.get();
-            Indexer indexer = new RustIndexerFactory(new RustEngineFactory(true)).createIndexer(config);
+            long before = AcceleratedIndexerFactory.INDEXERS.get();
+            Indexer indexer = new AcceleratedIndexerFactory(new AcceleratedEngineFactory(true)).createIndexer(config);
             try {
-                assertThat(indexer, instanceOf(RustIndexerFactory.RustEngineIndexer.class));
-                assertEquals(before + 1, RustIndexerFactory.INDEXERS.get());
+                assertThat(indexer, instanceOf(AcceleratedIndexerFactory.AcceleratedEngineIndexer.class));
+                assertEquals(before + 1, AcceleratedIndexerFactory.INDEXERS.get());
                 Engine engine = ((EngineBackedIndexer) indexer).getEngine();
-                assertThat(engine, instanceOf(RustEngine.class));
-                RustEngine rust = (RustEngine) engine;
+                assertThat(engine, instanceOf(AcceleratedEngine.class));
+                AcceleratedEngine rust = (AcceleratedEngine) engine;
                 // CopyState's question, answered before and after a refresh.
                 assertEquals(SequenceNumbers.NO_OPS_PERFORMED, indexer.lastRefreshedCheckpoint());
                 for (int i = 0; i < 3; i++) {
@@ -133,18 +133,18 @@ public class RustIndexerFactoryTests extends RustEngineTestCase {
     public void testAnotherPluginsPrimaryOperationPolicyIsRefusedOrHandedToOpenSearch() throws IOException {
         // The index asked for the Rust engine: the engine refuses, naming the policy.
         try (Store store = createStore(newFSDirectory(createTempDir()))) {
-            EngineConfig asked = policyConfig(store, Settings.builder().put(RustEngineSupport.ENGINE_ENABLED.getKey(), true).build());
-            IllegalArgumentException refused = expectThrows(IllegalArgumentException.class, () -> new RustEngine(asked));
+            EngineConfig asked = policyConfig(store, Settings.builder().put(AcceleratedEngineSupport.ENGINE_ENABLED.getKey(), true).build());
+            IllegalArgumentException refused = expectThrows(IllegalArgumentException.class, () -> new AcceleratedEngine(asked));
             assertThat(refused.getMessage(), containsString("default primary operation policy only"));
             assertThat(refused.getMessage(), containsString("[foreign]"));
-            expectThrows(IllegalArgumentException.class, () -> new RustEngineFactory(true).newReadWriteEngine(asked));
+            expectThrows(IllegalArgumentException.class, () -> new AcceleratedEngineFactory(true).newReadWriteEngine(asked));
         }
         // The index only inherits the node default: OpenSearch's engine serves it.
         try (Store store = createStore(newFSDirectory(createTempDir()))) {
             EngineConfig inherited = policyConfig(store, Settings.EMPTY);
-            try (Engine engine = new RustEngineFactory(true).newReadWriteEngine(inherited)) {
+            try (Engine engine = new AcceleratedEngineFactory(true).newReadWriteEngine(inherited)) {
                 assertThat(engine, instanceOf(InternalEngine.class));
-                assertFalse(engine instanceof RustEngine);
+                assertFalse(engine instanceof AcceleratedEngine);
             }
         }
     }

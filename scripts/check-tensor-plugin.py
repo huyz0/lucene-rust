@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""multi_vector fields and the max_sim query through the lucene-rust plugin.
+"""multi_vector fields and the max_sim query through the accelerated-search plugin.
 
 Starts one node of the pinned OpenSearch image with the plugin and checks,
 on an index the Rust engine writes and on one OpenSearch's own engine writes
@@ -81,7 +81,7 @@ def start(image, heap="1g"):
 
 def build_image():
     """The nodectl variant of the pinned OpenSearch with the built plugin installed."""
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     return "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

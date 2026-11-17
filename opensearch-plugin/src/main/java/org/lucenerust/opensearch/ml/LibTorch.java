@@ -105,7 +105,7 @@ final class LibTorch {
                 try {
                     fromMaven(flavor, classifier, sha, tmp);
                 } catch (IOException maven) {
-                    LOGGER.warn("lucene-rust: cannot download libtorch from Maven Central, trying {}: {}", DJL_SITE, maven.toString());
+                    LOGGER.warn("accelerated-search: cannot download libtorch from Maven Central, trying {}: {}", DJL_SITE, maven.toString());
                     IOUtils.rm(tmp);
                     Files.createDirectories(tmp);
                     fromDjl(flavor, classifier, tmp);
@@ -157,7 +157,7 @@ final class LibTorch {
             if (target.getParent().equals(into) == false) {
                 throw new IOException("unexpected libtorch file name [" + name + "]");
             }
-            LOGGER.info("lucene-rust: downloading {}/{}", DJL_SITE, line);
+            LOGGER.info("accelerated-search: downloading {}/{}", DJL_SITE, line);
             try (InputStream in = new GZIPInputStream(open(DJL_SITE + "/" + line))) {
                 Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             }
@@ -178,7 +178,7 @@ final class LibTorch {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
-        LOGGER.info("lucene-rust: downloading {}", url);
+        LOGGER.info("accelerated-search: downloading {}", url);
         try (InputStream in = new DigestInputStream(open(url), sha)) {
             Files.copy(in, jar);
         }

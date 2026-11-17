@@ -47,7 +47,7 @@ import org.lucenerust.opensearch.store.LocalKeySource;
 import org.lucenerust.opensearch.store.Lrse;
 import org.lucenerust.opensearch.store.NativeStores;
 import org.lucenerust.opensearch.store.NativeStoresAccess;
-import org.lucenerust.opensearch.store.RustEncryptedDirectory;
+import org.lucenerust.opensearch.store.AcceleratedEncryptedDirectory;
 import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.mapper.ParseContext;
 
@@ -95,7 +95,7 @@ public final class EncryptedStoreTest {
     private static void javaWritesRustReads(StoreCrypto crypto) throws Exception {
         Path root = Files.createTempDirectory("encrypted-store-java");
         try {
-            try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 7), crypto, 4096)) {
+            try (AcceleratedEncryptedDirectory dir = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 7), crypto, 4096)) {
                 try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()).setMaxBufferedDocs(97))) {
                     for (int i = 0; i < 1000; i++) {
                         w.addDocument(doc(i));
@@ -122,7 +122,7 @@ public final class EncryptedStoreTest {
                 noPlaintext(root, "Lucene-written");
             }
             // The wrong key opens nothing.
-            try (RustEncryptedDirectory wrong = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 8), crypto, 4096)) {
+            try (AcceleratedEncryptedDirectory wrong = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 8), crypto, 4096)) {
                 try (DirectoryReader r = DirectoryReader.open(wrong)) {
                     check(false, "the wrong key opened the index: " + r);
                 } catch (IOException e) {
@@ -130,7 +130,7 @@ public final class EncryptedStoreTest {
                 }
             }
             // A changed byte fails authentication.
-            try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 7), crypto, 4096)) {
+            try (AcceleratedEncryptedDirectory dir = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 7), crypto, 4096)) {
                 String victim = null;
                 for (String f : dir.listAll()) {
                     if (f.endsWith(".tim")) {
@@ -165,14 +165,14 @@ public final class EncryptedStoreTest {
     private static void storeSizing(StoreCrypto crypto) throws Exception {
         Path root = Files.createTempDirectory("encrypted-store-sizing");
         int chunk = 4096;
-        try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 5), crypto, chunk)) {
+        try (AcceleratedEncryptedDirectory dir = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 5), crypto, chunk)) {
             try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()))) {
                 for (int i = 0; i < 300; i++) {
                     w.addDocument(doc(i));
                 }
                 w.commit();
                 check(Files.exists(root.resolve(IndexWriter.WRITE_LOCK_NAME)), "the open writer holds write.lock");
-                check(RustEncryptedDirectory.isPlaintext(IndexWriter.WRITE_LOCK_NAME), "write.lock is stored as-is");
+                check(AcceleratedEncryptedDirectory.isPlaintext(IndexWriter.WRITE_LOCK_NAME), "write.lock is stored as-is");
                 for (String name : dir.listAll()) {
                     try {
                         long len = dir.fileLength(name);
@@ -229,11 +229,11 @@ public final class EncryptedStoreTest {
     private static void rustWritesJavaReads(StoreCrypto crypto) throws Exception {
         Path root = Files.createTempDirectory("encrypted-store-rust");
         try {
-            try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 9), crypto, 1 << 16)) {
+            try (AcceleratedEncryptedDirectory dir = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 9), crypto, 1 << 16)) {
                 try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
                     empty.commit();
                 }
-                RustIndexWriter w = RustIndexWriter.open(
+                AcceleratedIndexWriter w = AcceleratedIndexWriter.open(
                     dir,
                     root.toRealPath(),
                     16,
@@ -296,7 +296,7 @@ public final class EncryptedStoreTest {
                 byte[] raw = Files.readAllBytes(p);
                 boolean lrse = raw.length >= 4 && raw[0] == 'L' && raw[1] == 'R' && raw[2] == 'S' && raw[3] == 'E';
                 // Commit metadata stays readable for OpenSearch's gateway; it never holds field contents.
-                boolean commit = RustEncryptedDirectory.isCommitMetadata(name);
+                boolean commit = AcceleratedEncryptedDirectory.isCommitMetadata(name);
                 check(lrse != commit, what + ": " + name + (commit ? " is plaintext commit metadata" : " is encrypted"));
                 String text = new String(raw, StandardCharsets.ISO_8859_1);
                 List<String> needles = commit ? List.of("secretword", "doc-0004") : List.of("secretword", "doc-0004", "Lucene", "segments");
@@ -320,7 +320,7 @@ public final class EncryptedStoreTest {
     private static void lrse() throws IOException {
         StoreCrypto crypto = StoreCrypto.get();
         Path root = Files.createTempDirectory("encrypted-store-lrse");
-        try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 3), crypto, 4096)) {
+        try (AcceleratedEncryptedDirectory dir = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 3), crypto, 4096)) {
             for (int len : new int[] { 0, 1, 4095, 4096, 4097, 8192, 20_000 }) {
                 byte[] data = new byte[len];
                 for (int i = 0; i < len; i++) {
@@ -334,7 +334,7 @@ public final class EncryptedStoreTest {
                 long raw = Files.size(root.resolve(name));
                 check(raw > expectedBody(len, 4096), "a header precedes the body");
                 check(Lrse.plaintextLength(expectedBody(len, 4096), 4096) == len, "plaintext length of " + len);
-                try (Directory again = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 3), crypto, 4096)) {
+                try (Directory again = new AcceleratedEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 3), crypto, 4096)) {
                     check(again.fileLength(name) == len, "fileLength(" + len + ") from the header: " + again.fileLength(name));
                     try (IndexInput in = again.openInput(name, IOContext.DEFAULT)) {
                         byte[] back = new byte[len];

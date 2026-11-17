@@ -16,12 +16,12 @@ import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * What lets a {@link RustEngine} be a segment-replication primary on OpenSearch 3.8.
+ * What lets a {@link AcceleratedEngine} be a segment-replication primary on OpenSearch 3.8.
  *
  * <p>A primary's {@code CopyState} asks the shard's {@code Indexer} for its last refreshed
  * checkpoint, and {@code EngineBackedIndexer} answers only for an {@code InternalEngine} (whose
  * {@code lastRefreshedCheckpoint()} is final, and too much of which is final for a plugin engine to
- * be one). This factory wraps a {@link RustEngine} in an {@code EngineBackedIndexer} that answers
+ * be one). This factory wraps a {@link AcceleratedEngine} in an {@code EngineBackedIndexer} that answers
  * from the engine's own checkpoint listener -- the same {@code LastRefreshedCheckpointListener}
  * InternalEngine uses -- and builds every other engine as {@link EngineBackedIndexerFactory} does.
  *
@@ -33,10 +33,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * when this class loads, which the plugin forces at node start, so an OpenSearch version without
  * it fails the node rather than a shard at failover.
  */
-public final class RustIndexerFactory extends EngineBackedIndexerFactory {
+public final class AcceleratedIndexerFactory extends EngineBackedIndexerFactory {
     /**
      * Whether this OpenSearch asks the engine itself -- an overridable {@code
-     * Engine#lastRefreshedCheckpoint()}, which {@link RustEngine}'s public method then overrides --
+     * Engine#lastRefreshedCheckpoint()}, which {@link AcceleratedEngine}'s public method then overrides --
      * rather than checking for {@code InternalEngine}. Then nothing here is needed: no field is
      * written, and every Rust engine may be a segment-replication primary.
      */
@@ -68,13 +68,13 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
         }
     }
 
-    /** Set while this factory builds an engine: what {@link RustEngineSupport#checkSupported} checks. */
+    /** Set while this factory builds an engine: what {@link AcceleratedEngineSupport#checkSupported} checks. */
     private static final ThreadLocal<Boolean> BUILDING = ThreadLocal.withInitial(() -> false);
 
     /** Rust engines wrapped by this factory, for the plugin's stats. */
     public static final AtomicLong INDEXERS = new AtomicLong();
 
-    RustIndexerFactory(EngineFactory engineFactory) {
+    AcceleratedIndexerFactory(EngineFactory engineFactory) {
         super(engineFactory);
     }
 
@@ -87,9 +87,9 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
         } finally {
             BUILDING.set(false);
         }
-        if (engine instanceof RustEngine rust) {
+        if (engine instanceof AcceleratedEngine rust) {
             INDEXERS.incrementAndGet();
-            return new RustEngineIndexer(rust);
+            return new AcceleratedEngineIndexer(rust);
         }
         return new EngineBackedIndexer(engine);
     }
@@ -102,7 +102,7 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
     /** Resolves the field; called at node start so a missing one fails there. */
     public static void verify() {}
 
-    /** Installs this factory into an index whose engines are {@link RustEngineFactory}'s. */
+    /** Installs this factory into an index whose engines are {@link AcceleratedEngineFactory}'s. */
     public static void install(IndexModule module) {
         if (NATIVE) {
             return;
@@ -110,20 +110,20 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
         try {
             IndexerFactory current = (IndexerFactory) INDEX_MODULE_FACTORY.get(module);
             if (current instanceof EngineBackedIndexerFactory f
-                && f.getEngineFactory() instanceof RustEngineFactory
-                && (current instanceof RustIndexerFactory) == false) {
-                INDEX_MODULE_FACTORY.set(module, new RustIndexerFactory(f.getEngineFactory()));
+                && f.getEngineFactory() instanceof AcceleratedEngineFactory
+                && (current instanceof AcceleratedIndexerFactory) == false) {
+                INDEX_MODULE_FACTORY.set(module, new AcceleratedIndexerFactory(f.getEngineFactory()));
             }
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("cannot install the accelerated engine's indexer", e);
         }
     }
 
-    /** An {@code EngineBackedIndexer} over a {@link RustEngine}, answering its refresh checkpoints. */
-    static final class RustEngineIndexer extends EngineBackedIndexer {
-        private final RustEngine engine;
+    /** An {@code EngineBackedIndexer} over a {@link AcceleratedEngine}, answering its refresh checkpoints. */
+    static final class AcceleratedEngineIndexer extends EngineBackedIndexer {
+        private final AcceleratedEngine engine;
 
-        RustEngineIndexer(RustEngine engine) {
+        AcceleratedEngineIndexer(AcceleratedEngine engine) {
             super(engine);
             this.engine = engine;
         }

@@ -8,7 +8,7 @@ from OpenSearch's own engine.
 
 ## What it is
 
-`RustEngine` **is** `InternalEngine`, with the writer swapped out.
+`AcceleratedEngine` **is** `InternalEngine`, with the writer swapped out.
 `opensearch-plugin/tools/derive_engine.py` copies `InternalEngine` from the
 pinned OpenSearch sources and patches only the places that touch Lucene's
 `IndexWriter`. Every patch must apply exactly once, so a new OpenSearch
@@ -166,12 +166,12 @@ itself. The primary's `CopyState` asks the shard's `Indexer` for the last
 refreshed checkpoint, and `EngineBackedIndexer` answers only for an
 `InternalEngine`. `InternalEngine.lastRefreshedCheckpoint()` is final, and
 enough of `InternalEngine` is final that a subclass cannot work either.
-`RustIndexerFactory` closes the gap. `IndicesService` chooses
+`AcceleratedIndexerFactory` closes the gap. `IndicesService` chooses
 the indexer factory with no plugin hook, but the index's `IndexModule` holds
 it until it builds the `IndexService`, which hands it to every shard. Plugins
 see the module first (`onIndexModule`). The plugin replaces the module's
 factory there, once per index and before any shard exists. The replacement
-wraps a `RustEngine` in an `EngineBackedIndexer` that answers from the
+wraps a `AcceleratedEngine` in an `EngineBackedIndexer` that answers from the
 engine's own checkpoint listener, and builds every other engine as before.
 
 That is the plugin's one reflective write into OpenSearch's state. It is
@@ -180,7 +180,7 @@ before it is copied into each shard. The field is resolved at node start, so
 an OpenSearch version without it fails the node, not a shard at failover.
 
 Every writable engine a shard runs is built through that factory: the first
-one, one after a reset, and one on a replica's promotion. A `RustEngine` built
+one, one after a reset, and one on a replica's promotion. A `AcceleratedEngine` built
 any other way refuses to start as a segment-replication primary, and says
 why. `_plugins/accelerated/stats` counts the wrapped engines as
 `engines.accelerated_indexer`.
@@ -188,7 +188,7 @@ why. `_plugins/accelerated/stats` counts the wrapped engines as
 **Without the hook.** The upstream fix is an overridable
 `Engine#lastRefreshedCheckpoint()` (and `currentOngoingRefreshCheckpoint()`)
 that `EngineBackedIndexer` asks, instead of testing for `InternalEngine`.
-`RustEngine`'s public methods of the same signature then override it with no
+`AcceleratedEngine`'s public methods of the same signature then override it with no
 change on our side. The plugin checks at startup whether `Engine` declares
 them. If it does, it writes nothing into `IndexModule`, and `stats` reports
 `engines.segrep_primary: native` (otherwise `indexer_factory`). The change is
@@ -211,7 +211,7 @@ follower keeps its leader's settings, `index.engine.accelerated` included, and
 replication serves it with its own `ReplicationEngine`. OpenSearch refuses an
 index for which two plugins offer an engine, so the plugin offers none to an
 index carrying `index.plugins.replication.follower.leader_index`
-(`RustEngineSupport.openSearchEngine`). It also masks no derived source there,
+(`AcceleratedEngineSupport.openSearchEngine`). It also masks no derived source there,
 and does not route that index's realtime searches. The follower writes stock
 segments, which native reads serve, so an `extended` k-NN field cannot be
 followed. The follower cluster needs this plugin for the settings and the
@@ -258,7 +258,7 @@ can be followed. See `opensearch-plugin/ccr/README.md`.
 
 | What | Where |
 |---|---|
-| OpenSearch's own `InternalEngineTests`, derived to build `RustEngine` | `scripts/opensearch-engine-tests.sh`. 118 pass. The 33 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
+| OpenSearch's own `InternalEngineTests`, derived to build `AcceleratedEngine` | `scripts/opensearch-engine-tests.sh`. 118 pass. The 33 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
 | The Rust writer against Lucene's `IndexWriter` on the same operations | `EngineWriterDiffTest` (`gradle -p opensearch-plugin check`) |
 | One node, the accelerated engine against OpenSearch's, operation for operation: bulk results, OCC, get, search, scores, aggregations; then restart, SIGKILL, a panic, the breaker, the refusals | `scripts/verify-opensearch.sh --engine` (`opensearch-plugin/e2e/verify_engine.py`) |
 | OpenSearch's REST YAML suites with every index on the accelerated engine, against a stock node | `scripts/verify-opensearch.sh --engine --yaml` |

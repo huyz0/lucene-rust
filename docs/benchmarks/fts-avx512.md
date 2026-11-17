@@ -3,7 +3,7 @@
 Which full-text search kernels gain from AVX-512 over the AVX2 build
 baseline, measured on a 4-vCPU Sapphire Rapids VM (AVX-512 F/BW/VL/VBMI2,
 VPOPCNTDQ). The build targets x86-64-v3; AVX-512 kernels are picked at run
-time through `lucene_util::cpu::level`, and `LUCENE_RUST_SIMD=avx2` turns
+time through `lucene_util::cpu::level`, and `ACCELERATED_SIMD=avx2` turns
 them off for an A/B on the same binary.
 
 ## Where the time goes
@@ -39,7 +39,7 @@ kernels with a measured gain are dispatched.
 
 ## End to end
 
-Same binary, `LUCENE_RUST_SIMD=avx2` against the default, results
+Same binary, `ACCELERATED_SIMD=avx2` against the default, results
 identical (hits, top doc, top score and top set for every query).
 
 - The 87-query mix, best of 3 alternating rounds: +2.8% geomean.

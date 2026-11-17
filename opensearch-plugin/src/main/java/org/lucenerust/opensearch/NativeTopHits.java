@@ -141,7 +141,7 @@ final class NativeTopHits {
                 }
                 int count = in.getInt();
                 if (count < 0 || count > topN) {
-                    throw new IllegalStateException("lucene-rust: " + count + " top hits for a size of " + topN);
+                    throw new IllegalStateException("accelerated-search: " + count + " top hits for a size of " + topN);
                 }
                 ScoreDoc[] docs = new ScoreDoc[count];
                 for (int d = 0; d < count; d++) {
@@ -158,7 +158,7 @@ final class NativeTopHits {
             float maxScore = Float.intBitsToFloat(in.getInt());
             int count = in.getInt();
             if (count < 0 || count > topN) {
-                throw new IllegalStateException("lucene-rust: " + count + " top hits for a size of " + topN);
+                throw new IllegalStateException("accelerated-search: " + count + " top hits for a size of " + topN);
             }
             SortField[] fields = sub.sort().sort.getSort();
             int[] docs = new int[count];
@@ -175,7 +175,7 @@ final class NativeTopHits {
             }
             int len = in.getInt();
             if (len < 0 || len > in.remaining()) {
-                throw new IllegalStateException("lucene-rust: " + len + " bytes of top hits' sort terms");
+                throw new IllegalStateException("accelerated-search: " + len + " bytes of top hits' sort terms");
             }
             byte[] terms = new byte[len];
             in.get(terms);

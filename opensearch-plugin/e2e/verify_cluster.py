@@ -291,7 +291,7 @@ def main():
     native = engines(p).get("segrep_primary") == "accelerated"
     print(f"segment-replication primaries: {engines(p).get('segrep_primary')}", flush=True)
     if not native:
-        check(engines(p).get("accelerated_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
+        check(engines(p).get("accelerated_indexer", 0) >= 1, f"the primary on {p} was built by AcceleratedIndexerFactory: {engines(p)}")
 
     # Promotion: the replica becomes a Rust primary on the segments it copied.
     rust_before = engines(r).get("accelerated", 0)
@@ -304,7 +304,7 @@ def main():
     wait(lambda: engines(r).get("accelerated", 0) > rust_before, f"{r}'s promoted engine", 60)
     check(engines(r).get("accelerated", 0) > rust_before, f"{r} was promoted into the accelerated engine: {engines(r)}")
     if not native:
-        check(engines(r).get("accelerated_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
+        check(engines(r).get("accelerated_indexer", 0) >= 1, f"the promoted engine on {r} went through AcceleratedIndexerFactory: {engines(r)}")
     rs.ops(300)
     rs.verify(f"writes after a segment-replication promotion to {r}")
     docker("start", p)

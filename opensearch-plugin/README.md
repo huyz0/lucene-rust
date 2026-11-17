@@ -1,6 +1,6 @@
 # opensearch-plugin
 
-The lucene-rust plugin for **OpenSearch 3.9.0** (Lucene 10.5.1). Through
+The accelerated-search plugin for **OpenSearch 3.9.0** (Lucene 10.5.1). Through
 `liblucene_ffi.so`, called with Java's Foreign Function & Memory API (JDK 25,
 the JDK OpenSearch 3.9.0 bundles), it runs in Rust the query phase of supported
 searches, their aggregations, stored-field reads in the fetch phase, and, with
@@ -13,7 +13,7 @@ the engine: [`docs/opensearch-engine.md`](../docs/opensearch-engine.md).
 
 ```
 scripts/opensearch-dist.sh                 # once: lib/ of the pinned image -> target/opensearch-dist/
-gradle -p opensearch-plugin bundlePlugin   # build/distributions/lucene-rust-0.1.0.zip
+gradle -p opensearch-plugin bundlePlugin   # build/distributions/accelerated-search-0.1.0.zip
 gradle -p opensearch-plugin check          # JVM-side differential self test
 ```
 
@@ -31,7 +31,7 @@ workload (search 1.27x faster on the queries it was trained on, untrained code
 7-10% slower; see the script).
 
 `gradle -p opensearch-plugin -Pfips bundlePlugin` builds the FIPS variant,
-`lucene-rust-fips-0.1.0.zip`. It contains:
+`accelerated-search-fips-0.1.0.zip`. It contains:
 
 - the native library built against AWS-LC's FIPS 140-3 module
   (`scripts/build-fips.sh --ffi`, which needs CMake, Go and Perl);
@@ -43,10 +43,10 @@ See [`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the
 ## Install
 
 ```
-bin/opensearch-plugin install file:///path/to/lucene-rust-0.1.0.zip
+bin/opensearch-plugin install file:///path/to/accelerated-search-0.1.0.zip
 ```
 
-Give the node native access, in `config/jvm.options.d/lucene-rust.options`:
+Give the node native access, in `config/jvm.options.d/accelerated-search.options`:
 
 ```
 --enable-native-access=ALL-UNNAMED
@@ -205,8 +205,8 @@ decode it, and is freed with the segment).
 
 | | |
 |---|---|
-| `RustSearchPlugin` | the plugin: loads the library, registers the searcher, settings and stats endpoint |
-| `RustQueryPhaseSearcher` | eligibility, then native search or OpenSearch's own `QueryPhaseSearcherWrapper` |
+| `AcceleratedSearchPlugin` | the plugin: loads the library, registers the searcher, settings and stats endpoint |
+| `AcceleratedQueryPhaseSearcher` | eligibility, then native search or OpenSearch's own `QueryPhaseSearcherWrapper` |
 | `QueryEncoder` | rewritten Lucene `Query` → the query blob `jvm_reader.rs` decodes, or a fallback reason; `isFast` is the measured routing |
 | `NativeReaders` | one native reader per Java searcher reader: built from its `SegmentInfos`, `maxDoc`s and live docs, closed by its close listener |
 | `NativeBridge` (+ `NativeCall`), `NativeLibrary` | the FFM downcall plumbing (per-thread native scratch memory for arguments and results) and the loader/handshake |

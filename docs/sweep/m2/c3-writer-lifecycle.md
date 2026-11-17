@@ -312,7 +312,7 @@ documents added since the last commit.
    stored-fields copy.
 
 **Measured** (`benchmarks/rust-runner`'s `index-bench`, `--release`, fresh
-output directory per run; `LUCENE_RUST_RAM_BUFFER_MB=100000` reproduces the
+output directory per run; `ACCELERATED_RAM_BUFFER_MB=100000` reproduces the
 pre-batch "buffer everything until commit" behaviour on the same binary, so
 both arms are the same code except for the trigger). `writer_peak_kb` is
 `VmHWM` minus the RSS sampled after the corpus is built and before indexing

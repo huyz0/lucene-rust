@@ -109,45 +109,45 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| "/tmp/lucene-rust-index-bench".to_string());
 
-    // `LUCENE_RUST_VECTOR_DIM`, when set, gives every document a FLOAT32
+    // `ACCELERATED_VECTOR_DIM`, when set, gives every document a FLOAT32
     // `KnnFloatVectorField` of that dimension as well -- the A/B that measures
     // what indexing vectors costs per document.
-    let vector_dim: usize = std::env::var("LUCENE_RUST_VECTOR_DIM")
+    let vector_dim: usize = std::env::var("ACCELERATED_VECTOR_DIM")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    // `LUCENE_RUST_INDEX_SORT`, when set, configures an index sort over one
+    // `ACCELERATED_INDEX_SORT`, when set, configures an index sort over one
     // (`rank`) or two (`rank,tie`) NUMERIC doc-values fields -- the A/B that
     // measures what sorting a flush costs per document.
     // Values: "", "1", "2".
-    let sort_tiers: usize = std::env::var("LUCENE_RUST_INDEX_SORT")
+    let sort_tiers: usize = std::env::var("ACCELERATED_INDEX_SORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     // The honest control for the sorted arms: write the same two NUMERIC
     // doc-values columns and do *not* sort, so the A/B delta is the sort
     // itself rather than the columns it is defined over.
-    let dv_only = std::env::var("LUCENE_RUST_DOC_VALUES_ONLY").is_ok();
+    let dv_only = std::env::var("ACCELERATED_DOC_VALUES_ONLY").is_ok();
     // See the `omit_norms_field` call below: the control arm for the cost of
     // norms being on by default.
-    let omit_norms = std::env::var("LUCENE_RUST_OMIT_NORMS").is_ok();
+    let omit_norms = std::env::var("ACCELERATED_OMIT_NORMS").is_ok();
     let columns = sort_tiers > 0 || dv_only;
 
-    // `LUCENE_RUST_INDEX_OPTIONS` raises the `body` field's `IndexOptions`
+    // `ACCELERATED_INDEX_OPTIONS` raises the `body` field's `IndexOptions`
     // rung -- the A/B that measures what indexing positions, then offsets,
     // then payloads costs per document.
     // Unset (or "freqs") is the baseline every other arm here is measured
     // against; "positions", "offsets" and "payloads" are cumulative.
     let index_options_arm =
-        std::env::var("LUCENE_RUST_INDEX_OPTIONS").unwrap_or_else(|_| "freqs".to_string());
+        std::env::var("ACCELERATED_INDEX_OPTIONS").unwrap_or_else(|_| "freqs".to_string());
     let body_index_options = match index_options_arm.as_str() {
         "freqs" => IndexOptions::DocsAndFreqs,
         "positions" => IndexOptions::DocsAndFreqsAndPositions,
         "offsets" | "payloads" | "payloads-empty" => {
             IndexOptions::DocsAndFreqsAndPositionsAndOffsets
         }
-        other => panic!("LUCENE_RUST_INDEX_OPTIONS: unknown arm {other:?}"),
+        other => panic!("ACCELERATED_INDEX_OPTIONS: unknown arm {other:?}"),
     };
     let body_payloads = index_options_arm.starts_with("payloads");
     // The "payloads-empty" arm declares payloads but attaches none, so the
@@ -243,7 +243,7 @@ fn main() {
     // Norms need no configuration: Lucene writes them for any indexed field
     // that does not omit them, and so does this writer -- so `body`
     // is normed on both sides and the two are doing the same work.
-    // `LUCENE_RUST_OMIT_NORMS` is the control arm for that: it opts `body`
+    // `ACCELERATED_OMIT_NORMS` is the control arm for that: it opts `body`
     // out again (`FieldType.setOmitNorms(true)`), so the A/B prices what
     // making norms the default costs per document.
     if omit_norms {
@@ -287,13 +287,13 @@ fn main() {
         writer.set_index_sort(Some(&sort)).expect("set index sort");
     }
 
-    // `LUCENE_RUST_RAM_BUFFER_MB` drives `IndexWriter::set_ram_buffer_size_mb`.
+    // `ACCELERATED_RAM_BUFFER_MB` drives `IndexWriter::set_ram_buffer_size_mb`.
     // The default matches Lucene's own 16 MB; setting it very high
     // buffers everything until `commit()`, the baseline for a memory A/B.
-    if let Ok(mb) = std::env::var("LUCENE_RUST_RAM_BUFFER_MB") {
+    if let Ok(mb) = std::env::var("ACCELERATED_RAM_BUFFER_MB") {
         let mb: f64 = mb
             .parse()
-            .expect("LUCENE_RUST_RAM_BUFFER_MB must be a number");
+            .expect("ACCELERATED_RAM_BUFFER_MB must be a number");
         writer
             .set_ram_buffer_size_mb(mb)
             .expect("set ram buffer size");

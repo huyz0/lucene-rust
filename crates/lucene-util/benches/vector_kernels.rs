@@ -135,7 +135,7 @@ fn bench_gather(c: &mut Criterion) {
 }
 
 /// The byte-vector kernels the 7- and 8-bit quantized formats score with,
-/// against their scalar specifications. `LUCENE_RUST_SIMD=avx2` caps the
+/// against their scalar specifications. `ACCELERATED_SIMD=avx2` caps the
 /// run at the build baseline, so the same bench shows what AVX-512 VNNI adds.
 fn bench_bytes(c: &mut Criterion) {
     let mut g = c.benchmark_group("bytes");

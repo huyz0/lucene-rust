@@ -54,7 +54,7 @@ aggregations, sort and nested hits identical). Indices that carry
 
 ### 3.1 Stock settings the accelerated engine honours
 
-Verified by `RustEngineTests` (122 tests derived from `InternalEngineTests`) and the settings
+Verified by `AcceleratedEngineTests` (122 tests derived from `InternalEngineTests`) and the settings
 audit: `index.merge.policy.*` (tiered and `log_byte_size`, `index.merge.enabled`), `index.merge.scheduler.*`,
 `index.merge_on_flush.*`, `index.use_compound_file` and `index.compound_format`,
 `index.translog.*`, `index.refresh_interval`, `index.soft_deletes.*`, `index.gc_deletes`,

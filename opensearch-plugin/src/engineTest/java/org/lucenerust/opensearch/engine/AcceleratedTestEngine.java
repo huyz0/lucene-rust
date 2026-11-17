@@ -48,17 +48,17 @@ import java.util.Map;
 import java.util.function.BiFunction;
 
 /**
- * An alternative of {@link RustEngine} that allows tweaking internals to reduce noise in engine tests.
+ * An alternative of {@link AcceleratedEngine} that allows tweaking internals to reduce noise in engine tests.
  */
 @SuppressWarnings({ "deprecation", "try", "unchecked", "rawtypes", "cast", "static", "fallthrough", "this-escape", "removal" }) // derived code, linted upstream
-class RustTestEngine extends RustEngine {
+class AcceleratedTestEngine extends AcceleratedEngine {
     private final Map<String, Long> idToMaxSeqNo = ConcurrentCollections.newConcurrentMap();
 
-    RustTestEngine(EngineConfig engineConfig) {
+    AcceleratedTestEngine(EngineConfig engineConfig) {
         super(engineConfig);
     }
 
-    RustTestEngine(
+    AcceleratedTestEngine(
         EngineConfig engineConfig,
         int maxDocs,
         BiFunction<Long, Long, LocalCheckpointTracker> localCheckpointTrackerSupplier

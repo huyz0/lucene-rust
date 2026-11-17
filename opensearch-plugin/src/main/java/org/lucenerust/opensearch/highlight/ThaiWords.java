@@ -56,7 +56,7 @@ final class ThaiWords {
             MemorySegment stub = Linker.nativeLinker()
                 .upcallStub(target, FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG), Arena.global());
             if (NativeAnalysis.highlightSetThaiUpcall(stub) != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the Thai word upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the Thai word upcall failed: " + NativeBridge.lastError());
             }
             installed = true;
         } catch (ReflectiveOperationException e) {

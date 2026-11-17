@@ -1,6 +1,6 @@
 # OpenSearch: which searches run native
 
-The lucene-rust OpenSearch plugin (`opensearch-plugin/`, milestone
+The accelerated-search OpenSearch plugin (`opensearch-plugin/`, milestone
 [M2](milestones/m2-opensearch-read-path.md)) runs the **query phase** of a shard
 search in Rust when the request is inside the table below, and on Lucene
 otherwise — per query, transparently. The fetch phase and the get API are
@@ -176,7 +176,7 @@ where the native call's fixed cost shows -- see
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
 | `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`accelerated_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
-| `term`, `terms`, `prefix`, `wildcard`, `regexp`, `match` (and `query_string` wildcards) on a `compact_wildcard` field | `RustWildcardQuery`: the value test of OpenSearch's `wildcard` field, over the field's doc values | yes (node 49): the `Substring90` blocks' trigram index, then the same test on candidates; on plain `BINARY` doc values (an index OpenSearch's engine wrote) every value is tested. A `regexp` with `flags` other than `ALL` falls back (`substring_regexp_flags`) |
+| `term`, `terms`, `prefix`, `wildcard`, `regexp`, `match` (and `query_string` wildcards) on a `compact_wildcard` field | `AcceleratedWildcardQuery`: the value test of OpenSearch's `wildcard` field, over the field's doc values | yes (node 49): the `Substring90` blocks' trigram index, then the same test on candidates; on plain `BINARY` doc values (an index OpenSearch's engine wrote) every value is tested. A `regexp` with `flags` other than `ALL` falls back (`substring_regexp_flags`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)
 

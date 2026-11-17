@@ -180,7 +180,7 @@ final class NativeSelfTestPatternText {
             PatternTextAnalysis.splitsOnSpaces(new org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper(standard, 2), "message") == false,
             "a shingle filter does not"
         );
-        Path synDir = Files.createTempDirectory("lucene-rust-selftest-pattern-syn");
+        Path synDir = Files.createTempDirectory("accelerated-search-selftest-pattern-syn");
         Files.writeString(synDir.resolve("syn.txt"), "user admin1 => superuser\n");
         Analyzer synonyms = org.apache.lucene.analysis.custom.CustomAnalyzer.builder(synDir)
             .withTokenizer("standard")
@@ -191,7 +191,7 @@ final class NativeSelfTestPatternText {
 
         for (Analyzer analyzer : new Analyzer[] { standard, stop }) {
             String which = analyzer == standard ? "standard" : "stop";
-            Path dir = Files.createTempDirectory("lucene-rust-selftest-pattern-text");
+            Path dir = Files.createTempDirectory("accelerated-search-selftest-pattern-text");
             NativeReaders readers = new NativeReaders();
             try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(analyzer))) {
                 DirectoryReader reader = null;

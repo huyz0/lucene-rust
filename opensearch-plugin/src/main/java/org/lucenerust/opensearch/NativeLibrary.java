@@ -41,7 +41,7 @@ public final class NativeLibrary {
     static SymbolLookup lookup() {
         SymbolLookup l = lookup;
         if (l == null) {
-            throw new UnsatisfiedLinkError("lucene-rust: the native library is not loaded");
+            throw new UnsatisfiedLinkError("accelerated-search: the native library is not loaded");
         }
         return l;
     }
@@ -71,7 +71,7 @@ public final class NativeLibrary {
             : pluginDir.resolve("native").resolve(platform()).resolve(LIBRARY_FILE);
         if (Files.isRegularFile(lib) == false) {
             throw new IllegalStateException(
-                "lucene-rust: no native library for platform ["
+                "accelerated-search: no native library for platform ["
                     + platform()
                     + "] at ["
                     + lib
@@ -81,17 +81,17 @@ public final class NativeLibrary {
         try {
             lookup = SymbolLookup.libraryLookup(lib.toAbsolutePath(), Arena.global());
         } catch (IllegalArgumentException | IllegalCallerException e) {
-            throw new IllegalStateException("lucene-rust: failed to load [" + lib + "]: " + e.getMessage(), e);
+            throw new IllegalStateException("accelerated-search: failed to load [" + lib + "]: " + e.getMessage(), e);
         }
         int abi;
         try {
             abi = NativeBridge.abiVersion();
         } catch (UnsatisfiedLinkError | ExceptionInInitializerError | NoClassDefFoundError e) {
-            throw new IllegalStateException("lucene-rust: [" + lib + "] lacks the entry points this plugin calls; is it a lucene-ffi build?", e);
+            throw new IllegalStateException("accelerated-search: [" + lib + "] lacks the entry points this plugin calls; is it a lucene-ffi build?", e);
         }
         if (abi != NativeBridge.EXPECTED_ABI_VERSION) {
             throw new IllegalStateException(
-                "lucene-rust: ["
+                "accelerated-search: ["
                     + lib
                     + "] speaks ABI "
                     + abi

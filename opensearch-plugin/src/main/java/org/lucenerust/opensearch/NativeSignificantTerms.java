@@ -194,7 +194,7 @@ final class NativeSignificantTerms {
         List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException {
             if (in.remaining() >= Integer.BYTES && in.getInt(in.position()) == -1) {
                 in.getInt();
-                throw new JavaRefuses("lucene-rust: significant_text over a _source the native side does not read", null);
+                throw new JavaRefuses("accelerated-search: significant_text over a _source the native side does not read", null);
             }
             return super.read(in, n);
         }
@@ -258,18 +258,18 @@ final class NativeSignificantTerms {
                 if (collection.getClass().getName().equals(ORDS + "$RemapGlobalOrds")) {
                     longOrds = (LongKeyedBucketOrds) get(collection, "bucketOrds");
                 } else if (collection.getClass().getName().equals(ORDS + "$DenseGlobalOrds") == false || n != 1) {
-                    throw new IllegalStateException("lucene-rust: significant_terms collected by " + collection.getClass().getName());
+                    throw new IllegalStateException("accelerated-search: significant_terms collected by " + collection.getClass().getName());
                 }
             } else if (cls.equals(NUMERIC)) {
                 longOrds = (LongKeyedBucketOrds) get(fresh, "bucketOrds");
             } else if (cls.equals(MAP)) {
                 bytesOrds = (BytesKeyedBucketOrds) get(fresh, "bucketOrds");
             } else {
-                throw new IllegalStateException("lucene-rust: significant_terms built as " + cls);
+                throw new IllegalStateException("accelerated-search: significant_terms built as " + cls);
             }
             boolean terms = (flags & 2) != 0;
             if (terms != (bytesOrds != null)) {
-                throw new IllegalStateException("lucene-rust: significant_terms keys as terms for " + cls);
+                throw new IllegalStateException("accelerated-search: significant_terms keys as terms for " + cls);
             }
             long[] owners = new long[n];
             LongArray sizes = (LongArray) subsetSizes.get(results);
@@ -280,7 +280,7 @@ final class NativeSignificantTerms {
                 long subset = in.getLong();
                 int count = in.getInt();
                 if (count < 0) {
-                    throw new IllegalStateException("lucene-rust: " + count + " significant_terms buckets");
+                    throw new IllegalStateException("accelerated-search: " + count + " significant_terms buckets");
                 }
                 sizes = ctx.bigArrays().grow(sizes, i + 1);
                 sizes.set(i, subset);
@@ -289,7 +289,7 @@ final class NativeSignificantTerms {
                     if (terms) {
                         int len = in.getInt();
                         if (len < 0 || len > in.remaining()) {
-                            throw new IllegalStateException("lucene-rust: a significant_terms term of " + len + " bytes");
+                            throw new IllegalStateException("accelerated-search: a significant_terms term of " + len + " bytes");
                         }
                         byte[] term = new byte[len];
                         in.get(term);
@@ -303,7 +303,7 @@ final class NativeSignificantTerms {
                         bucket = longOrds == null ? key : longOrds.add(i, key);
                     }
                     if (bucket < 0) {
-                        throw new IllegalStateException("lucene-rust: a significant_terms key collected twice");
+                        throw new IllegalStateException("accelerated-search: a significant_terms key collected twice");
                     }
                     fresh.incrementBucketDocCount(bucket, in.getLong());
                     listed.add(bucket);
@@ -328,7 +328,7 @@ final class NativeSignificantTerms {
                     for (Object b : ((InternalMultiBucketAggregation<?, ?>) r).getBuckets()) {
                         Integer i = at.get(BUCKET_ORD.getLong(b));
                         if (i == null) {
-                            throw new IllegalStateException("lucene-rust: a significant_terms bucket the native side did not list");
+                            throw new IllegalStateException("accelerated-search: a significant_terms bucket the native side did not list");
                         }
                         BUCKET_AGGS.set(b, subAggs.get(i));
                     }
