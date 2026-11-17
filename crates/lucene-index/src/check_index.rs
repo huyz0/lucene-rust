@@ -3348,7 +3348,7 @@ fn open_field_column(
     verify_dvd: bool,
 ) -> Result<DocValuesColumn, String> {
     let component = crate::field_updates::field_per_field_component(fi);
-    let (dvm_name, dvd_name, dvs_name, suffix, only);
+    let (dvm_name, dvd_name, dvs_name, dvp_name, suffix, only);
     if fi.doc_values_gen != -1 {
         let component = component.ok_or_else(|| {
             format!(
@@ -3364,6 +3364,7 @@ fn open_field_column(
         dvm_name = name("dvm");
         dvd_name = name("dvd");
         dvs_name = Some(name("dvs"));
+        dvp_name = Some(name("dvp"));
         suffix = crate::field_updates::generation_segment_suffix(gen, &component);
         only = Some(FieldInfos {
             fields: vec![fi.clone()],
@@ -3392,6 +3393,7 @@ fn open_field_column(
         dvm_name = base("dvm").ok_or_else(missing)?;
         dvd_name = base("dvd").ok_or_else(missing)?;
         dvs_name = base("dvs");
+        dvp_name = base("dvp");
         // The per-format suffix is embedded in the file name, exactly as
         // `check_postings_term_stats` derives the postings one.
         suffix = if dvm_name == format!("{}.dvm", commit.segment_name) {
@@ -3412,7 +3414,7 @@ fn open_field_column(
     let dvd = dir
         .open(&dvd_name)
         .map_err(|e| format!("{dvd_name}: {e}"))?;
-    let (_version, meta) = doc_values::parse_meta(
+    let (version, mut meta) = doc_values::parse_meta(
         &dvm,
         &commit.segment_id,
         &suffix,
@@ -3422,6 +3424,17 @@ fn open_field_column(
     if verify_dvd {
         doc_values::check_data_header_footer(&dvd, &commit.segment_id, &suffix)
             .map_err(|e| e.to_string())?;
+    }
+    if doc_values::has_disi_file(version) {
+        let name = dvp_name.ok_or_else(|| {
+            format!("doc values are format {version} but the segment has no .dvp file")
+        })?;
+        let dvp = dir.open(&name).map_err(|e| format!("{name}: {e}"))?;
+        if verify_dvd {
+            doc_values::check_disi_header_footer(&dvp, &commit.segment_id, &suffix, version)
+                .map_err(|e| e.to_string())?;
+        }
+        meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(dvp)));
     }
     // `.dvs` is a separate file, present only when some field asked for a
     // skip index (`Lucene90DocValuesConsumer`'s
