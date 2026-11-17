@@ -18,16 +18,20 @@ ids = (np.arange(len(x)) * 3 + 7).astype("int64")
 out = sys.argv[1]
 ok = True
 for name, metric in [("ours_hnsw_l2", faiss.METRIC_L2), ("ours_hnsw_ip", faiss.METRIC_INNER_PRODUCT),
-                     ("ours_ivf_l2", faiss.METRIC_L2), ("ours_ivf_ip", faiss.METRIC_INNER_PRODUCT)]:
+                     ("ours_ivf_l2", faiss.METRIC_L2), ("ours_ivf_ip", faiss.METRIC_INNER_PRODUCT),
+                     ("ours_sq8_l2", faiss.METRIC_L2), ("ours_hnswsq8_l2", faiss.METRIC_L2),
+                     ("ours_hnswsq8_ip", faiss.METRIC_INNER_PRODUCT), ("ours_ivfsq8_l2", faiss.METRIC_L2),
+                     ("ours_ivfsq8_ip", faiss.METRIC_INNER_PRODUCT)]:
     idx = faiss.read_index(os.path.join(out, name + ".idx"))
     exact = faiss.IndexIDMap(faiss.IndexFlat(D, metric))
     exact.add_with_ids(x, ids)
     _, want = exact.search(q, 10)
     ps = faiss.ParameterSpace()
-    ps.set_index_parameters(idx, "efSearch=64" if "hnsw" in name else "nprobe=8")
+    if "sq8_" not in name or "ivf" in name or "hnsw" in name:
+        ps.set_index_parameters(idx, "efSearch=64" if "hnsw" in name else "nprobe=8")
     _, got = idx.search(q, 10)
     recall = np.mean([len(set(g) & set(w)) / 10 for g, w in zip(got, want)])
-    floor = 0.95 if "hnsw" in name else 0.8
+    floor = (0.9 if "sq8" in name else 0.95) if "hnsw" in name else 0.8
     print(f"{name}: faiss {faiss.__version__} reads it, ntotal={idx.ntotal}, recall@10={recall:.3f}")
     ok &= recall >= floor
 sys.exit(0 if ok else 1)

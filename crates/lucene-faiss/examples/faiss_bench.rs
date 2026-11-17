@@ -87,7 +87,26 @@ fn main() {
             );
         }
     };
-    if which != "ivf" {
+    if which == "sq8" || which == "all" {
+        let s: Vec<_> = [64, 128, 256].iter().map(|&e| (Some(e), None)).collect();
+        run(
+            "native-faiss-hnsw-sq8",
+            "IDMap,HNSW16,SQ8",
+            "efConstruction=100",
+            &s,
+            &|p| format!("M=16 efC=100 ef={}", p.ef_search.unwrap()),
+        );
+        let nlist = (n / 384).max(1);
+        let s: Vec<_> = [16, 32, 64].iter().map(|&p| (None, Some(p))).collect();
+        run(
+            "native-faiss-ivf-sq8",
+            &format!("IDMap,IVF{nlist},SQ8"),
+            "",
+            &s,
+            &|p| format!("nlist={nlist} nprobe={}", p.nprobe.unwrap()),
+        );
+    }
+    if which != "ivf" && which != "sq8" {
         let s: Vec<_> = [16, 32, 64, 128, 256]
             .iter()
             .map(|&e| (Some(e), None))
@@ -100,7 +119,7 @@ fn main() {
             &|p| format!("M=16 efC=100 ef={}", p.ef_search.unwrap()),
         );
     }
-    if which != "hnsw" {
+    if which != "hnsw" && which != "sq8" {
         let nlist = (n / 384).max(1);
         let s: Vec<_> = [4, 8, 16, 32, 64, 128]
             .iter()
