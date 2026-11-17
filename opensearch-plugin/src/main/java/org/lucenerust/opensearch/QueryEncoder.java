@@ -20,13 +20,11 @@ import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
-import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery;
 import org.apache.lucene.search.PointInSetQuery;
 import org.apache.lucene.search.PointRangeQuery;
 import org.apache.lucene.search.PrefixQuery;
-import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
 import org.apache.lucene.search.TermRangeQuery;
@@ -183,10 +181,10 @@ public final class QueryEncoder {
     }
 
     /** {@code NODE_FUZZY} in {@code queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
-    private static final byte NODE_FUZZY = 53;
+    static final byte NODE_FUZZY = 53;
 
     /** {@code NODE_VISIT_ONLY} in {@code queries.rs}: a function_score as the unified highlighter reads it. */
-    private static final byte NODE_VISIT_ONLY = 54;
+    static final byte NODE_VISIT_ONLY = 54;
 
     /** The exact classes {@link #encodeForHighlight} writes; besides these, any point range or set. */
     private static final java.util.Set<Class<?>> HIGHLIGHT_CLASSES = java.util.Set.of(
@@ -225,11 +223,11 @@ public final class QueryEncoder {
     );
 
     /** {@code NODE_PHRASE_POSITIONS} in {@code queries.rs}: a phrase with its own positions, for the highlighter. */
-    private static final byte NODE_PHRASE_POSITIONS = 50;
+    static final byte NODE_PHRASE_POSITIONS = 50;
     /** {@code NODE_MULTI_PHRASE} in {@code queries.rs}, for the highlighter. */
-    private static final byte NODE_MULTI_PHRASE = 51;
+    static final byte NODE_MULTI_PHRASE = 51;
     /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
-    private static final byte NODE_MULTI_PHRASE_PREFIX = 52;
+    static final byte NODE_MULTI_PHRASE_PREFIX = 52;
     /** {@code NODE_MORE_LIKE_THIS} in {@code queries.rs}: {@code more_like_this}, for the plain highlighter. */
     static final byte NODE_MORE_LIKE_THIS_KIND = 57;
 
@@ -333,7 +331,7 @@ public final class QueryEncoder {
     }
 
     /** {@code NODE_VISITED} in {@code queries.rs}: what a query's visit does, for the unified highlighter. */
-    private static final byte NODE_VISITED = 55;
+    static final byte NODE_VISITED = 55;
     private static final byte VISIT_TERMS = 0;
     private static final byte VISIT_LEAF = 1;
     private static final byte VISIT_SUB = 2;
@@ -386,7 +384,7 @@ public final class QueryEncoder {
      * (the terms it keeps, and whether an unknown query adds its own, depend on it), meets them
      * as the native one does: musts, then shoulds, then filters -- the order bool queries build.
      */
-    private static boolean inExtractorOrder(BooleanQuery bq) {
+    static boolean inExtractorOrder(BooleanQuery bq) {
         int last = 0;
         for (BooleanClause c : bq.clauses()) {
             int rank = switch (c.occur()) {
@@ -669,7 +667,7 @@ public final class QueryEncoder {
     }
 
     /** {@code MultiPhraseQuery} (and OpenSearch's prefix variant, before its rewrite) as a search node. */
-    private static String plainMultiPhrase(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+    static String plainMultiPhrase(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
         Term[][] arrays;
         int[] positions;
         int slop;
@@ -740,7 +738,7 @@ public final class QueryEncoder {
     }
 
     /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
-    private static final int MAX_DEPTH = 128;
+    static final int MAX_DEPTH = 128;
 
     /**
      * The native decoder's node limit ({@code MAX_CLAUSE_COUNT} in {@code clauses.rs}), over every
@@ -748,28 +746,28 @@ public final class QueryEncoder {
      * indices.query.bool.max_clause_count} may raise its limit, so the bound sits far above any
      * limit an operator sets and only guards the decoder's allocations.
      */
-    private static final int MAX_NODES = 1 << 20;
+    static final int MAX_NODES = 1 << 20;
 
-    private static final byte NODE_TERM = 0;
-    private static final byte NODE_BOOLEAN = 1;
-    private static final byte NODE_CONSTANT_SCORE = 2;
-    private static final byte NODE_BOOST = 3;
-    private static final byte NODE_DISMAX = 4;
-    private static final byte NODE_MATCH_ALL = 5;
-    private static final byte NODE_MATCH_NONE = 6;
-    private static final byte NODE_PHRASE = 7;
-    private static final byte NODE_TERM_SET = 8;
-    private static final byte NODE_PREFIX = 9;
-    private static final byte NODE_WILDCARD = 10;
-    private static final byte NODE_POINT_RANGE = 11;
-    private static final byte NODE_REGEXP = 12;
-    private static final byte NODE_EXISTS = 13;
-    private static final byte NODE_TERM_STATS = 14;
+    static final byte NODE_TERM = 0;
+    static final byte NODE_BOOLEAN = 1;
+    static final byte NODE_CONSTANT_SCORE = 2;
+    static final byte NODE_BOOST = 3;
+    static final byte NODE_DISMAX = 4;
+    static final byte NODE_MATCH_ALL = 5;
+    static final byte NODE_MATCH_NONE = 6;
+    static final byte NODE_PHRASE = 7;
+    static final byte NODE_TERM_SET = 8;
+    static final byte NODE_PREFIX = 9;
+    static final byte NODE_WILDCARD = 10;
+    static final byte NODE_POINT_RANGE = 11;
+    static final byte NODE_REGEXP = 12;
+    static final byte NODE_EXISTS = 13;
+    static final byte NODE_TERM_STATS = 14;
     /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code reader_search.rs}. */
-    private static final byte NODE_TERM_RANGE = 25;
-    private static final byte NODE_POINT_SET = 26;
+    static final byte NODE_TERM_RANGE = 25;
+    static final byte NODE_POINT_SET = 26;
     /** {@code NODE_POINT_RANGE_OR_DV} in {@code queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
-    private static final byte NODE_POINT_RANGE_OR_DV = 48;
+    static final byte NODE_POINT_RANGE_OR_DV = 48;
 
     /**
      * Whether a points query on {@code field} runs on its doc values instead: {@code _seq_no} of a
@@ -777,7 +775,7 @@ public final class QueryEncoder {
      * index.seq_no.index_options: doc_values_only}). Without the search's reader both
      * layouts carry the doc values, so they are used.
      */
-    private static boolean seqNoOnDocValues(EncodeContext cx, String field) {
+    static boolean seqNoOnDocValues(EncodeContext cx, String field) {
         if (field.equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME) == false) {
             return false;
         }
@@ -786,7 +784,7 @@ public final class QueryEncoder {
     }
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
-    private static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
             return FallbackReason.QUERY_TOO_DEEP.key();
         }
@@ -800,270 +798,14 @@ public final class QueryEncoder {
                 return written.isEmpty() ? null : written;
             }
         }
-        if (q instanceof TermQuery tq) {
-            if (tq.getClass() != TermQuery.class) {
-                return FallbackReason.TERM_STATES.key();
-            }
-            Term t = tq.getTerm();
-            if (fieldOk.test(t.field()) == false) {
-                return FallbackReason.FIELD_SIMILARITY.key();
-            }
-            TermStates states = tq.getTermStates();
-            if (states == null) {
-                out.write(NODE_TERM);
-                writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
-                writeBytes(out, t.bytes());
-                return null;
-            }
-            IndexReaderContext top = cx.top();
-            if (top == null) {
-                return FallbackReason.TERM_STATES.key();
-            }
-            if (states.wasBuiltFor(top) == false) {
-                // TermQuery.createWeight ignores states built for another reader and rebuilds them
-                // from the searcher's: the plain term ("terms" lookup, more_like_this, percolate).
-                out.write(NODE_TERM);
-                writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
-                writeBytes(out, t.bytes());
-                return null;
-            }
-            int docFreq;
-            try {
-                docFreq = states.docFreq();
-            } catch (IllegalStateException | AssertionError e) {
-                // States built without statistics: nothing to score from.
-                return FallbackReason.TERM_STATES.key();
-            }
-            if (docFreq < 1) {
-                // No statistics, so no scorer (TermWeight's termStates.get(leaf) is null on every
-                // leaf): the term matches nothing, whatever the index holds.
-                return noLeafState(states, top) ? matchNone(out) : "term_states";
-            }
-            out.write(NODE_TERM_STATS);
-            writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
-            writeBytes(out, t.bytes());
-            writeLong(out, docFreq);
-            return null;
+        String core;
+        try {
+            core = CoreNodes.ROWS.encode(q, new CoreNodes.Walk(cx, out, fieldOk, depth, nodes));
+        } catch (ReflectiveOperationException e) {
+            return FallbackReason.EXTENDED_REFLECT.key();
         }
-        if (q instanceof SynonymQuery sq) {
-            return synonym(cx, sq, out, fieldOk, nodes);
-        }
-        if (q instanceof BooleanQuery bq) {
-            if (bq.getMinimumNumberShouldMatch() < 0) {
-                // BooleanQuery.Builder does not reject it; the native decoder does.
-                return FallbackReason.BOOLEAN_MSM_NEGATIVE.key();
-            }
-            if (cx.plain() && inExtractorOrder(bq) == false) {
-                if (cx.extendedHighlight() == false) {
-                    return FallbackReason.HIGHLIGHT_CLAUSE_ORDER.key();
-                }
-                // The plain highlighter's extractor reads a bool query's clauses in the order they
-                // were added, whatever their occurrence, and skips the prohibited ones: the native
-                // reader walks musts, then shoulds, then filters, so the clauses go as musts in
-                // that order (the highlighter only reads the query's terms, it never runs it).
-                int kept = 0;
-                for (BooleanClause c : bq.clauses()) {
-                    kept += c.occur() == BooleanClause.Occur.MUST_NOT ? 0 : 1;
-                }
-                out.write(NODE_BOOLEAN);
-                writeInt(out, 0);
-                writeInt(out, kept);
-                for (BooleanClause c : bq.clauses()) {
-                    if (c.occur() == BooleanClause.Occur.MUST_NOT) {
-                        continue;
-                    }
-                    out.write((byte) BooleanClause.Occur.MUST.ordinal());
-                    String reason = node(cx, c.query(), out, fieldOk, depth + 1, nodes);
-                    if (reason != null) {
-                        return reason;
-                    }
-                }
-                return null;
-            }
-            out.write(NODE_BOOLEAN);
-            writeInt(out, bq.getMinimumNumberShouldMatch());
-            writeInt(out, bq.clauses().size());
-            for (BooleanClause c : bq.clauses()) {
-                out.write((byte) c.occur().ordinal());
-                String reason = node(cx, c.query(), out, fieldOk, depth + 1, nodes);
-                if (reason != null) {
-                    return reason;
-                }
-            }
-            return null;
-        }
-        if (q instanceof ConstantScoreQuery cs) {
-            // ConstantScoreQuery scores its boost, which is 1 unless a BoostQuery wraps it.
-            out.write(NODE_CONSTANT_SCORE);
-            writeInt(out, Float.floatToIntBits(1f));
-            return node(cx, cs.getQuery(), out, fieldOk, depth + 1, nodes);
-        }
-        if (q instanceof BoostQuery b) {
-            float boost = b.getBoost();
-            if (Float.isFinite(boost) == false || boost < 0) {
-                return FallbackReason.BOOST_INVALID.key();
-            }
-            out.write(NODE_BOOST);
-            writeInt(out, Float.floatToIntBits(boost));
-            return node(cx, b.getQuery(), out, fieldOk, depth + 1, nodes);
-        }
-        if (q instanceof DisjunctionMaxQuery dm) {
-            out.write(NODE_DISMAX);
-            writeInt(out, Float.floatToIntBits(dm.getTieBreakerMultiplier()));
-            writeInt(out, dm.getDisjuncts().size());
-            for (Query d : dm.getDisjuncts()) {
-                String reason = node(cx, d, out, fieldOk, depth + 1, nodes);
-                if (reason != null) {
-                    return reason;
-                }
-            }
-            return null;
-        }
-        if (q instanceof ApproximateScoreQuery a) {
-            // A wrapper, not a level (nor a node): the range it approximates is still the root
-            // when it is.
-            nodes[0]--;
-            return node(cx, a.getOriginalQuery(), out, fieldOk, depth, nodes);
-        }
-        if (q instanceof org.apache.lucene.search.MultiPhraseQuery || q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery) {
-            return plainMultiPhrase(cx, q, out, fieldOk, nodes);
-        }
-        if (q.getClass() == PhraseQuery.class) {
-            PhraseQuery pq = (PhraseQuery) q;
-            Term[] terms = pq.getTerms();
-            int[] positions = pq.getPositions();
-            if (terms.length == 0) {
-                out.write(NODE_MATCH_NONE);
-                return null;
-            }
-            if (fieldOk.test(pq.getField()) == false) {
-                return FallbackReason.FIELD_SIMILARITY.key();
-            }
-            // A gap in the positions is a stopword the analyzer removed: the node then carries them.
-            boolean gaps = false;
-            for (int i = 0; i < positions.length; i++) {
-                gaps |= positions[i] - positions[0] != i;
-            }
-            nodes[0] += terms.length;
-            if (nodes[0] > MAX_NODES) {
-                return FallbackReason.QUERY_TOO_LARGE.key();
-            }
-            out.write(gaps ? NODE_PHRASE_POSITIONS : NODE_PHRASE);
-            writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
-            writeInt(out, pq.getSlop());
-            writeInt(out, terms.length);
-            for (int i = 0; i < terms.length; i++) {
-                writeInt(out, gaps ? positions[i] : i);
-                writeBytes(out, terms[i].bytes());
-            }
-            return null;
-        }
-        if (q instanceof IndexOrDocValuesQuery iodv) {
-            // A long, date or double range on a field with doc values: both sides over the same
-            // field and bounds, so the native side can pick per segment as Lucene does (doc
-            // values when a cheaper clause leads).
-            if (iodv.getIndexQuery() instanceof PointRangeQuery pr
-                    && pr.getNumDims() == 1
-                    && pr.getBytesPerDim() == Long.BYTES) {
-                long min = NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0);
-                long max = NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0);
-                if (iodv.getRandomAccessQuery().equals(SortedNumericDocValuesField.newSlowRangeQuery(pr.getField(), min, max))) {
-                    out.write(NODE_POINT_RANGE_OR_DV);
-                    writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
-                    writeLong(out, min);
-                    writeLong(out, max);
-                    return null;
-                }
-            }
-            // Otherwise two equivalent ways to run one query; the native side runs the index
-            // one. A wrapper, not a level (nor a node).
-            nodes[0]--;
-            return node(cx, iodv.getIndexQuery(), out, fieldOk, depth, nodes);
-        }
-        if (q instanceof IndexSortSortedNumericDocValuesRangeQuery is) {
-            // A `range` on an index-sorted shard's primary sort field: Lucene binary-searches the
-            // sorted doc values where it can and otherwise runs its fallback query, which matches
-            // the same documents with the same constant score. A wrapper, not a level.
-            nodes[0]--;
-            return node(cx, is.getFallbackQuery(), out, fieldOk, depth, nodes);
-        }
-        if (q instanceof PointRangeQuery pr) {
-            // `LongPoint`/`DoublePoint`/date ranges: one dimension of 8 bytes, sent as the sortable
-            // longs their packed bytes encode. Any other width or dimension count (`integer`,
-            // `float`, `half_float`, `ip`, `unsigned_long`, `LatLonPoint.newBoxQuery`) is a points
-            // box: its packed corners as they are.
-            if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
-                return GeoEncoder.node(pr, out);
-            }
-            if (seqNoOnDocValues(cx, pr.getField())) {
-                out.write(DocValuesEncoder.NODE_DV_NUMERIC_RANGE);
-                writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
-                writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
-                writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
-                return null;
-            }
-            out.write(NODE_POINT_RANGE);
-            writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
-            writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
-            writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
-            return null;
-        }
-        if (q instanceof PointInSetQuery ps
-            && ps.getNumDims() == 1
-            && ps.getBytesPerDim() == Long.BYTES
-            && seqNoOnDocValues(cx, ps.getField())) {
-            java.util.Collection<byte[]> points = ps.getPackedPoints();
-            out.write(DocValuesEncoder.NODE_DV_NUMERIC_SET);
-            writeBytes(out, ps.getField().getBytes(StandardCharsets.UTF_8));
-            writeInt(out, points.size());
-            for (byte[] p : points) {
-                writeLong(out, NumericUtils.sortableBytesToLong(p, 0));
-            }
-            return null;
-        }
-        if (q instanceof PointInSetQuery ps) {
-            // `terms` (and `IntPoint.newSetQuery` and the like): one leaf, its packed points.
-            out.write(NODE_POINT_SET);
-            writeBytes(out, ps.getField().getBytes(StandardCharsets.UTF_8));
-            writeInt(out, ps.getNumDims());
-            writeInt(out, ps.getBytesPerDim());
-            java.util.Collection<byte[]> points = ps.getPackedPoints();
-            writeInt(out, points.size());
-            for (byte[] p : points) {
-                writeBytes(out, p);
-            }
-            return null;
-        }
-        String wrapper = q.getClass().getSimpleName();
-        byte rewrite = switch (wrapper) {
-            case "MultiTermQueryConstantScoreBlendedWrapper" -> REWRITE_CONSTANT_SCORE_BLENDED;
-            case "MultiTermQueryConstantScoreWrapper" -> REWRITE_CONSTANT_SCORE;
-            case "MultiTermQueryDocValuesWrapper" -> REWRITE_DOC_VALUES;
-            default -> -1;
-        };
-        if (rewrite >= 0 && q.getClass().getPackageName().equals("org.apache.lucene.search")) {
-            // A MultiTermQuery under a constant-score or doc-values rewrite (package-private
-            // classes, so found by name; their query by the visitor, which hands it over as it is).
-            Query inner = wrappedMultiTermQuery(q);
-            if (inner == null) {
-                return FallbackReason.CLAUSE_ANY.key() + wrapper;
-            }
-            return multiTerm(cx, inner, rewrite, out, fieldOk, depth, nodes);
-        }
-        if (q.getClass() == MatchAllDocsQuery.class) {
-            out.write(NODE_MATCH_ALL);
-            return null;
-        }
-        if (q.getClass() == FieldExistsQuery.class) {
-            // `exists` on a field with norms or doc values (one on every document was rewritten to
-            // a match-all already). A vector field is the native side's error, and Lucene's answer.
-            out.write(NODE_EXISTS);
-            writeBytes(out, ((FieldExistsQuery) q).getField().getBytes(StandardCharsets.UTF_8));
-            return null;
-        }
-        if (q.getClass() == MatchNoDocsQuery.class) {
-            out.write(NODE_MATCH_NONE);
-            return null;
+        if (core != NodeRegistry.NOT_REGISTERED) {
+            return core;
         }
         // The doc-values-only queries, terms_set and distance_feature (DocValuesEncoder).
         String docValues = DocValuesEncoder.node(cx, q, out, c -> node(cx, c, out, fieldOk, depth + 1, nodes));
@@ -1100,14 +842,14 @@ public final class QueryEncoder {
     }
 
     /** {@code NODE_SYNONYM} in {@code queries.rs}. */
-    private static final byte NODE_SYNONYM = 36;
+    static final byte NODE_SYNONYM = 36;
 
     /**
      * {@code NODE_SYNONYM}: the field, then each term with its boost, in the query's own (sorted)
      * order. A {@code match} whose analyzer stacks tokens at one position (hunspell's stems,
      * synonyms, {@code keyword_repeat}) builds one.
      */
-    private static String synonym(EncodeContext cx, SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+    static String synonym(EncodeContext cx, SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
         if (fieldOk.test(q.getField()) == false) {
             return FallbackReason.FIELD_SIMILARITY.key();
         }
@@ -1146,7 +888,7 @@ public final class QueryEncoder {
     }
 
     /** Whether {@code states} holds no term state for any leaf of {@code top}. */
-    private static boolean noLeafState(TermStates states, IndexReaderContext top) {
+    static boolean noLeafState(TermStates states, IndexReaderContext top) {
         try {
             for (LeafReaderContext leaf : top.leaves()) {
                 if (states.get(leaf) != null) {
@@ -1159,7 +901,7 @@ public final class QueryEncoder {
         }
     }
 
-    private static String matchNone(ByteArrayOutputStream out) {
+    static String matchNone(ByteArrayOutputStream out) {
         out.write(NODE_MATCH_NONE);
         return null;
     }
@@ -1170,7 +912,7 @@ public final class QueryEncoder {
      * misses one whose automaton matches nothing ({@code CompiledAutomaton.visit} reports no
      * terms) and the doc-values wrapper, which only asks for a sub-visitor.
      */
-    private static Query wrappedMultiTermQuery(Query wrapper) {
+    static Query wrappedMultiTermQuery(Query wrapper) {
         java.lang.reflect.Field f = Reflect.inHierarchy(wrapper.getClass(), "query");
         if (f != null) {
             try {
@@ -1207,13 +949,13 @@ public final class QueryEncoder {
     }
 
     /** The multi-term node's rewrite methods ({@code queries.rs}). */
-    private static final byte REWRITE_CONSTANT_SCORE_BLENDED = 0;
-    private static final byte REWRITE_CONSTANT_SCORE = 1;
-    private static final byte REWRITE_DOC_VALUES = 2;
+    static final byte REWRITE_CONSTANT_SCORE_BLENDED = 0;
+    static final byte REWRITE_CONSTANT_SCORE = 1;
+    static final byte REWRITE_DOC_VALUES = 2;
 
     /** {@code NODE_MULTI_TERM} and {@code NODE_DV_TERM_SET} in {@code queries.rs}. */
-    private static final byte NODE_MULTI_TERM = 27;
-    private static final byte NODE_DV_TERM_SET = 28;
+    static final byte NODE_MULTI_TERM = 27;
+    static final byte NODE_DV_TERM_SET = 28;
 
     /**
      * A multi-term query under a constant-score ({@code rewrite} 0 or 1) or doc-values (2) rewrite:
@@ -1222,7 +964,7 @@ public final class QueryEncoder {
      * flags or {@code case_insensitive}, OpenSearch's automata) and {@link FuzzyQuery} send the
      * {@code CompiledAutomaton} their terms enumeration intersects the terms with.
      */
-    private static String multiTerm(EncodeContext cx, Query q, byte rewrite, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    static String multiTerm(EncodeContext cx, Query q, byte rewrite, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (rewrite == REWRITE_DOC_VALUES && q.getClass() == TermInSetQuery.class) {
             // TermInSetQuery's doc-values rewrite: its terms looked up in the ordinals.
             TermInSetQuery ts = (TermInSetQuery) q;
@@ -1444,21 +1186,21 @@ public final class QueryEncoder {
         return out;
     }
 
-    private static void writeLong(ByteArrayOutputStream out, long v) {
+    static void writeLong(ByteArrayOutputStream out, long v) {
         writeInt(out, (int) v);
         writeInt(out, (int) (v >>> 32));
     }
 
-    private static void writeBytes(ByteArrayOutputStream out, BytesRef b) {
+    static void writeBytes(ByteArrayOutputStream out, BytesRef b) {
         writeBytes(out, toArray(b));
     }
 
-    private static void writeBytes(ByteArrayOutputStream out, byte[] b) {
+    static void writeBytes(ByteArrayOutputStream out, byte[] b) {
         writeInt(out, b.length);
         out.writeBytes(b);
     }
 
-    private static void writeInt(ByteArrayOutputStream out, int v) {
+    static void writeInt(ByteArrayOutputStream out, int v) {
         out.write(v);
         out.write(v >>> 8);
         out.write(v >>> 16);
