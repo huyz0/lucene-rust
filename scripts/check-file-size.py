@@ -32,7 +32,7 @@ OVER = {
     "crates/lucene-codecs/src/blocktree.rs": 5698,
     "crates/lucene-search/src/directory_reader.rs": 4179,
     "crates/lucene-search/src/vector_query.rs": 4014,
-    "crates/lucene-codecs/src/fst.rs": 3935,
+    "crates/lucene-codecs/src/fst.rs": 3908,
     "crates/lucene-analysis/src/en/kstem_data.rs": 3791,
     "crates/lucene-codecs/src/stored_fields.rs": 3791,
     "crates/lucene-codecs/src/points.rs": 3684,

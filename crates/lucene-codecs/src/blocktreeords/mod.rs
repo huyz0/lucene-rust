@@ -85,6 +85,7 @@ use crate::postings_writer::{
     self, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
 };
 use crate::segment_state::{SegmentReadState, SegmentWriteState};
+use lucene_store::data_input::{read_vint_at as read_vint, read_vlong_at as read_vlong};
 use lucene_store::data_input::{DataInput, SliceInput};
 
 /// `OrdsBlockTreeTermsWriter.TERMS_EXTENSION`.
@@ -362,24 +363,6 @@ impl BlockTreeOrdsPostingsFormat {
     ) -> Result<OrdsBlockTreeTermsReader> {
         OrdsBlockTreeTermsReader::open(tio, tipo, state)
     }
-}
-
-/// `ByteArrayDataInput.readVInt` at `*pos`.
-fn read_vint(buf: &[u8], pos: &mut usize) -> Result<i32> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vint()?;
-    *pos = input.position();
-    Ok(v)
-}
-
-/// `ByteArrayDataInput.readVLong` at `*pos`.
-fn read_vlong(buf: &[u8], pos: &mut usize) -> Result<i64> {
-    let mut input = SliceInput::new(buf);
-    input.seek(*pos)?;
-    let v = input.read_vlong()?;
-    *pos = input.position();
-    Ok(v)
 }
 
 /// `ByteArrayDataInput.readByte() & 0xff` at `*pos`.

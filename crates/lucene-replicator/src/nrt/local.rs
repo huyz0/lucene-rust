@@ -7,6 +7,7 @@
 //! replica reaches the primary; this is the transport the tests, the
 //! differential fixtures and a single-process deployment use.
 
+use lucene_util::vint::write_vlong_u64 as put_vlong;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -33,14 +34,6 @@ fn io_error(message: impl Into<String>) -> Error {
     Error::Store(lucene_store::Error::Io(std::io::Error::other(
         message.into(),
     )))
-}
-
-fn put_vlong(out: &mut Vec<u8>, mut value: u64) {
-    while value >= 0x80 {
-        out.push((value & 0x7f) as u8 | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
 }
 
 enum Piece {

@@ -4,6 +4,8 @@
 //! `crate::blocktree::decompress_lowercase_ascii`, where the block-tree reader
 //! has always used it.
 
+use lucene_util::vint::write_vint;
+
 /// `isCompressible(b)`: `b + 1` falls in `0x20..=0x3f` or `0x60..=0x7f`
 /// (digits, `.`, `-`, `_`, lowercase letters and their neighbours).
 // ARITH: `b <= 255`.
@@ -11,15 +13,6 @@
 fn is_compressible(b: u8) -> bool {
     let high3 = (u32::from(b) + 1) & !0x1f;
     high3 == 0x20 || high3 == 0x60
-}
-
-fn write_vint(out: &mut Vec<u8>, v: i32) {
-    let mut v = v as u32;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 /// `LowercaseAsciiCompression.compress(in, len, tmp, out)`: appends the

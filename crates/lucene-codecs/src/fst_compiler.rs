@@ -28,6 +28,7 @@
 //! `FST.FSTMetadata.save` + the on-heap body is [`CompiledFst::save`].
 
 use lucene_util::fx_hash::FxHashMap;
+use lucene_util::vint::{write_vint, write_vlong};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -242,24 +243,6 @@ impl<'a> ReverseReader<'a> {
         let hi = self.read_byte()?;
         Ok(i16::from_le_bytes([lo, hi]))
     }
-}
-
-fn write_vint(out: &mut Vec<u8>, v: i32) {
-    let mut v = v as u32;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
-fn write_vlong(out: &mut Vec<u8>, v: i64) {
-    let mut v = v as u64;
-    while v & !0x7f != 0 {
-        out.push((v & 0x7f) as u8 | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 fn common_prefix_len<T: PartialEq>(a: &[T], b: &[T]) -> usize {
