@@ -2294,4 +2294,6 @@ fn duration_between(a: &Value, b: &Value) -> R {
 }
 
 #[cfg(test)]
+mod statics_tests;
+#[cfg(test)]
 mod tests;

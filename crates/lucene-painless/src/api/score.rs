@@ -191,13 +191,4 @@ pub fn class_binding(class: &str) -> Option<ClassBinding> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mix32_is_bitmixers() {
-        // BitMixer.mix32(1), BitMixer.mix32(-1).
-        assert_eq!(mix32(1), 1_364_076_727);
-        assert_eq!(mix32(0), 0);
-    }
-}
+mod tests;
