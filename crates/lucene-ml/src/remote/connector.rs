@@ -1244,4 +1244,6 @@ fn defines_escape(s: &str) -> bool {
 }
 
 #[cfg(test)]
+mod builtin_tests;
+#[cfg(test)]
 mod tests;
