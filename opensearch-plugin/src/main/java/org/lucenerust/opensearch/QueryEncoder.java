@@ -134,7 +134,7 @@ public final class QueryEncoder {
      * field it rejects (a non-default similarity, say) falls the whole query back.
      */
     public static Encoded encode(Query query, Predicate<String> fieldOk) {
-        return encode(query, fieldOk, null);
+        return encode(query, fieldOk, EncodeContext.NONE);
     }
 
     /**
@@ -146,19 +146,13 @@ public final class QueryEncoder {
      * would the native side). Without {@code top} such a term falls back.
      */
     public static Encoded encode(Query query, Predicate<String> fieldOk, IndexReaderContext top) {
-        TOP.set(top);
-        try {
-            return encodeRoot(query, fieldOk);
-        } finally {
-            TOP.remove();
-        }
+        return encode(query, fieldOk, EncodeContext.NONE.withTop(top));
     }
 
-    /** The reader context of the search being encoded, for {@link #encode(Query, Predicate, IndexReaderContext)}. */
-    private static final ThreadLocal<IndexReaderContext> TOP = new ThreadLocal<>();
-
-    /** Whether the query being encoded is a highlighter's ({@link #encodeForHighlight}). */
-    private static final ThreadLocal<Boolean> HIGHLIGHT = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    /** {@link #encode(Query, Predicate, IndexReaderContext)} with what else the request tells encoders ({@link EncodeContext}). */
+    public static Encoded encode(Query query, Predicate<String> fieldOk, EncodeContext cx) {
+        return encodeRoot(cx, query, fieldOk);
+    }
 
     /**
      * {@code query} as the unified highlighter sees it, unrewritten: what it visits for terms and
@@ -173,23 +167,10 @@ public final class QueryEncoder {
         return encodeForHighlight(query, false);
     }
 
-    /** Whether the highlighter query being encoded may use the encodings of {@code index.highlight.accelerated_extended}. */
-    private static final ThreadLocal<Boolean> EXTENDED = ThreadLocal.withInitial(() -> Boolean.FALSE);
-
     /** As {@link #encodeForHighlight(Query)}; {@code extended} also writes the shapes that setting adds. */
     public static Encoded encodeForHighlight(Query query, boolean extended) {
-        HIGHLIGHT.set(Boolean.TRUE);
-        EXTENDED.set(extended);
-        try {
-            return encodeRoot(query, field -> true);
-        } finally {
-            HIGHLIGHT.set(Boolean.FALSE);
-            EXTENDED.set(Boolean.FALSE);
-        }
+        return encodeRoot(EncodeContext.NONE.forHighlight(EncodeContext.Reader.HIGHLIGHT, extended), query, field -> true);
     }
-
-    /** Whether the highlighter query being encoded is the {@code plain} highlighter's ({@link #encodeForPlainHighlight}). */
-    private static final ThreadLocal<Boolean> PLAIN = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     /**
      * {@code query} as the {@code plain} highlighter's {@code CustomWeightedSpanTermExtractor} reads
@@ -198,12 +179,7 @@ public final class QueryEncoder {
      * expands to is weighted by its similarity.
      */
     public static Encoded encodeForPlainHighlight(Query query, boolean extended) {
-        PLAIN.set(Boolean.TRUE);
-        try {
-            return encodeForHighlight(query, extended);
-        } finally {
-            PLAIN.set(Boolean.FALSE);
-        }
+        return encodeRoot(EncodeContext.NONE.forHighlight(EncodeContext.Reader.PLAIN_HIGHLIGHT, extended), query, field -> true);
     }
 
     /** {@code NODE_FUZZY} in {@code queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
@@ -389,12 +365,12 @@ public final class QueryEncoder {
      * visit consumes when it has none yet -- what a recorded visit does. A join or a
      * points-or-doc-values query there is rewritten against the document: sent back to stock.
      */
-    private static String plainChild(Query child, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
-        if (PLAIN.get()) {
+    private static String plainChild(EncodeContext cx, Query child, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (cx.plain()) {
             if (child instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery
                 || child instanceof org.opensearch.index.search.OpenSearchToParentBlockJoinQuery) {
                 if (keepsItselfOnRewrite(child)) {
-                    return visited(child, out, fieldOk, depth, nodes);
+                    return visited(cx, child, out, fieldOk, depth, nodes);
                 }
                 return FallbackReason.HIGHLIGHT_NESTED_ANY.key() + name(child);
             }
@@ -402,7 +378,7 @@ public final class QueryEncoder {
                 return FallbackReason.HIGHLIGHT_NESTED_ANY.key() + name(child);
             }
         }
-        return node(child, out, fieldOk, depth + 1, nodes);
+        return node(cx, child, out, fieldOk, depth + 1, nodes);
     }
 
     /**
@@ -514,7 +490,7 @@ public final class QueryEncoder {
         }
     }
 
-    private static String visited(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    private static String visited(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         Recorder root = new Recorder();
         try {
             q.visit(root);
@@ -522,11 +498,11 @@ public final class QueryEncoder {
             return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
         }
         out.write(NODE_VISITED);
-        String reason = writeRecord(root, q, out, fieldOk, depth + 1, nodes);
+        String reason = writeRecord(cx, root, q, out, fieldOk, depth + 1, nodes);
         return reason == null ? "" : reason;
     }
 
-    private static String writeRecord(Recorder r, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    private static String writeRecord(EncodeContext cx, Recorder r, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
             return FallbackReason.QUERY_TOO_DEEP.key();
         }
@@ -556,7 +532,7 @@ public final class QueryEncoder {
                 case VISIT_LEAF -> writeField(out, (String) e[1]);
                 case VISIT_SUB -> {
                     out.write(((BooleanClause.Occur) e[1]).ordinal());
-                    String reason = writeRecord((Recorder) e[2], q, out, fieldOk, depth + 1, nodes);
+                    String reason = writeRecord(cx, (Recorder) e[2], q, out, fieldOk, depth + 1, nodes);
                     if (reason != null) {
                         return reason;
                     }
@@ -566,7 +542,7 @@ public final class QueryEncoder {
                         // an automaton of a query this encoder cannot write
                         return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
                     }
-                    String reason = node((Query) e[1], out, fieldOk, depth + 1, nodes);
+                    String reason = node(cx, (Query) e[1], out, fieldOk, depth + 1, nodes);
                     if (reason != null) {
                         return reason;
                     }
@@ -586,43 +562,43 @@ public final class QueryEncoder {
     }
 
     /** In highlight mode, {@code q} written as the highlighter sees it, or the reason it is not; null to encode it as usual. */
-    private static String highlightNode(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    private static String highlightNode(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (q instanceof org.opensearch.index.search.OpenSearchToParentBlockJoinQuery nested) {
             // The unified highlighter's phrase helper reads it as its child query (stock's
             // rewriteCustomQuery), its visit visits the child as MUST, which the highlighters'
             // visitors pass through; the plain highlighter's extractor reads its child too.
-            String reason = plainChild(nested.getChildQuery(), out, fieldOk, depth, nodes);
+            String reason = plainChild(cx, nested.getChildQuery(), out, fieldOk, depth, nodes);
             return reason == null ? "" : reason;
         }
         if (q instanceof org.apache.lucene.queries.function.FunctionScoreQuery fs) {
             // Both highlighters' extractors read its wrapped query, and its visit visits only that
             // query, as MUST, which their visitors pass through.
-            String reason = node(fs.getWrappedQuery(), out, fieldOk, depth + 1, nodes);
+            String reason = node(cx, fs.getWrappedQuery(), out, fieldOk, depth + 1, nodes);
             return reason == null ? "" : reason;
         }
-        if (EXTENDED.get() && PLAIN.get() == false && q instanceof ApproximateScoreQuery) {
+        if (cx.extendedHighlight() && cx.plain() == false && q instanceof ApproximateScoreQuery) {
             // Its visit reaches the approximation query too, a leaf the highlighter does not
             // recognize (which keeps a field from the no-op strategy and moves postings
             // offsets to analysis): what that visit does is sent, not the query it wraps.
-            return visited(q, out, fieldOk, depth, nodes);
+            return visited(cx, q, out, fieldOk, depth, nodes);
         }
-        if (EXTENDED.get() && PLAIN.get() && q instanceof org.opensearch.common.lucene.search.MoreLikeThisQuery mlt) {
+        if (cx.extendedHighlight() && cx.plain() && q instanceof org.opensearch.common.lucene.search.MoreLikeThisQuery mlt) {
             return MoreLikeThisEncoder.write(mlt, out);
         }
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
-            if (PLAIN.get() == false && extractorKnows(q) == false) {
+            if (cx.plain() == false && extractorKnows(q) == false) {
                 // The unified highlighter reads a query its phrase helper does not support only
                 // through its visit: what that visit does is sent instead.
-                return visited(q, out, fieldOk, depth, nodes);
+                return visited(cx, q, out, fieldOk, depth, nodes);
             }
-            if (PLAIN.get() && extractorKnows(q) == false && keepsItselfOnRewrite(q)) {
+            if (cx.plain() && extractorKnows(q) == false && keepsItselfOnRewrite(q)) {
                 // The plain highlighter's extractor rewrites a query it does not know and, when
                 // the rewrite keeps it, reads the terms its visit consumes when it has none yet.
-                return visited(q, out, fieldOk, depth, nodes);
+                return visited(cx, q, out, fieldOk, depth, nodes);
             }
             return FallbackReason.HIGHLIGHT_ANY.key() + name(q);
         }
-        if (PLAIN.get() && q instanceof FuzzyQuery fq) {
+        if (cx.plain() && q instanceof FuzzyQuery fq) {
             out.write(NODE_FUZZY);
             writeBytes(out, fq.getField().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, fq.getTerm().bytes());
@@ -632,18 +608,18 @@ public final class QueryEncoder {
             return "";
         }
         if (q instanceof MultiTermQuery) {
-            String reason = multiTerm(q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
+            String reason = multiTerm(cx, q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
             return reason == null ? "" : reason;
         }
         if (q instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery fs) {
             // The unified highlighter's query visitor reads through it to its query, and its
             // phrase helper does not know it (so a phrase in it highlights as its single terms).
             Query sub = fs.getSubQuery();
-            if (PLAIN.get() == false && hasPositional(sub)) {
+            if (cx.plain() == false && hasPositional(sub)) {
                 // the phrase helper skips it: its phrases highlight as their terms
                 out.write(NODE_VISIT_ONLY);
             }
-            String reason = plainChild(sub, out, fieldOk, depth, nodes);
+            String reason = plainChild(cx, sub, out, fieldOk, depth, nodes);
             return reason == null ? "" : reason;
         }
         if (q instanceof org.apache.lucene.search.MultiPhraseQuery mp) {
@@ -693,7 +669,7 @@ public final class QueryEncoder {
     }
 
     /** {@code MultiPhraseQuery} (and OpenSearch's prefix variant, before its rewrite) as a search node. */
-    private static String plainMultiPhrase(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+    private static String plainMultiPhrase(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
         Term[][] arrays;
         int[] positions;
         int slop;
@@ -729,7 +705,7 @@ public final class QueryEncoder {
         return reason.isEmpty() ? null : reason;
     }
 
-    private static Encoded encodeRoot(Query query, Predicate<String> fieldOk) {
+    private static Encoded encodeRoot(EncodeContext cx, Query query, Predicate<String> fieldOk) {
         query = unwrapUnitBoost(query);
         if (query instanceof TermQuery tq && tq.getTermStates() == null) {
             if (plainTerm(tq) == false) {
@@ -747,7 +723,7 @@ public final class QueryEncoder {
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(NativeBridge.QUERY_TREE);
-        String reason = node(query, out, fieldOk, 0, new int[1]);
+        String reason = node(cx, query, out, fieldOk, 0, new int[1]);
         if (reason != null) {
             return Encoded.fallback(reason);
         }
@@ -760,12 +736,7 @@ public final class QueryEncoder {
      * field is accepted.
      */
     static String encodeNode(Query query, ByteArrayOutputStream out, IndexReaderContext top) {
-        TOP.set(top);
-        try {
-            return node(unwrapUnitBoost(query), out, field -> true, 0, new int[1]);
-        } finally {
-            TOP.remove();
-        }
+        return node(EncodeContext.NONE.withTop(top), unwrapUnitBoost(query), out, field -> true, 0, new int[1]);
     }
 
     /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
@@ -806,16 +777,16 @@ public final class QueryEncoder {
      * index.seq_no.index_options: doc_values_only}). Without the search's reader both
      * layouts carry the doc values, so they are used.
      */
-    private static boolean seqNoOnDocValues(String field) {
+    private static boolean seqNoOnDocValues(EncodeContext cx, String field) {
         if (field.equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME) == false) {
             return false;
         }
-        IndexReaderContext top = TOP.get();
+        IndexReaderContext top = cx.top();
         return top == null || org.lucenerust.opensearch.engine.SeqNoQueries.docValuesOnly(top);
     }
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
-    private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    private static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
             return FallbackReason.QUERY_TOO_DEEP.key();
         }
@@ -823,8 +794,8 @@ public final class QueryEncoder {
             return FallbackReason.QUERY_TOO_LARGE.key();
         }
         q = unwrapUnitBoost(q);
-        if (HIGHLIGHT.get()) {
-            String written = highlightNode(q, out, fieldOk, depth, nodes);
+        if (cx.highlight()) {
+            String written = highlightNode(cx, q, out, fieldOk, depth, nodes);
             if (written != null) {
                 return written.isEmpty() ? null : written;
             }
@@ -844,7 +815,7 @@ public final class QueryEncoder {
                 writeBytes(out, t.bytes());
                 return null;
             }
-            IndexReaderContext top = TOP.get();
+            IndexReaderContext top = cx.top();
             if (top == null) {
                 return FallbackReason.TERM_STATES.key();
             }
@@ -875,15 +846,15 @@ public final class QueryEncoder {
             return null;
         }
         if (q instanceof SynonymQuery sq) {
-            return synonym(sq, out, fieldOk, nodes);
+            return synonym(cx, sq, out, fieldOk, nodes);
         }
         if (q instanceof BooleanQuery bq) {
             if (bq.getMinimumNumberShouldMatch() < 0) {
                 // BooleanQuery.Builder does not reject it; the native decoder does.
                 return FallbackReason.BOOLEAN_MSM_NEGATIVE.key();
             }
-            if (PLAIN.get() && inExtractorOrder(bq) == false) {
-                if (EXTENDED.get() == false) {
+            if (cx.plain() && inExtractorOrder(bq) == false) {
+                if (cx.extendedHighlight() == false) {
                     return FallbackReason.HIGHLIGHT_CLAUSE_ORDER.key();
                 }
                 // The plain highlighter's extractor reads a bool query's clauses in the order they
@@ -902,7 +873,7 @@ public final class QueryEncoder {
                         continue;
                     }
                     out.write((byte) BooleanClause.Occur.MUST.ordinal());
-                    String reason = node(c.query(), out, fieldOk, depth + 1, nodes);
+                    String reason = node(cx, c.query(), out, fieldOk, depth + 1, nodes);
                     if (reason != null) {
                         return reason;
                     }
@@ -914,7 +885,7 @@ public final class QueryEncoder {
             writeInt(out, bq.clauses().size());
             for (BooleanClause c : bq.clauses()) {
                 out.write((byte) c.occur().ordinal());
-                String reason = node(c.query(), out, fieldOk, depth + 1, nodes);
+                String reason = node(cx, c.query(), out, fieldOk, depth + 1, nodes);
                 if (reason != null) {
                     return reason;
                 }
@@ -925,7 +896,7 @@ public final class QueryEncoder {
             // ConstantScoreQuery scores its boost, which is 1 unless a BoostQuery wraps it.
             out.write(NODE_CONSTANT_SCORE);
             writeInt(out, Float.floatToIntBits(1f));
-            return node(cs.getQuery(), out, fieldOk, depth + 1, nodes);
+            return node(cx, cs.getQuery(), out, fieldOk, depth + 1, nodes);
         }
         if (q instanceof BoostQuery b) {
             float boost = b.getBoost();
@@ -934,14 +905,14 @@ public final class QueryEncoder {
             }
             out.write(NODE_BOOST);
             writeInt(out, Float.floatToIntBits(boost));
-            return node(b.getQuery(), out, fieldOk, depth + 1, nodes);
+            return node(cx, b.getQuery(), out, fieldOk, depth + 1, nodes);
         }
         if (q instanceof DisjunctionMaxQuery dm) {
             out.write(NODE_DISMAX);
             writeInt(out, Float.floatToIntBits(dm.getTieBreakerMultiplier()));
             writeInt(out, dm.getDisjuncts().size());
             for (Query d : dm.getDisjuncts()) {
-                String reason = node(d, out, fieldOk, depth + 1, nodes);
+                String reason = node(cx, d, out, fieldOk, depth + 1, nodes);
                 if (reason != null) {
                     return reason;
                 }
@@ -952,10 +923,10 @@ public final class QueryEncoder {
             // A wrapper, not a level (nor a node): the range it approximates is still the root
             // when it is.
             nodes[0]--;
-            return node(a.getOriginalQuery(), out, fieldOk, depth, nodes);
+            return node(cx, a.getOriginalQuery(), out, fieldOk, depth, nodes);
         }
         if (q instanceof org.apache.lucene.search.MultiPhraseQuery || q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery) {
-            return plainMultiPhrase(q, out, fieldOk, nodes);
+            return plainMultiPhrase(cx, q, out, fieldOk, nodes);
         }
         if (q.getClass() == PhraseQuery.class) {
             PhraseQuery pq = (PhraseQuery) q;
@@ -1007,14 +978,14 @@ public final class QueryEncoder {
             // Otherwise two equivalent ways to run one query; the native side runs the index
             // one. A wrapper, not a level (nor a node).
             nodes[0]--;
-            return node(iodv.getIndexQuery(), out, fieldOk, depth, nodes);
+            return node(cx, iodv.getIndexQuery(), out, fieldOk, depth, nodes);
         }
         if (q instanceof IndexSortSortedNumericDocValuesRangeQuery is) {
             // A `range` on an index-sorted shard's primary sort field: Lucene binary-searches the
             // sorted doc values where it can and otherwise runs its fallback query, which matches
             // the same documents with the same constant score. A wrapper, not a level.
             nodes[0]--;
-            return node(is.getFallbackQuery(), out, fieldOk, depth, nodes);
+            return node(cx, is.getFallbackQuery(), out, fieldOk, depth, nodes);
         }
         if (q instanceof PointRangeQuery pr) {
             // `LongPoint`/`DoublePoint`/date ranges: one dimension of 8 bytes, sent as the sortable
@@ -1024,7 +995,7 @@ public final class QueryEncoder {
             if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
                 return GeoEncoder.node(pr, out);
             }
-            if (seqNoOnDocValues(pr.getField())) {
+            if (seqNoOnDocValues(cx, pr.getField())) {
                 out.write(DocValuesEncoder.NODE_DV_NUMERIC_RANGE);
                 writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
                 writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
@@ -1040,7 +1011,7 @@ public final class QueryEncoder {
         if (q instanceof PointInSetQuery ps
             && ps.getNumDims() == 1
             && ps.getBytesPerDim() == Long.BYTES
-            && seqNoOnDocValues(ps.getField())) {
+            && seqNoOnDocValues(cx, ps.getField())) {
             java.util.Collection<byte[]> points = ps.getPackedPoints();
             out.write(DocValuesEncoder.NODE_DV_NUMERIC_SET);
             writeBytes(out, ps.getField().getBytes(StandardCharsets.UTF_8));
@@ -1077,7 +1048,7 @@ public final class QueryEncoder {
             if (inner == null) {
                 return FallbackReason.CLAUSE_ANY.key() + wrapper;
             }
-            return multiTerm(inner, rewrite, out, fieldOk, depth, nodes);
+            return multiTerm(cx, inner, rewrite, out, fieldOk, depth, nodes);
         }
         if (q.getClass() == MatchAllDocsQuery.class) {
             out.write(NODE_MATCH_ALL);
@@ -1095,22 +1066,22 @@ public final class QueryEncoder {
             return null;
         }
         // The doc-values-only queries, terms_set and distance_feature (DocValuesEncoder).
-        String docValues = DocValuesEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        String docValues = DocValuesEncoder.node(cx, q, out, c -> node(cx, c, out, fieldOk, depth + 1, nodes));
         if (docValues != DocValuesEncoder.NOT_DOC_VALUES) {
             return docValues;
         }
         // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder).
-        String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
+        String extended = ExtendedEncoder.node(cx, q, out, fieldOk, c -> node(cx, c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;
         }
         // rank_feature and neural_sparse (SparseEncoder).
-        String sparse = SparseEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        String sparse = SparseEncoder.node(q, out, c -> node(cx, c, out, fieldOk, depth + 1, nodes));
         if (sparse != SparseEncoder.NOT_SPARSE) {
             return sparse;
         }
         // knn (KnnEncoder).
-        String knn = KnnEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        String knn = KnnEncoder.node(q, out, c -> node(cx, c, out, fieldOk, depth + 1, nodes));
         if (knn != KnnEncoder.NOT_KNN) {
             return knn;
         }
@@ -1122,7 +1093,7 @@ public final class QueryEncoder {
         // A multi-term query not yet rewritten (a filter inside another query): its constant-score
         // rewrite, the default.
         if (q instanceof MultiTermQuery mt && mt.getRewriteMethod() == MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE) {
-            return multiTerm(q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
+            return multiTerm(cx, q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
         }
         // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
         return (depth == 0 ? "query_" : "clause_") + name(q);
@@ -1136,7 +1107,7 @@ public final class QueryEncoder {
      * order. A {@code match} whose analyzer stacks tokens at one position (hunspell's stems,
      * synonyms, {@code keyword_repeat}) builds one.
      */
-    private static String synonym(SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+    private static String synonym(EncodeContext cx, SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
         if (fieldOk.test(q.getField()) == false) {
             return FallbackReason.FIELD_SIMILARITY.key();
         }
@@ -1251,7 +1222,7 @@ public final class QueryEncoder {
      * flags or {@code case_insensitive}, OpenSearch's automata) and {@link FuzzyQuery} send the
      * {@code CompiledAutomaton} their terms enumeration intersects the terms with.
      */
-    private static String multiTerm(Query q, byte rewrite, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    private static String multiTerm(EncodeContext cx, Query q, byte rewrite, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (rewrite == REWRITE_DOC_VALUES && q.getClass() == TermInSetQuery.class) {
             // TermInSetQuery's doc-values rewrite: its terms looked up in the ordinals.
             TermInSetQuery ts = (TermInSetQuery) q;
@@ -1273,7 +1244,7 @@ public final class QueryEncoder {
             return null;
         }
         if (rewrite == REWRITE_DOC_VALUES) {
-            return automatonNode(q, rewrite, out, depth);
+            return automatonNode(cx, q, rewrite, out, depth);
         }
         if (q.getClass() == TermInSetQuery.class) {
             TermInSetQuery ts = (TermInSetQuery) q;
@@ -1305,7 +1276,7 @@ public final class QueryEncoder {
             Term t = ((WildcardQuery) q).getTerm();
             if (t.text().indexOf(WildcardQuery.WILDCARD_ESCAPE) >= 0) {
                 // The native pattern matcher has no escape syntax: the automaton it compiled to.
-                return automatonNode(q, rewrite, out, depth);
+                return automatonNode(cx, q, rewrite, out, depth);
             }
             out.write(NODE_WILDCARD);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
@@ -1337,14 +1308,14 @@ public final class QueryEncoder {
             // not readable back, so the automaton they built is compared with that one's --
             // case_insensitive or a narrower flags set changes it and falls back.
             if (rq.getCompiled().equals(defaultCompiled(t)) == false) {
-                return automatonNode(q, rewrite, out, depth);
+                return automatonNode(cx, q, rewrite, out, depth);
             }
             out.write(NODE_REGEXP);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, t.text().getBytes(StandardCharsets.UTF_8));
             return null;
         }
-        return automatonNode(q, rewrite, out, depth);
+        return automatonNode(cx, q, rewrite, out, depth);
     }
 
     /**
@@ -1353,7 +1324,7 @@ public final class QueryEncoder {
      * {@code getTermsEnum} (its {@code getCompiled()}), or a {@link FuzzyQuery} ({@link
      * #fuzzyCompiled}).
      */
-    private static String automatonNode(Query q, byte rewrite, ByteArrayOutputStream out, int depth) {
+    private static String automatonNode(EncodeContext cx, Query q, byte rewrite, ByteArrayOutputStream out, int depth) {
         CompiledAutomaton compiled;
         String field;
         if (q instanceof AutomatonQuery aq && AUTOMATON_TERMS.get(q.getClass())) {
