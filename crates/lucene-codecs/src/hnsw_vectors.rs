@@ -248,7 +248,10 @@ const DELETE_PCT_THRESHOLD: i32 = 40;
 /// One worker keeps Java's 40.
 fn reuse_delete_pct_limit(workers: usize) -> i32 {
     let workers = i32::try_from(workers.max(1)).unwrap_or(i32::MAX);
-    (DELETE_PCT_THRESHOLD / workers).max(5)
+    DELETE_PCT_THRESHOLD
+        .checked_div(workers)
+        .unwrap_or(5)
+        .max(5)
 }
 
 /// Port of `Lucene99HnswVectorsWriter.mergeOneField`'s graph half, i.e.

@@ -2,6 +2,9 @@
 //! does today) against rebuilding the live vectors with parallel workers.
 //!
 //!   cargo run --release -p lucene-codecs --example hnsw_merge_repair_bench -- [n] [dim] [workers]
+// ARITH: a benchmark over fixed-size synthetic data; every index is bounded by `n * dim`.
+#![allow(clippy::arithmetic_side_effects, clippy::needless_range_loop)]
+
 use std::sync::Arc;
 use std::time::Instant;
 
