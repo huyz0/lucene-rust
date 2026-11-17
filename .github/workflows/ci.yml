@@ -193,6 +193,10 @@ jobs:
       - name: Source files stay review-sized
         run: python3 scripts/check-file-size.py
 
+      # Build outputs (plugin zips, libraries) must not be committed.
+      - name: No large tracked binaries
+        run: python3 scripts/check-binary-size.py
+
       - name: Plugin Java files and methods stay review-sized
         run: python3 scripts/check-java-size.py
 
