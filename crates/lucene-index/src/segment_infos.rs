@@ -66,6 +66,12 @@ pub enum Error {
     #[error("invalid doc-values field count: {0} (segment={1})")]
     InvalidDocValuesFieldCount(i32, String),
     #[error(
+        "segment {0} carries incremental doc-values overlays (Lucene 10.6 \
+         IndexWriterConfig.setMaxDocValuesOverlays), which this reader does not apply; \
+         reading the base column would return stale values"
+    )]
+    UnsupportedDocValuesOverlays(String),
+    #[error(
         "creation version [{created}.x] can't be greater than the version that wrote the segment \
          infos: [{major}.{minor}.{bugfix}]"
     )]
@@ -700,6 +706,9 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
                     num_overlay_fields,
                     segment_name,
                 ));
+            }
+            if num_overlay_fields > 0 {
+                return Err(Error::UnsupportedDocValuesOverlays(segment_name));
             }
             for _ in 0..num_overlay_fields {
                 let field_number = input.read_be_i32()?;

@@ -16,11 +16,11 @@ use std::sync::Mutex;
 
 use crate::visited::Visited;
 
-use crate::distance::distance;
 use crate::error::{Error, Result};
 use crate::factory::{parse_description, parse_params, Description, IndexParams, Kind};
-use crate::format::{Flat, Hnsw, Index, InvList, IvfFlat, Metric};
+use crate::format::{Flat, Hnsw, Index, InvList, IvfFlat, IvfSq, Metric, Sq8, SqFlat, SqList};
 use crate::kmeans::{self, Rng};
+use crate::store::VectorStore;
 
 const SEED: u64 = 12345;
 
@@ -79,13 +79,13 @@ fn build(
     ids: &[i64],
 ) -> Result<Index> {
     let n = ids.len();
-    let storage = Flat {
-        d,
-        metric,
-        data: vectors.to_vec(),
-    };
     let sub = match desc.kind {
-        Kind::Flat => Index::Flat(storage),
+        Kind::Flat if desc.sq8 => Index::Sq(encode_all(metric, d, vectors)),
+        Kind::Flat => Index::Flat(Flat {
+            d,
+            metric,
+            data: vectors.to_vec(),
+        }),
         Kind::Hnsw { m } => {
             if !desc.id_map {
                 return Err(Error::Invalid(
@@ -95,8 +95,19 @@ fn build(
             let mut hnsw = new_hnsw(m, n);
             hnsw.ef_construction = params.ef_construction.map_or(40, |v| v as i32);
             hnsw.ef_search = params.ef_search.map_or(16, |v| v as i32);
-            insert_all(&mut hnsw, &storage);
-            Index::Hnsw { hnsw, storage }
+            if desc.sq8 {
+                let storage = encode_all(metric, d, vectors);
+                insert_all(&mut hnsw, &storage, vectors, d);
+                Index::HnswSq { hnsw, storage }
+            } else {
+                let storage = Flat {
+                    d,
+                    metric,
+                    data: vectors.to_vec(),
+                };
+                insert_all(&mut hnsw, &storage, vectors, d);
+                Index::Hnsw { hnsw, storage }
+            }
         }
         Kind::Ivf { nlist } => {
             let nlist = nlist.min(n.max(1));
@@ -110,24 +121,51 @@ fn build(
                 kmeans::train(vectors, d, nlist, metric, SEED)
             };
             let assigned = kmeans::assign_all(vectors, d, &quantizer);
-            let mut lists = vec![InvList::default(); nlist];
-            for (i, &l) in assigned.iter().enumerate() {
-                // Without an id map the lists keep the external ids; with
-                // one they keep ordinals, which the map translates.
-                lists[l]
-                    .ids
-                    .push(if desc.id_map { i as i64 } else { ids[i] });
-                lists[l]
-                    .codes
-                    .extend_from_slice(&vectors[i * d..(i + 1) * d]);
+            // Without an id map the lists keep the external ids; with one
+            // they keep ordinals, which the map translates.
+            let list_id = |i: usize| if desc.id_map { i as i64 } else { ids[i] };
+            if desc.sq8 {
+                // Residual codes, as `IVF<n>,SQ8` builds them: the quantizer
+                // is trained on `x - centroid`.
+                let mut residuals = vectors.to_vec();
+                for (row, &l) in residuals.chunks_exact_mut(d).zip(&assigned) {
+                    for (r, &c) in row.iter_mut().zip(quantizer.vector(l)) {
+                        *r -= c;
+                    }
+                }
+                let sq = Sq8::train(d, &residuals);
+                let mut lists = vec![SqList::default(); nlist];
+                for (i, (&l, row)) in assigned.iter().zip(residuals.chunks_exact(d)).enumerate() {
+                    lists[l].ids.push(list_id(i));
+                    let at = lists[l].codes.len();
+                    lists[l].codes.resize(at + d, 0);
+                    sq.encode(row, &mut lists[l].codes[at..]);
+                }
+                Index::IvfSq(IvfSq {
+                    d,
+                    metric,
+                    nprobe: params.nprobe.unwrap_or(1),
+                    quantizer,
+                    sq,
+                    by_residual: true,
+                    lists,
+                })
+            } else {
+                let mut lists = vec![InvList::default(); nlist];
+                for (i, &l) in assigned.iter().enumerate() {
+                    lists[l].ids.push(list_id(i));
+                    lists[l]
+                        .codes
+                        .extend_from_slice(&vectors[i * d..(i + 1) * d]);
+                }
+                Index::IvfFlat(IvfFlat {
+                    d,
+                    metric,
+                    nprobe: params.nprobe.unwrap_or(1),
+                    quantizer,
+                    lists,
+                })
             }
-            Index::IvfFlat(IvfFlat {
-                d,
-                metric,
-                nprobe: params.nprobe.unwrap_or(1),
-                quantizer,
-                lists,
-            })
         }
     };
     Ok(if desc.id_map {
@@ -138,6 +176,17 @@ fn build(
     } else {
         sub
     })
+}
+
+/// `IndexScalarQuantizer::train` and `add`: one quantizer over all of
+/// `vectors`, every row encoded.
+fn encode_all(metric: Metric, d: usize, vectors: &[f32]) -> SqFlat {
+    let sq = Sq8::train(d, vectors);
+    let mut codes = vec![0u8; vectors.len()];
+    for (row, out) in vectors.chunks_exact(d).zip(codes.chunks_exact_mut(d)) {
+        sq.encode(row, out);
+    }
+    SqFlat { metric, sq, codes }
 }
 
 /// `HNSW::set_default_probas` and the empty graph over `n` vertices.
@@ -182,26 +231,24 @@ fn random_level(h: &Hnsw, rng: &mut Rng) -> i32 {
 
 const CHUNK: usize = 32;
 
-struct Shared<'a> {
+struct Shared<'a, S: VectorStore> {
     h: &'a Hnsw,
-    storage: &'a Flat,
+    storage: &'a S,
+    /// The vectors as added: queries of the build, whatever the storage.
+    queries: &'a [f32],
+    d: usize,
     neighbors: Vec<AtomicI32>,
     locks: Vec<Mutex<()>>,
     sign: f32,
 }
 
-impl Shared<'_> {
+impl<S: VectorStore> Shared<'_, S> {
     fn dis_vec(&self, q: &[f32], i: usize) -> f32 {
-        self.sign * distance(self.storage.metric, q, self.storage.vector(i))
+        self.sign * self.storage.dis_query(q, i)
     }
 
     fn dis_pair(&self, a: usize, b: usize) -> f32 {
-        self.sign
-            * distance(
-                self.storage.metric,
-                self.storage.vector(a),
-                self.storage.vector(b),
-            )
+        self.sign * self.storage.dis_pair(a, b)
     }
 
     fn range(&self, no: usize, level: usize) -> std::ops::Range<usize> {
@@ -344,7 +391,7 @@ impl Shared<'_> {
         max_level: usize,
         visited: &mut Visited,
     ) {
-        let q = self.storage.vector(pt);
+        let q = &self.queries[pt * self.d..(pt + 1) * self.d];
         let mut nearest = entry;
         let mut d_nearest = self.dis_vec(q, nearest);
         for level in ((pt_level + 1)..=max_level).rev() {
@@ -368,7 +415,7 @@ impl Shared<'_> {
 }
 
 /// `hnsw_add_vertices`: levels first, then every vertex, highest level first.
-fn insert_all(hnsw: &mut Hnsw, storage: &Flat) {
+fn insert_all<S: VectorStore>(hnsw: &mut Hnsw, storage: &S, queries: &[f32], d: usize) {
     let n = storage.len();
     if n == 0 {
         return;
@@ -388,9 +435,11 @@ fn insert_all(hnsw: &mut Hnsw, storage: &Flat) {
     let shared = Shared {
         h: hnsw,
         storage,
+        queries,
+        d,
         neighbors: (0..off).map(|_| AtomicI32::new(-1)).collect(),
         locks: (0..n).map(|_| Mutex::new(())).collect(),
-        sign: if storage.metric == Metric::InnerProduct {
+        sign: if storage.metric() == Metric::InnerProduct {
             -1.0
         } else {
             1.0

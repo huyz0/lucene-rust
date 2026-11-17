@@ -5,13 +5,14 @@
 //! default `IDMap,HNSW16`) and a parameter string (`indexParams`, default
 //! `efConstruction=100`). Supported here:
 //!
-//! * `[IDMap,]Flat`
-//! * `[IDMap,]HNSW<M>[,Flat]`
-//! * `[IDMap,]IVF<nlist>,Flat`
+//! * `[IDMap,]Flat` and `[IDMap,]SQ8`
+//! * `[IDMap,]HNSW<M>[,Flat]` and `[IDMap,]HNSW<M>,SQ8`
+//! * `[IDMap,]IVF<nlist>,Flat` and `[IDMap,]IVF<nlist>,SQ8`
 //!
 //! Any other string is a clear [`Error::Description`], never a silent
-//! substitute: PQ, scalar quantization, `RFlat` refinement, PCA and the rest
-//! of Faiss's factory language are not built.
+//! substitute: PQ, the other scalar quantizers (`SQ4`, `SQfp16`, ...),
+//! `RFlat` refinement, PCA and the rest of Faiss's factory language are not
+//! built.
 
 use crate::error::{Error, Result};
 
@@ -39,9 +40,12 @@ pub struct Description {
     pub id_map: bool,
     /// The index named.
     pub kind: Kind,
+    /// Whether vectors are stored as `SQ8` codes instead of floats.
+    pub sq8: bool,
 }
 
-const SUPPORTED: &str = "[IDMap,]Flat, [IDMap,]HNSW<M>[,Flat] or [IDMap,]IVF<nlist>,Flat";
+const SUPPORTED: &str =
+    "[IDMap,]Flat|SQ8, [IDMap,]HNSW<M>[,Flat|SQ8] or [IDMap,]IVF<nlist>,Flat|SQ8";
 
 fn refuse<T>(description: &str, reason: impl Into<String>) -> Result<T> {
     Err(Error::Description {
@@ -70,14 +74,27 @@ pub fn parse_description(description: &str) -> Result<Description> {
         Some((&"IDMap", rest)) => (true, rest),
         _ => (false, tokens.as_slice()),
     };
-    let kind = match rest {
-        ["Flat"] => Kind::Flat,
-        [h] | [h, "Flat"] if h.starts_with("HNSW") => Kind::Hnsw {
-            m: number(description, h, "HNSW")?,
-        },
-        [i, "Flat"] if i.starts_with("IVF") => Kind::Ivf {
-            nlist: number(description, i, "IVF")?,
-        },
+    let (kind, sq8) = match rest {
+        ["Flat"] => (Kind::Flat, false),
+        ["SQ8"] => (Kind::Flat, true),
+        [h] | [h, "Flat"] if h.starts_with("HNSW") => (
+            Kind::Hnsw {
+                m: number(description, h, "HNSW")?,
+            },
+            false,
+        ),
+        [h, "SQ8"] if h.starts_with("HNSW") => (
+            Kind::Hnsw {
+                m: number(description, h, "HNSW")?,
+            },
+            true,
+        ),
+        [i, storage @ ("Flat" | "SQ8")] if i.starts_with("IVF") => (
+            Kind::Ivf {
+                nlist: number(description, i, "IVF")?,
+            },
+            *storage == "SQ8",
+        ),
         [] | [""] => return refuse(description, format!("it is empty; supported: {SUPPORTED}")),
         other => {
             return refuse(
@@ -86,7 +103,7 @@ pub fn parse_description(description: &str) -> Result<Description> {
             )
         }
     };
-    Ok(Description { id_map, kind })
+    Ok(Description { id_map, kind, sq8 })
 }
 
 /// The index parameters this port applies (`ParameterSpace::set_index_parameters`).

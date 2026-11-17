@@ -11,6 +11,8 @@ Per case NAME it writes NAME.idx (faiss.write_index), NAME.vectors (n x d f32
 LE, the vectors as added), NAME.queries (q x d f32 LE) and NAME.expected (TSV:
 `plain|filtered`, query number, then k `id:distance` pairs), and manifest.tsv:
 `NAME  factory  metric  d  n  k  search-parameter`.
+`ONLY=a,b` writes just those cases and appends to the manifest, leaving the
+other fixtures (whose multithreaded HNSW builds are not reproducible) alone.
 """
 import os, struct, sys
 import numpy as np
@@ -28,6 +30,12 @@ CASES = [
     ("ivf_idmap_l2", "IDMap,IVF16,Flat", faiss.METRIC_L2, "", "nprobe=6"),
     ("ivf_idmap_ip", "IDMap,IVF16,Flat", faiss.METRIC_INNER_PRODUCT, "", "nprobe=6"),
     ("flat_idmap_l2", "IDMap,Flat", faiss.METRIC_L2, "", ""),
+    ("sq8_idmap_l2", "IDMap,SQ8", faiss.METRIC_L2, "", ""),
+    ("sq8_idmap_ip", "IDMap,SQ8", faiss.METRIC_INNER_PRODUCT, "", ""),
+    ("ivfsq8_idmap_l2", "IDMap,IVF16,SQ8", faiss.METRIC_L2, "", "nprobe=6"),
+    ("ivfsq8_idmap_ip", "IDMap,IVF16,SQ8", faiss.METRIC_INNER_PRODUCT, "", "nprobe=6"),
+    ("hnswsq8_idmap_l2", "IDMap,HNSW8,SQ8", faiss.METRIC_L2, "efConstruction=40", "efSearch=48"),
+    ("hnswsq8_idmap_ip", "IDMap,HNSW8,SQ8", faiss.METRIC_INNER_PRODUCT, "efConstruction=40", "efSearch=48"),
 ]
 
 
@@ -40,7 +48,10 @@ def main():
     ids = (np.arange(N) * 3 + 7).astype("int64")
     allowed = ids[ids % 2 == 0]
     manifest = []
+    only = set(filter(None, os.environ.get("ONLY", "").split(",")))
     for name, factory, metric, build_params, search_param in CASES:
+        if only and name not in only:
+            continue
         index = faiss.index_factory(D, factory, metric)
         ps = faiss.ParameterSpace()
         if build_params:
@@ -74,7 +85,7 @@ def main():
         q.tofile(os.path.join(OUT, name + ".queries"))
         manifest.append("\t".join([name, factory, "l2" if metric == faiss.METRIC_L2 else "ip", str(D), str(N), str(K), search_param]))
     np.array(ids).tofile(os.path.join(OUT, "ids.i64"))
-    with open(os.path.join(OUT, "manifest.tsv"), "w") as f:
+    with open(os.path.join(OUT, "manifest.tsv"), "a" if only else "w") as f:
         f.write("\n".join(manifest) + "\n")
     print("faiss", faiss.__version__, "->", OUT)
 

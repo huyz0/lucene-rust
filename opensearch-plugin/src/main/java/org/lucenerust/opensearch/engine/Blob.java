@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * A growable little-endian byte buffer: the wire format {@code writer_blob.rs} decodes with its
- * {@code Cursor}. Not thread-safe; each operation builds its own.
+ * {@code Cursor}. Not thread-safe; an encoding thread keeps one and {@link #reset}s it per operation.
  */
 final class Blob {
     private byte[] buf;
@@ -20,6 +20,20 @@ final class Blob {
 
     Blob(int capacity) {
         buf = new byte[Math.max(16, capacity)];
+    }
+
+    /** Empties the blob for a new operation, with room for {@code capacity} bytes without growing. */
+    Blob reset(int capacity) {
+        len = 0;
+        analyzesNatively = false;
+        if (buf.length < capacity) {
+            buf = new byte[capacity];
+        }
+        return this;
+    }
+
+    int capacity() {
+        return buf.length;
     }
 
     byte[] array() {
@@ -99,6 +113,25 @@ final class Blob {
     }
 
     Blob string(String s) {
+        int n = s.length();
+        if (n <= (1 << 16)) {
+            // Plain ASCII, the common case, is copied straight in: no intermediate byte[].
+            ensure(4 + n);
+            int at = len + 4;
+            int i = 0;
+            for (; i < n; i++) {
+                char c = s.charAt(i);
+                if (c >= 0x80) {
+                    break;
+                }
+                buf[at + i] = (byte) c;
+            }
+            if (i == n) {
+                i32(n);
+                len += n;
+                return this;
+            }
+        }
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         return bytes(b, 0, b.length);
     }

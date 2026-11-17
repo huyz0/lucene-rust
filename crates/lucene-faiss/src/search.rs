@@ -5,8 +5,9 @@
 
 use crate::distance::distance;
 use crate::error::{Error, Result};
-use crate::format::{Flat, Hnsw, Index, IvfFlat, Metric};
+use crate::format::{Flat, Hnsw, Index, IvfFlat, IvfSq, Metric, SqFlat};
 use crate::heap::{Max, Min, Minimax, Order, TopK};
+use crate::store::VectorStore;
 use crate::visited::VISITED;
 
 /// Search settings Faiss takes as `SearchParameters`; `None` keeps what the
@@ -74,6 +75,9 @@ impl Index {
             Index::Flat(f) => search_flat(f, query, k, filter),
             Index::Hnsw { hnsw, storage } => search_hnsw(hnsw, storage, query, k, params, filter),
             Index::IvfFlat(ivf) => search_ivf(ivf, query, k, params, filter),
+            Index::Sq(f) => search_sq(f, query, k, filter),
+            Index::HnswSq { hnsw, storage } => search_hnsw(hnsw, storage, query, k, params, filter),
+            Index::IvfSq(ivf) => search_ivf_sq(ivf, query, k, params, filter),
             Index::IdMap { .. } => {
                 return Err(Error::Unsupported("an id map inside an id map".into()))
             }
@@ -152,31 +156,100 @@ fn scan_lists<C: Order>(
     top.finish()
 }
 
+fn search_sq(f: &SqFlat, q: &[f32], k: usize, filter: Option<Selector<'_>>) -> Vec<(i64, f32)> {
+    let d = f.sq.d();
+    let scan = f
+        .codes
+        .chunks_exact(d.max(1))
+        .enumerate()
+        .map(|(i, code)| (i as i64, f.sq.distance(f.metric, q, code)));
+    match f.metric {
+        Metric::L2 => collect::<Max>(scan, k, filter),
+        Metric::InnerProduct => collect::<Min>(scan, k, filter),
+    }
+}
+
+fn search_ivf_sq(
+    ivf: &IvfSq,
+    q: &[f32],
+    k: usize,
+    params: &SearchParams,
+    filter: Option<Selector<'_>>,
+) -> Vec<(i64, f32)> {
+    let nprobe = params
+        .nprobe
+        .unwrap_or(ivf.nprobe)
+        .clamp(1, ivf.lists.len().max(1));
+    let probes: Vec<(usize, f32)> = search_flat(&ivf.quantizer, q, nprobe, None)
+        .into_iter()
+        .filter_map(|(l, coarse)| usize::try_from(l).ok().map(|l| (l, coarse)))
+        .collect();
+    match ivf.metric {
+        Metric::L2 => scan_sq_lists::<Max>(ivf, &probes, q, k, filter),
+        Metric::InnerProduct => scan_sq_lists::<Min>(ivf, &probes, q, k, filter),
+    }
+}
+
+/// `IndexIVFScalarQuantizer`'s scan: with residual codes Euclidean measures
+/// from the query's residual to the list's centroid, and the inner product
+/// adds the query's product with the centroid (the coarse distance) to the
+/// product with the decoded residual.
+fn scan_sq_lists<C: Order>(
+    ivf: &IvfSq,
+    probes: &[(usize, f32)],
+    q: &[f32],
+    k: usize,
+    filter: Option<Selector<'_>>,
+) -> Vec<(i64, f32)> {
+    let mut top = TopK::<C>::new(k);
+    let mut residual = vec![0f32; q.len()];
+    for &(l, coarse) in probes {
+        let list = &ivf.lists[l];
+        let (query, base) = match (ivf.by_residual, ivf.metric) {
+            (true, Metric::L2) => {
+                for ((r, &x), &c) in residual.iter_mut().zip(q).zip(ivf.quantizer.vector(l)) {
+                    *r = x - c;
+                }
+                (&residual[..], 0.0)
+            }
+            (true, Metric::InnerProduct) => (q, coarse),
+            (false, _) => (q, 0.0),
+        };
+        for (code, &id) in list.codes.chunks_exact(ivf.d).zip(&list.ids) {
+            let d = base + ivf.sq.distance(ivf.metric, query, code);
+            if C::worse(top.threshold(), d) && filter.is_none_or(|f| f(id)) {
+                top.add(d, id);
+            }
+        }
+    }
+    top.finish()
+}
+
 fn neighbor_range(h: &Hnsw, no: usize, level: usize) -> std::ops::Range<usize> {
     let offset = h.offsets[no] as usize;
     offset + h.cum_nneighbor_per_level[level] as usize
         ..offset + h.cum_nneighbor_per_level[level + 1] as usize
 }
 
-fn search_hnsw(
+fn search_hnsw<S: VectorStore>(
     h: &Hnsw,
-    storage: &Flat,
+    storage: &S,
     q: &[f32],
     k: usize,
     params: &SearchParams,
     filter: Option<Selector<'_>>,
 ) -> Vec<(i64, f32)> {
-    if h.entry_point < 0 || storage.is_empty() {
+    if h.entry_point < 0 || storage.len() == 0 {
         return Vec::new();
     }
     // Faiss searches on distances to minimise; a similarity metric is
     // negated through the search and back after it.
-    let sign = if storage.metric == Metric::InnerProduct {
+    let sign = if storage.metric() == Metric::InnerProduct {
         -1.0
     } else {
         1.0
     };
-    let dis = |i: usize| sign * distance(storage.metric, q, storage.vector(i));
+    let dis = |i: usize| sign * storage.dis_query(q, i);
     let ef_search = params
         .ef_search
         .unwrap_or_else(|| usize::try_from(h.ef_search).unwrap_or(16));
