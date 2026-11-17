@@ -112,7 +112,7 @@ final class NativeHits {
                 try {
                     shortcut = SearchSupport.shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
                 } catch (IOException e) {
-                    return FallbackReason.NATIVE_ERROR.key();
+                    return FallbackReason.ACCELERATED_ERROR.key();
                 }
             }
             if (shortcut >= 0 || shortcutTerm != null) {
@@ -162,7 +162,7 @@ final class NativeHits {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
             NativeAggregations.consumeBuckets(ctx, aggResult);
@@ -184,7 +184,7 @@ final class NativeHits {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             try {
                 aggResult = tree.build(result[0], slices, ctx.partialOnShard());
@@ -195,7 +195,7 @@ final class NativeHits {
             } catch (ReflectiveOperationException | RuntimeException e) {
                 stats.nativeError();
                 logger.warn("accelerated-search: building native aggregation results failed, re-running on Lucene", e);
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             NativeAggregations.consumeBuckets(ctx, aggResult);
         }
@@ -264,7 +264,7 @@ final class NativeHits {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             shortcut = Math.toIntExact(counts[3]);
         } else if (numDocs == 0 && (shortcut >= 0 || countLimit == 0)) {
@@ -276,7 +276,7 @@ final class NativeHits {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
         }
         int n = (int) counts[0];
@@ -292,7 +292,7 @@ final class NativeHits {
         if (numDocs == 0 && ctx.shouldUseConcurrentSearch()) {
             Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total, segCounts);
             if (terminated == null) {
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             if (terminated) {
                 ctx.queryResult().terminatedEarly(true);
@@ -468,7 +468,7 @@ final class NativeHits {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("accelerated-search: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return FallbackReason.NATIVE_ERROR.key();
+                return FallbackReason.ACCELERATED_ERROR.key();
             }
             r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
         }
@@ -496,7 +496,7 @@ final class NativeHits {
             }
             stats.nativeError();
             logger.warn("accelerated-search: native collapsed search failed ({}), re-running on Lucene: {}", rc, message);
-            return FallbackReason.NATIVE_ERROR.key();
+            return FallbackReason.ACCELERATED_ERROR.key();
         }
         TopDocsAndMaxScore td;
         try {
@@ -504,7 +504,7 @@ final class NativeHits {
         } catch (RuntimeException e) {
             stats.nativeError();
             logger.warn("accelerated-search: decoding native collapsed hits failed, re-running on Lucene", e);
-            return FallbackReason.NATIVE_ERROR.key();
+            return FallbackReason.ACCELERATED_ERROR.key();
         }
         ctx.queryResult().topDocs(td, ctx.sort() == null ? new DocValueFormat[] { DocValueFormat.RAW } : ctx.sort().formats);
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) {
@@ -541,7 +541,7 @@ final class NativeHits {
             NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("accelerated-search: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return FallbackReason.NATIVE_ERROR.key();
+            return FallbackReason.ACCELERATED_ERROR.key();
         }
         int n = (int) counts[0];
         FieldDoc[] hits = SortEncoder.hits(fields, n, docs, values, terms[0]);

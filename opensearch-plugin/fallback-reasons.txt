@@ -1,11 +1,13 @@
 # Fallback reasons the plugin still has (scripts/check-fallbacks.py).
 # Shrinks as paths are ported; adding a line needs approval.
+accelerated_error  # AcceleratedQueryPhaseSearcher.java, HybridPhase.java, NativeHits.java, NativeHybrid.java
+accelerated_open_failed  # NativeReaders.java
 aggregation_  # NativeAggregationTree.java
 aggregation_script  # ExtendedEncoder.java
 aggregation_script_options  # ExtendedEncoder.java
 aggregation_script_score  # ExtendedEncoder.java
 aggregation_shape  # NativeAggregationTree.java
-aggregations  # AcceleratedQueryPhaseSearcher.java
+aggregations  # HybridPhase.java, NativeHits.java
 analysis_  # AnalyzerSpec.java
 analysis_hunspell  # AnalyzerSpec.java
 analysis_japanese_dictionary  # AnalyzerSpec.java
@@ -22,28 +24,28 @@ analysis_synonyms  # AnalyzerSpec.java
 analysis_word_delimiter_flags  # AnalyzerSpec.java
 analysis_word_delimiter_types  # AnalyzerSpec.java
 analysis_words  # AnalyzerSpec.java
-approximate  # AcceleratedQueryPhaseSearcher.java
-boolean_msm_negative  # QueryEncoder.java
-boost_invalid  # QueryEncoder.java
-cancelled  # AcceleratedQueryPhaseSearcher.java
-clause_  # QueryEncoder.java
-collapse_field  # AcceleratedQueryPhaseSearcher.java
-collapse_refused  # AcceleratedQueryPhaseSearcher.java
-collapse_search_after  # AcceleratedQueryPhaseSearcher.java
-collector_spec  # AcceleratedQueryPhaseSearcher.java
-collectors  # NativeHybrid.java, AcceleratedQueryPhaseSearcher.java
+approximate  # HybridPhase.java, PlainSearch.java
+boolean_msm_negative  # CoreNodes.java
+boost_invalid  # CoreNodes.java
+cancelled  # HybridPhase.java, NativeExecution.java, NativeHits.java
+clause_  # CoreNodes.java
+collapse_field  # SearchEligibility.java
+collapse_refused  # NativeHits.java
+collapse_search_after  # SearchEligibility.java
+collector_spec  # SearchEligibility.java
+collectors  # NativeHybrid.java, SearchEligibility.java
 converter  # SortEncoder.java
 covering_options  # ExtendedEncoder.java
 covering_script  # ExtendedEncoder.java
 data  # SortEncoder.java
-dfs  # AcceleratedQueryPhaseSearcher.java
+dfs  # SearchEligibility.java
 directory_mixed  # NativeReaders.java
-directory_not_native  # NativeReaders.java
-disabled  # AcceleratedQueryPhaseSearcher.java
+directory_unsupported  # NativeReaders.java
+disabled  # HybridPhase.java, SearchEligibility.java
 error  # SortEncoder.java
-extended_reflect  # ExtendedEncoder.java
-fetch_doc_values  # AcceleratedQueryPhaseSearcher.java
-field_similarity  # ExtendedEncoder.java, QueryEncoder.java
+extended_reflect  # ExtendedEncoder.java, QueryEncoder.java
+fetch_doc_values  # SearchEligibility.java
+field_similarity  # CoreNodes.java, ExtendedEncoder.java, QueryEncoder.java
 function_score_  # ExtendedEncoder.java
 function_score_decay  # ExtendedEncoder.java
 function_score_field_data  # ExtendedEncoder.java
@@ -52,9 +54,10 @@ fuzzy_automaton  # QueryEncoder.java
 geo_geometry  # GeoEncoder.java
 geo_reflect  # GeoEncoder.java
 highlight_  # NativePlainHighlighter.java, NativeUnifiedHighlighter.java, QueryEncoder.java
+highlight_accelerated_error  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_analyzer  # NativeUnifiedHighlighter.java
 highlight_boundary_scanner  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
-highlight_clause_order  # QueryEncoder.java
+highlight_clause_order  # CoreNodes.java
 highlight_derived_field  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_fragment_offset  # NativeFvhHighlighter.java
 highlight_fragment_size  # NativeFvhHighlighter.java
@@ -66,7 +69,6 @@ highlight_live_view  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
 highlight_locale  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
 highlight_lone_surrogate  # NativeFvhHighlighter.java, NativePlainHighlighter.java
 highlight_max_analyzer_offset  # NativePlainHighlighter.java
-highlight_native_error  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_nested_  # QueryEncoder.java
 highlight_plain_hit  # NativePlainHighlighter.java
 highlight_reader  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
@@ -76,14 +78,12 @@ interval_painless  # ExtendedEncoder.java
 interval_repeating_count  # ExtendedEncoder.java
 interval_scoring  # ExtendedEncoder.java
 interval_script  # ExtendedEncoder.java
-intra_segment  # AcceleratedQueryPhaseSearcher.java
+intra_segment  # HybridPhase.java, NativeHits.java, PlainSearch.java
 join_parents  # ExtendedEncoder.java
 join_unrewritten  # ExtendedEncoder.java
-min_score  # NativeHybrid.java, AcceleratedQueryPhaseSearcher.java
+min_score  # SearchEligibility.java
 mode_  # SortEncoder.java
-native_error  # AcceleratedQueryPhaseSearcher.java
-native_open_failed  # NativeReaders.java
-nested  # AcceleratedQueryPhaseSearcher.java, SortEncoder.java
+nested  # SearchEligibility.java, SortEncoder.java
 nested_parents  # SortEncoder.java
 nested_query  # SortEncoder.java
 noskip  # SortEncoder.java
@@ -91,34 +91,34 @@ pattern_phrase_  # ExtendedEncoder.java
 points_width  # GeoEncoder.java
 postings_format  # NativeReaders.java
 query_too_deep  # QueryEncoder.java
-query_too_large  # QueryEncoder.java
-random_score_id  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
+query_too_large  # CoreNodes.java, QueryEncoder.java
+random_score_id  # ExtendedEncoder.java
 reader_closed  # NativeReaders.java
 reader_not_directory  # NativeReaders.java
 reader_not_standard  # NativeReaders.java
 reader_uncacheable  # NativeReaders.java
-realtime_view  # AcceleratedQueryPhaseSearcher.java
-rescore  # AcceleratedQueryPhaseSearcher.java
+realtime_view  # HybridPhase.java, NativeExecution.java
+rescore  # HybridPhase.java, SearchEligibility.java
 rescore_  # NativeRescore.java
 rescore_approximate  # NativeRescore.java
 rescore_query  # NativeRescore.java
 scaled_float  # SortEncoder.java
-script_date_values  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
-script_expression_per_document  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
+script_date_values  # ExtendedEncoder.java
+script_expression_per_document  # ExtendedEncoder.java
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java
-script_sort_score  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; per-hit interpreter slower than stock, Huy 2026-11-16)
-scroll_after  # AcceleratedQueryPhaseSearcher.java
-search_after  # AcceleratedQueryPhaseSearcher.java
+script_sort_score  # ExtendedEncoder.java
+scroll_after  # PlainSearch.java
+search_after  # AcceleratedQueryPhaseSearcher.java, SearchEligibility.java
 search_after_fields  # SortEncoder.java
 search_after_null  # SortEncoder.java
 search_after_type  # SortEncoder.java
 segment_infos_write  # NativeReaders.java
-slower_shape  # NativeHybrid.java, AcceleratedQueryPhaseSearcher.java
+slower_shape  # NativeHybrid.java, PlainSearch.java
 sort_  # SortEncoder.java
 sort_geo_field_data  # GeoEncoder.java
-sort_geo_nested  # GeoEncoder.java
+sort_geo_nested  # GeoEncoder.java, SortEncoder.java
 sort_geo_origins  # GeoEncoder.java
 sort_geo_reflect  # GeoEncoder.java
 sort_keys  # SortEncoder.java
@@ -128,8 +128,8 @@ sort_script_options  # ExtendedEncoder.java
 sort_unoptimized  # SortEncoder.java
 span_  # ExtendedEncoder.java
 substring_regexp_flags  # ExtendedEncoder.java
-term_states  # QueryEncoder.java
-terminate_after  # AcceleratedQueryPhaseSearcher.java
-time_series_order  # NativeHybrid.java, AcceleratedQueryPhaseSearcher.java
-timeout  # AcceleratedQueryPhaseSearcher.java
+term_states  # CoreNodes.java, QueryEncoder.java
+terminate_after  # SearchEligibility.java
+time_series_order  # NativeHybrid.java, SearchEligibility.java
+timeout  # HybridPhase.java, NativeExecution.java
 type_  # SortEncoder.java

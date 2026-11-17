@@ -118,6 +118,9 @@ check_jvm() {
     fi
 }
 check_jvm "$NAME"
+# No reflective read of OpenSearch's or Lucene's private state may have found nothing during the
+# matrix: such a query falls back to stock speed without failing (docs/mechanical-gates.md).
+python3 opensearch-plugin/e2e/check_reflect_fallbacks.py "http://localhost:${PORT}" || status=1
 if [[ $YAML == 1 && $status == 0 ]]; then
     gradle --no-daemon -q -p opensearch-plugin yamlRestTestClasspath
     work=$(mktemp -d) && chmod 755 "$work"
