@@ -1028,18 +1028,33 @@ impl IndexWriter<'_> {
         let base = self.pending_doc_id_upto();
         let checkpoint = self.pending_postings.checkpoint(base);
         let inverted = self.invert_fields_block(docs, Vec::new());
-        let out = inverted.map(|(mut explicit, vectors)| {
-            let mut doc_id = base;
-            for e in &mut explicit {
-                for inv in &mut e.fields.inverted {
-                    inv.terms = self
-                        .pending_postings
-                        .doc_terms(inv.field_number, doc_id)
-                        .into();
+        let out = inverted.and_then(|(mut explicit, vectors)| {
+            // Every field's terms for the whole block, each decoded once.
+            let mut fields: Vec<i32> = explicit
+                .iter()
+                .flat_map(|e| e.fields.inverted.iter().map(|inv| inv.field_number))
+                .collect();
+            fields.sort_unstable();
+            fields.dedup();
+            for number in fields {
+                let mut terms = vec![Vec::new(); explicit.len()];
+                self.pending_postings
+                    .block_terms(number, base, &mut terms)?;
+                for (e, terms) in explicit.iter_mut().zip(terms) {
+                    // A document's repeated instances of a field share the
+                    // field's terms: the first instance carries them.
+                    let mut terms = Some(terms);
+                    for inv in e
+                        .fields
+                        .inverted
+                        .iter_mut()
+                        .filter(|inv| inv.field_number == number)
+                    {
+                        inv.terms = terms.take().unwrap_or_default().into();
+                    }
                 }
-                doc_id = doc_id.saturating_add(1);
             }
-            (explicit, vectors)
+            Ok((explicit, vectors))
         });
         self.pending_postings.rollback(checkpoint);
         out

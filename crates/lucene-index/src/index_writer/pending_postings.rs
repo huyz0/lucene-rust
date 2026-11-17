@@ -1396,12 +1396,9 @@ impl FieldRuns {
         }
     }
 
-    /// `document`'s occurrences of `id`, as [`InvertedField`] holds them:
-    /// what tests and the detached inversion read back.
-    fn doc_term(&self, id: u32, doc: i32) -> Option<super::explicit::InvertedTerm> {
-        let mut cols = Columns::default();
-        self.decode(id, &mut cols).ok()?;
-        let i = cols.docs.iter().position(|&(d, _)| d == doc)?;
+    /// Term `id`'s occurrence in the `i`th document of `cols`, as
+    /// [`InvertedField`] holds it.
+    fn term_at(&self, id: u32, cols: &Columns, i: usize) -> super::explicit::InvertedTerm {
         let freq = cols.docs[i].1;
         let (from, to) = if self.positions {
             (
@@ -1428,13 +1425,48 @@ impl FieldRuns {
         } else {
             Vec::new()
         };
-        Some(super::explicit::InvertedTerm {
+        super::explicit::InvertedTerm {
             term: self.terms.term(id).to_vec(),
             freq,
             positions: cols.positions[from..to].to_vec(),
             offsets: cols.offsets.get(from..to).unwrap_or_default().to_vec(),
             payloads,
-        })
+        }
+    }
+
+    /// Every term of the documents `base..base + out.len()`, each decoded once
+    /// and pushed onto its document's list in `out` (`out[d - base]`).
+    fn block_terms(&self, base: i32, out: &mut [Vec<super::explicit::InvertedTerm>]) -> Result<()> {
+        let end = base.saturating_add(i32::try_from(out.len()).unwrap_or(i32::MAX));
+        let mut cols = Columns::default();
+        for id in 0..self.runs.len() as u32 {
+            cols = Columns::default();
+            self.decode(id, &mut cols)?;
+            for i in 0..cols.docs.len() {
+                let doc = cols.docs[i].0;
+                if doc >= base && doc < end {
+                    let term = self.term_at(id, &cols, i);
+                    if let Some(list) = usize::try_from(doc.saturating_sub(base))
+                        .ok()
+                        .and_then(|at| out.get_mut(at))
+                    {
+                        list.push(term);
+                    }
+                }
+            }
+        }
+        drop(cols);
+        Ok(())
+    }
+
+    /// `document`'s occurrences of `id`, as [`InvertedField`] holds them:
+    /// what tests read back after inverting a document.
+    #[cfg(test)]
+    fn doc_term(&self, id: u32, doc: i32) -> Option<super::explicit::InvertedTerm> {
+        let mut cols = Columns::default();
+        self.decode(id, &mut cols).ok()?;
+        let i = cols.docs.iter().position(|&(d, _)| d == doc)?;
+        Some(self.term_at(id, &cols, i))
     }
 
     /// Cuts term `id`, whose pending document is at or past `cut_at`, back
@@ -1733,7 +1765,21 @@ impl PendingPostings {
         }
     }
 
+    /// Field `number`'s terms of the documents `base..base + out.len()`, one
+    /// list each in `out`, in no particular order. Each term is decoded once.
+    pub(crate) fn block_terms(
+        &self,
+        number: i32,
+        base: i32,
+        out: &mut [Vec<super::explicit::InvertedTerm>],
+    ) -> Result<()> {
+        self.fields
+            .get(&number)
+            .map_or(Ok(()), |f| f.block_terms(base, out))
+    }
+
     /// Field `number`'s terms of document `doc`, in no particular order.
+    #[cfg(test)]
     pub(crate) fn doc_terms(&self, number: i32, doc: i32) -> Vec<super::explicit::InvertedTerm> {
         self.fields.get(&number).map_or_else(Vec::new, |f| {
             (0..f.runs.len() as u32)
