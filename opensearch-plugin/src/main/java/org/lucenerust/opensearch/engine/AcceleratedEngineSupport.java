@@ -738,6 +738,7 @@ public final class AcceleratedEngineSupport {
             if (RECOMPRESS_NON_FORCE.equals(MERGE_LZ4_HIGH_COMPRESSION.get(indexSettings.getSettings()))) {
                 writer.setMergeLz4HcNonForce();
             }
+            writer.setIndexFormat(IndexFormatSettings.resolve(indexSettings.getSettings()));
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {
                 writer.setIvfPartitionClusters(ivfPartitionClusters);
