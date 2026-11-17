@@ -170,3 +170,13 @@ fn deeply_nested_groups_fail_to_parse_instead_of_overflowing_the_stack() {
         .join()
         .expect("no panic");
 }
+
+/// Lucene 10.6 (#16446): the default operator joins the term positions of one
+/// analysed text across fields, not just the fields of one position.
+#[test]
+fn multi_field_parser_honors_the_default_operator_between_term_positions() {
+    let mut p = QueryParser::multi_field(&["a", "b"], standard());
+    assert_eq!(parse(&p, "x y"), "(a:x b:x) (a:y b:y)");
+    p.set_default_operator(Operator::And);
+    assert_eq!(parse(&p, "x y"), "+(a:x b:x) +(a:y b:y)");
+}

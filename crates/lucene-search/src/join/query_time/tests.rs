@@ -18,7 +18,7 @@ fn java_float_min_and_max() {
     assert_eq!(java_min_f32(2.0, 1.0), 1.0);
     assert_eq!(java_max_f32(1.0, 2.0), 2.0);
     assert_eq!(java_max_f32(2.0, 1.0), 2.0);
-    assert!(is_positive_zero(0.0) && !is_positive_zero(-0.0));
+    assert!(is_positive_zero_f64(0.0) && !is_positive_zero_f64(-0.0));
 }
 
 /// `SeekingTermSetTermsEnum.accept` over a walk of the enum's terms:
@@ -434,4 +434,20 @@ fn queries_compare_and_print() {
     assert_eq!(w, w.clone());
     assert!(format!("{w:?}").contains("min=0"));
     assert_eq!(w.as_global_ordinals_query().join_field, "gj");
+}
+
+/// Total scores are summed in double and narrowed once (Lucene 10.6, #16378,
+/// #16428), so the order the documents come in cannot change the float.
+#[test]
+fn numeric_join_totals_do_not_depend_on_document_order() {
+    let scores = [1.0e8f32, 1.0, 1.0, -1.0e8, 0.1, 0.2];
+    let mut forward = NumericJoinCollector::new("f", false, ScoreMode::Total);
+    let mut backward = NumericJoinCollector::new("f", false, ScoreMode::Total);
+    for &s in &scores {
+        forward.add(7, s);
+    }
+    for &s in scores.iter().rev() {
+        backward.add(7, s);
+    }
+    assert_eq!(forward.into_sorted(), backward.into_sorted());
 }

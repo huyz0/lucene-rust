@@ -1507,3 +1507,31 @@ fn filtered_searcher_validates_filter_size_and_accept_set() {
         .search_filtered(&mut collector, &mut scorer, &g, &accept, 30, Some(&[]))
         .is_err());
 }
+
+/// The base graph is the one with the most live vectors, whatever the reader
+/// order (Lucene 10.6, #16739): a graph with deletions does not stay the base
+/// over a larger deletion-free one.
+#[test]
+fn the_base_graph_is_picked_by_live_count() {
+    let with_deletes = build(3000);
+    let clean = build(2500);
+    let docs_a = identity(3000);
+    let docs_b = identity(2500);
+    // Delete 30% of the first graph's documents: 2100 live of 3000.
+    let map_a: Vec<i32> = (0..3000i32).map(|d| if d % 10 < 3 { -1 } else { d }).collect();
+    let map_b = identity(2500);
+    let sources = [
+        GraphMergeSource {
+            graph: Some(&with_deletes),
+            ord_to_doc: &docs_a,
+            doc_map: &map_a,
+        },
+        GraphMergeSource {
+            graph: Some(&clean),
+            ord_to_doc: &docs_b,
+            doc_map: &map_b,
+        },
+    ];
+    let (_, largest) = add_readers(&sources).unwrap();
+    assert_eq!(largest, Some(1));
+}
