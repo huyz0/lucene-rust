@@ -32,9 +32,5 @@ pub fn require() -> Result<(), FactoryError> {
 
 /// The bytes of the pack's `file`; the caller checked [`require`].
 pub(crate) fn get(file: &str) -> Cow<'static, [u8]> {
-    let r = RESOURCES
-        .iter()
-        .find(|r| r.file == file)
-        .expect("a file of the pack");
-    data_pack::load(r).unwrap_or_else(|e| panic!("{e}"))
+    data_pack::get(&RESOURCES, file)
 }

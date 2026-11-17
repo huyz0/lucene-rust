@@ -912,7 +912,6 @@ version = "0.1.0"
 dependencies = [
  "lucene-analysis",
  "lucene-util",
- "miniz_oxide 0.9.1",
 ]
 
 [[package]]

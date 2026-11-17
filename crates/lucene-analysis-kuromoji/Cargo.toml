@@ -20,8 +20,6 @@ workspace = true
 
 [dependencies]
 lucene-analysis = { path = "../lucene-analysis" }
-# Inflates the vendored dictionary (src/resources/*.z).
-miniz_oxide.workspace = true
 
 [dev-dependencies]
 # The shared factory-configuration harness (lucene-analysis/tests/support).
