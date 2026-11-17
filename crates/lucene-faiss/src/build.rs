@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicI32, Ordering as Atomic};
 use std::sync::Mutex;
 
 use crate::visited::Visited;
-use rayon::prelude::*;
 
 use crate::distance::distance;
 use crate::error::{Error, Result};
@@ -110,10 +109,7 @@ fn build(
             } else {
                 kmeans::train(vectors, d, nlist, metric, SEED)
             };
-            let assigned: Vec<usize> = (0..n)
-                .into_par_iter()
-                .map(|i| kmeans::nearest(&quantizer, &vectors[i * d..(i + 1) * d]))
-                .collect();
+            let assigned = kmeans::assign_all(vectors, d, &quantizer);
             let mut lists = vec![InvList::default(); nlist];
             for (i, &l) in assigned.iter().enumerate() {
                 // Without an id map the lists keep the external ids; with

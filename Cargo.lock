@@ -1401,6 +1401,7 @@ name = "lucene-util"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "matrixmultiply",
  "miniz_oxide 0.9.1",
  "proptest",
  "thiserror",
