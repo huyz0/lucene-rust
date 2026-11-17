@@ -974,6 +974,18 @@ and for the entry's removal once the file is under the limit. Move a module's
 tests to a sibling `tests.rs` (first line `#![cfg(test)]`) rather than keeping
 them inline.
 
+## java-size
+
+`python3 scripts/check-java-size.py` (`--list` prints every entry over a limit and exits 0,
+`--write` rewrites the baseline). The Java twin of file-size for
+`opensearch-plugin/src/main/java`: a file over 1,000 code lines (blank and comment-only
+lines do not count) or a method over 100 lines is listed in
+`opensearch-plugin/java-size-baseline.json` with its size and may not grow; a new one over
+the limit fails. A listed entry that shrinks must be lowered, and removed once under the
+limit. Methods are found by brace matching on the source, so an overloaded name is keyed
+`name@2`, `name@3` in file order. **Blind to** a method header the parser reads as a
+statement (a lambda-heavy initializer).
+
 ## dev-notes
 
 `python3 scripts/check-dev-notes.py` (`--list` prints hits and exits 0).

@@ -193,6 +193,9 @@ jobs:
       - name: Source files stay review-sized
         run: python3 scripts/check-file-size.py
 
+      - name: Plugin Java files and methods stay review-sized
+        run: python3 scripts/check-java-size.py
+
       # Needs the pinned Java tree, which CI does not check out; the script
       # skips cleanly when it is absent, so this is a no-op there and a real
       # check locally and in the container. Listed anyway so the step cannot
