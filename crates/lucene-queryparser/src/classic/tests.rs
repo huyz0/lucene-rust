@@ -170,3 +170,208 @@ fn deeply_nested_groups_fail_to_parse_instead_of_overflowing_the_stack() {
         .join()
         .expect("no panic");
 }
+
+/// Overrides that name the method called, with its arguments.
+struct Named;
+
+fn tag(s: String) -> Result<Option<ParsedQuery>, QueryParserError> {
+    Ok(Some(ParsedQuery::MatchNoDocs(s)))
+}
+
+impl Overrides for Named {
+    fn field_query(
+        &self,
+        f: Option<&str>,
+        t: &str,
+        q: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("field {f:?} {t} {q}"))
+    }
+    fn field_query_slop(
+        &self,
+        f: Option<&str>,
+        t: &str,
+        s: i32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("slop {f:?} {t} {s}"))
+    }
+    fn range_query(
+        &self,
+        f: Option<&str>,
+        a: Option<&str>,
+        b: Option<&str>,
+        si: bool,
+        ei: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("range {f:?} {a:?} {b:?} {si} {ei}"))
+    }
+    fn wildcard_query(
+        &self,
+        f: Option<&str>,
+        t: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("wildcard {f:?} {t}"))
+    }
+    fn regexp_query(
+        &self,
+        f: Option<&str>,
+        t: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("regexp {f:?} {t}"))
+    }
+    fn prefix_query(
+        &self,
+        f: Option<&str>,
+        t: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("prefix {f:?} {t}"))
+    }
+    fn fuzzy_query(
+        &self,
+        f: Option<&str>,
+        t: &str,
+        s: f32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("fuzzy {f:?} {t} {s}"))
+    }
+    fn bare_fuzzy(
+        &self,
+        f: Option<&str>,
+        slop: &str,
+        t: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        tag(format!("bare {f:?} {slop} {t}"))
+    }
+    fn boolean_query(
+        &self,
+        clauses: Vec<(Occur, ParsedQuery)>,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        let n = clauses.len();
+        tag(format!("bool {n}"))
+    }
+}
+
+fn named() -> QueryParser {
+    QueryParser::new("f", standard()).with_overrides(Arc::new(Named))
+}
+
+fn reasons(p: &QueryParser, q: &str) -> String {
+    match p.parse(q) {
+        Ok(ParsedQuery::MatchNoDocs(s)) => s,
+        Ok(other) => format!("{other:?}"),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[test]
+fn overrides_build_each_leaf() {
+    let p = named();
+    assert_eq!(reasons(&p, "a:b"), "field Some(\"a\") b false");
+    assert_eq!(reasons(&p, "a:\"b c\"~3"), "slop Some(\"a\") b c 3");
+    assert_eq!(
+        reasons(&p, "a:[b TO c}"),
+        "range Some(\"a\") Some(\"b\") Some(\"c\") true false"
+    );
+    assert_eq!(reasons(&p, "a:b*c"), "wildcard Some(\"a\") b*c");
+    assert_eq!(reasons(&p, "a:/b+/"), "regexp Some(\"a\") b+");
+    assert_eq!(reasons(&p, "a:b*"), "prefix Some(\"a\") b");
+    assert_eq!(reasons(&p, "a:b~1"), "bare Some(\"a\") ~1 b");
+    assert_eq!(reasons(&p, "a:b c:d"), "bool 2");
+}
+
+#[test]
+fn overrides_without_a_field_see_none() {
+    let p = named();
+    assert_eq!(reasons(&p, "b"), "field Some(\"f\") b false");
+    let m = QueryParser::multi_field(&["x"], standard()).with_overrides(Arc::new(Named));
+    assert_eq!(reasons(&m, "b"), "field None b false");
+    assert_eq!(reasons(&m, "b~"), "bare None ~ b");
+}
+
+struct Failing(bool);
+
+impl Overrides for Failing {
+    fn field_query(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        if self.0 {
+            Err(QueryParserError::parse_exception("bad query"))
+        } else {
+            Err(QueryParserError::illegal_argument("bad argument"))
+        }
+    }
+    fn field_query_slop(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: i32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn range_query(
+        &self,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: bool,
+        _: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn wildcard_query(
+        &self,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn regexp_query(
+        &self,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn prefix_query(
+        &self,
+        _: Option<&str>,
+        _: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn fuzzy_query(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: f32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn bare_fuzzy(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+    fn boolean_query(
+        &self,
+        _: Vec<(Occur, ParsedQuery)>,
+    ) -> Result<Option<ParsedQuery>, QueryParserError> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn an_override_error_is_the_parsers_own() {
+    let parse_error = QueryParser::new("f", standard()).with_overrides(Arc::new(Failing(true)));
+    let e = parse_error.parse("a").expect_err("fails");
+    assert!(e.is_parse_exception(), "{e}");
+    let other = QueryParser::new("f", standard()).with_overrides(Arc::new(Failing(false)));
+    let e = other.parse("a").expect_err("fails");
+    assert!(!e.is_parse_exception(), "{e}");
+}

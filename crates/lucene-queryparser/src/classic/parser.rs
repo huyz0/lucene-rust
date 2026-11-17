@@ -52,6 +52,18 @@ static GRAMMAR: Grammar<TokenManager> = Grammar {
     num_lookaheads: 3,
 };
 
+/// What an override returned, as a production's result: a parse exception
+/// stays one, anything else passes through as `parse` lets it.
+fn hooked(r: Result<Option<ParsedQuery>, QueryParserError>) -> PResult<Option<ParsedQuery>> {
+    r.map_err(|e| {
+        if e.is_parse_exception() {
+            Fail::Parse(e.message)
+        } else {
+            Fail::Runtime(e)
+        }
+    })
+}
+
 /// What a production can throw.
 pub(crate) enum Fail {
     /// `ParseException` (and `TokenMgrError`, which `parse` wraps alike):
@@ -819,6 +831,9 @@ impl<'p> Parser<'p> {
         &self,
         clauses: Vec<(Occur, ParsedQuery)>,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.boolean_query(clauses));
+        }
         if clauses.is_empty() {
             return Ok(None);
         }
@@ -978,6 +993,9 @@ impl<'p> Parser<'p> {
         text: &str,
         quoted: bool,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.field_query(field, text, quoted));
+        }
         if let Some(f) = field {
             // `ExtendableQueryParser.getFieldQuery`: an extension for the
             // field's key builds the query.
@@ -1062,6 +1080,9 @@ impl<'p> Parser<'p> {
         text: &str,
         slop: i32,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.field_query_slop(field, text, slop));
+        }
         // `ComplexPhraseQueryParser.getFieldQuery(field, queryText, slop)`:
         // the phrase is kept as text, parsed in the second pass.
         if let Some(in_order) = self.cfg.complex_phrase_in_order {
@@ -1116,6 +1137,15 @@ impl<'p> Parser<'p> {
         start_inclusive: bool,
         end_inclusive: bool,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.range_query(
+                field,
+                part1.as_deref(),
+                part2.as_deref(),
+                start_inclusive,
+                end_inclusive,
+            ));
+        }
         match field {
             Some(f) => {
                 let q =
@@ -1140,6 +1170,9 @@ impl<'p> Parser<'p> {
         field: Option<&str>,
         term: &[u16],
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.wildcard_query(field, &string(term)));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_wildcard_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_wildcard_query(Some(f), term)),
@@ -1148,6 +1181,9 @@ impl<'p> Parser<'p> {
 
     /// `getRegexpQuery(field, termStr)`.
     fn get_regexp_query(&self, field: Option<&str>, term: &str) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.regexp_query(field, term));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_regexp_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_regexp_query(Some(f), term)),
@@ -1156,6 +1192,9 @@ impl<'p> Parser<'p> {
 
     /// `getPrefixQuery(field, termStr)`.
     fn get_prefix_query(&self, field: Option<&str>, term: &str) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.prefix_query(field, term));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_prefix_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_prefix_query(Some(f), term)),
@@ -1169,6 +1208,9 @@ impl<'p> Parser<'p> {
         term: &str,
         min_similarity: f32,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.fuzzy_query(field, term, min_similarity));
+        }
         match field {
             Some(f) => {
                 let q = self.get_fuzzy_query_single(f, term, min_similarity)?;
@@ -1218,6 +1260,9 @@ impl<'p> Parser<'p> {
         fuzzy_slop: &[u16],
         term_image: &str,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.cfg.overrides {
+            return hooked(o.bare_fuzzy(field, &string(fuzzy_slop), term_image));
+        }
         let fms = self.get_fuzzy_distance(fuzzy_slop);
         if fms < 0.0 {
             return Err(parse_error(
