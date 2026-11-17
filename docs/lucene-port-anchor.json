@@ -6,14 +6,14 @@
     "commit": "145d89cd30c38d25e39a0a2232cf00eee208b9cf",
     "previous_minor": "10.5.0",
     "date": "2026-09-21",
-    "meaning": "Fixtures, jars (LUCENE_VERSION in scripts/lib-lucene-jars.sh), Version::LATEST and docs/parity.md are pinned here; every 10.5.0-10.5.2 fix is in. Index formats are those of 10.5.x (Lucene104 codec, doc-values VERSION 2, SegmentInfos 10.5)."
+    "meaning": "Fixtures, jars (LUCENE_VERSION in scripts/lib-lucene-jars.sh), Version::LATEST and docs/parity.md are pinned here; every 10.5.0-10.5.2 fix is in. Index formats: reads and writes 10.5 (default) and 10.6 (.dvp, doc-values VERSION 3, SegmentInfos 10.6); the sandbox Faiss codec (lucene-faiss, opt-in) targets Lucene main (11.0), whose format may change."
   },
   "partial": {
     "release": "10.6.0",
     "tag": "releases/lucene/10.6.0",
     "commit": "4ae946e5a9b99d1e22c23865c99e561b8dcc9d71",
     "date": "2026-10-26",
-    "meaning": "Output-neutral 10.6.0 changes were ported on 2026-10-30 (port PRs #56, #57, #58, #60); triage in /mnt/project-files/plan/lucene-10.6-triage.md covered all 202 commits of 10.5.2..10.6.0. Output-changing items and the read side of the 10.6 formats were deliberately left until the pin is bumped."
+    "meaning": "Output-neutral 10.6.0 changes were ported on 2026-10-30 (port PRs #56, #57, #58, #60); triage in /mnt/project-files/plan/lucene-10.6-triage.md covered all 202 commits of 10.5.2..10.6.0. Output-changing items were deliberately left until the pin is bumped; the 10.6 index formats are read and written (PRs #493, #495)."
   },
   "opensearch": {
     "pinned_release": "3.9.0",

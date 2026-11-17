@@ -1008,6 +1008,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucene-faiss"
+version = "0.1.0"
+dependencies = [
+ "lucene-store",
+ "lucene-util",
+ "rayon",
+ "thiserror",
+]
+
+[[package]]
 name = "lucene-ffi"
 version = "0.1.0"
 dependencies = [
