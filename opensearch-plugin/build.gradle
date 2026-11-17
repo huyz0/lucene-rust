@@ -103,6 +103,8 @@ dependencies {
     def painless = fileTree(dir: "${opensearchLib}/../modules/lang-painless", include: ['lang-painless-*.jar', 'antlr4-runtime-*.jar', 'asm-*.jar'])
     compileOnly painless
     testImplementation painless
+    // JUnit for the per-class tests (`gradle test`); the main()-based self tests need none.
+    testImplementation 'junit:junit:4.13.2'
     // kuromoji and nori, which OpenSearch ships as plugins rather than in lib/, at the
     // distribution's Lucene version: the self test describes their analyzers.
     def luceneVersion = providers.provider {
@@ -266,7 +268,18 @@ def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
     systemProperty 'accelerated.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
-tasks.named('test') { enabled = false }
+// The JUnit tests: `gradle test`, or one class with `--tests org.lucenerust.opensearch.WireGoldenTest`.
+// The main()-based self tests above are not JUnit classes, so this task does not pick them up.
+tasks.named('test') {
+    useJUnit()
+    include '**/*Test.class'
+    exclude '**/NativeSelfTest*', '**/NativeBench*', '**/engine/**', '**/store/**'
+    systemProperty 'accelerated.library.path', nativeLib.absolutePath
+    systemProperty 'accelerated.data_packs', dataPacks.absolutePath
+    systemProperty 'lucene.useScalarFMA', 'true'
+    jvmArgs nativeAccess, '-ea'
+    testLogging { events 'failed'; exceptionFormat 'short' }
+}
 tasks.named('check') { dependsOn selfTest, engineWriterTest, encryptedStoreTest }
 
 // With the JVM in the loop: the native call's crossing cost and
