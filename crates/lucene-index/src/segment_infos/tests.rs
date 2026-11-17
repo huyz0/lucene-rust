@@ -510,6 +510,26 @@ fn write_single_segment_round_trips() {
 }
 
 #[test]
+fn a_commit_with_doc_values_overlays_is_refused_not_read_stale() {
+    let dir_path = tempdir();
+    let dir = lucene_store::FsDirectory::open(&dir_path);
+    let mut sis = sample_sis(2);
+    sis.min_segment_lucene_version = Some(sis.lucene_version);
+    let mut seg = sample_segment("_0");
+    seg.dv_overlays = vec![(1, 3, vec![5, 4])];
+    sis.segments.push(seg);
+
+    let file_name = write(&sis, &dir).unwrap();
+    let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+    match parse(&bytes, 2) {
+        Err(Error::UnsupportedDocValuesOverlays(name)) => assert_eq!(name, "_0"),
+        other => panic!("expected the overlay refusal, got {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&dir_path).ok();
+}
+
+#[test]
 fn write_multi_segment_with_sci_id_del_and_dv_updates_round_trips() {
     let dir_path = tempdir();
     let dir = lucene_store::FsDirectory::open(&dir_path);
