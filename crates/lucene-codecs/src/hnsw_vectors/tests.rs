@@ -1097,6 +1097,40 @@ fn a_heavily_deleted_graph_is_not_used_as_the_base() {
     }
 }
 
+/// The concurrent merge rebuilds in parallel, which beats repairing a graph
+/// on the merge thread once more than about `40 / workers` percent is gone.
+#[test]
+fn the_concurrent_merge_stops_reusing_a_graph_sooner_with_more_workers() {
+    assert_eq!(reuse_delete_pct_limit(1), 40);
+    assert_eq!(reuse_delete_pct_limit(4), 10);
+    assert_eq!(reuse_delete_pct_limit(64), 5);
+    let n = 3000usize;
+    let graph = build(n);
+    let docs = identity(n);
+    // Drop 20%.
+    let mut map = vec![-1i32; n];
+    let mut kept = 0i32;
+    for (d, slot) in map.iter_mut().enumerate() {
+        if d % 5 != 0 {
+            *slot = kept;
+            kept += 1;
+        }
+    }
+    let sources = [GraphMergeSource {
+        graph: Some(&graph),
+        ord_to_doc: &docs,
+        doc_map: &map,
+    }];
+    assert_eq!(
+        add_readers(&sources, reuse_delete_pct_limit(1)).unwrap().1,
+        Some(0)
+    );
+    assert_eq!(
+        add_readers(&sources, reuse_delete_pct_limit(4)).unwrap().1,
+        None
+    );
+}
+
 /// `M`/`beamWidth` out of range must be an error, not a panic -- the merge
 /// entry point allocates a graph sized by `M` before any builder sees it.
 #[test]
@@ -1534,6 +1568,6 @@ fn the_base_graph_is_picked_by_live_count() {
             doc_map: &map_b,
         },
     ];
-    let (_, largest) = add_readers(&sources).unwrap();
+    let (_, largest) = add_readers(&sources, DELETE_PCT_THRESHOLD).unwrap();
     assert_eq!(largest, Some(1));
 }
