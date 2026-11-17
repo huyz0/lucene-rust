@@ -1358,16 +1358,11 @@ pub(crate) fn bulk_boolean_own<'a>(
                 let (c, _) = filter.pop().expect("one filter clause");
                 let term = super::leaf::TermScorer::at_level(c.into_leg(), false, true);
                 let cost = super::Scorer::cost(&term);
-                let state = state.with_filter(&legs, cost, false, ctx.max_doc);
+                let state = state.with_filter(&legs, cost, ctx.max_doc);
                 Some(Bulk::TermFilteredDisjunction(legs, Box::new(term), state))
             } else {
                 let filter_scorer = filter_of(std::mem::take(&mut filter));
-                let state = state.with_filter(
-                    &legs,
-                    filter_scorer.cost(),
-                    filter_scorer.two_phase(),
-                    ctx.max_doc,
-                );
+                let state = state.with_filter(&legs, filter_scorer.cost(), ctx.max_doc);
                 Some(Bulk::Disjunction(legs, Some(filter_scorer), state))
             }
         } else if mode == Mode::TopScores && msm == 1 {
@@ -1375,12 +1370,7 @@ pub(crate) fn bulk_boolean_own<'a>(
             let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
             let state = MaxScore::new(&mut legs)
                 .with_max_doc(ctx.max_doc)
-                .with_filter(
-                    &legs,
-                    filter_scorer.cost(),
-                    filter_scorer.two_phase(),
-                    ctx.max_doc,
-                );
+                .with_filter(&legs, filter_scorer.cost(), ctx.max_doc);
             Some(Bulk::ScorerDisjunction(legs, Some(filter_scorer), state))
         } else {
             None
