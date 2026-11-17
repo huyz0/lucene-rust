@@ -28,3 +28,11 @@ benchmarks/rust-runner/Cargo.lock
 # Python bytecode from the scripts/ gate checkers.
 __pycache__/
 *.pyc
+
+# Built plugin distributions and native libraries: build outputs, never committed
+# (scripts/check-binary-size.py rejects tracked files over 8 MiB).
+opensearch-plugin/docker/*.zip
+opensearch-plugin/build/
+*.so
+*.dylib
+*.dll
