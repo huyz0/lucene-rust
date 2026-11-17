@@ -3,12 +3,11 @@
  */
 package org.lucenerust.opensearch;
 
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.approximated;
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.buffered;
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.countSegments;
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.flags;
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.postFiltered;
-import static org.lucenerust.opensearch.AcceleratedQueryPhaseSearcher.sortByScore;
+import static org.lucenerust.opensearch.SearchSupport.approximated;
+import static org.lucenerust.opensearch.SearchSupport.buffered;
+import static org.lucenerust.opensearch.SearchEligibility.countSegments;
+import static org.lucenerust.opensearch.SearchSupport.postFiltered;
+import static org.lucenerust.opensearch.SearchSupport.sortByScore;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -78,7 +77,7 @@ final class PlainSearch {
             // filter narrower than the range, which the native engine would not
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
+            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && SearchFlags.of(ctx).nativeApproximate() == false) {
                 reason = FallbackReason.APPROXIMATE.key();
             }
             if (reason == null && postFilter != null) {
@@ -88,7 +87,7 @@ final class PlainSearch {
                 hitsBlob = filtered.blob();
                 fast = fast && filtered.fast();
             }
-            if (reason == null && fast == false && flags(ctx).allShapes() == false) {
+            if (reason == null && fast == false && SearchFlags.of(ctx).allShapes() == false) {
                 reason = FallbackReason.SLOWER_SHAPE.key();
             }
             // min_score: OpenSearch's MinimumScoreCollector sits outside every other collector,
@@ -127,7 +126,7 @@ final class PlainSearch {
         // (NATIVE_APPROXIMATE), on OpenSearch's when the index turns that off.
         // Not over buffered documents: the approximation walks the reader's points alone, where
         // they have none, so only the native engine finds them.
-        if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
+        if (reason == null && approximated(query) && buffered(searcher) == false && SearchFlags.of(ctx).nativeApproximate() == false) {
             reason = FallbackReason.APPROXIMATE.key();
         }
         return reason;

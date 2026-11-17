@@ -61,7 +61,7 @@ record NativeRescore(
             // approximation (for the search's own size) matches only the documents it visits
             // first: the rescore then scales the rest by query_weight alone, which the exact native
             // query does not reproduce.
-            if (AcceleratedQueryPhaseSearcher.approximated(query)) {
+            if (SearchSupport.approximated(query)) {
                 return FallbackReason.RESCORE_APPROXIMATE.key();
             }
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
