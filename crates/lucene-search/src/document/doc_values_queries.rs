@@ -271,44 +271,170 @@ impl DocumentQuery for SortedNumericDocValuesRangeQuery {
         // `NO_MORE_DOCS`) or else the column's documents; the matches are the
         // values in range, the first one not below `lo` deciding (values
         // ascend).
-        let mut values = Vec::new();
-        let in_range = |values: &[i64]| values.iter().find(|&&v| v >= lo).is_some_and(|&v| v <= hi);
         let Some(s) = skip else {
             let mut bulk = Bulk::new(needs_scores, r.max_doc, column.docs_with_field());
-            for doc in 0..r.max_doc {
-                column.values(data, doc, &mut values)?;
-                if values.is_empty() {
-                    continue;
-                }
-                match bulk.candidate(leaf, doc, boost, collector) {
-                    Step::Stop => return Ok(()),
-                    Step::Skip => continue,
-                    Step::Check => {}
-                }
-                if in_range(&values) && bulk.hit(leaf, doc, boost, collector) {
-                    return Ok(());
-                }
-            }
+            // This port's answer to the per-document confirm loop (the JIT's
+            // inlined `DirectReader.get`): the values are decoded a chunk at
+            // a time and only the hits replay the bulk scorer's steps.
+            let mut matches = RangeMatches::of_numeric(data, column, lo, hi);
+            matches.scan(leaf, &mut bulk, 0, r.max_doc, None, boost, collector)?;
             return Ok(());
         };
         let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(i32::MAX));
         let mut approximation = SkipBlocks::new(s, lo, hi);
+        let mut matches = RangeMatches::of_numeric(data, column, lo, hi);
         loop {
             let doc = approximation.next_doc();
             if doc >= r.max_doc {
                 return Ok(());
             }
             let run_end = approximation.match_run_end();
-            match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
-                Step::Stop => return Ok(()),
-                Step::Skip => continue,
-                Step::Check => {}
-            }
-            column.values(data, doc, &mut values)?;
-            if in_range(&values) && bulk.hit(leaf, doc, boost, collector) {
+            let (block_end, _, _) = approximation.block();
+            let end = block_end.saturating_add(1).min(r.max_doc);
+            let run = (run_end > doc).then_some(run_end);
+            if matches.scan(leaf, &mut bulk, doc, end, run, boost, collector)? {
                 return Ok(());
             }
+            approximation.skip_to(block_end);
         }
+    }
+}
+
+/// The documents of a doc range whose single value is in `[lo, hi]`, found a
+/// chunk of values at a time ([`doc_values::NumericReader::for_each_value`])
+/// rather than one lookup per document, then handed to the bulk scorer one
+/// hit at a time: the candidates between hits cannot match, so only the
+/// windows [`Bulk::pass`] opens among them are replayed.
+struct RangeMatches<'a> {
+    source: RangeSource<'a>,
+    lo: i64,
+    hi: i64,
+    hits: Vec<i32>,
+}
+
+enum RangeSource<'a> {
+    Single(doc_values::NumericReader<'a>),
+    Multi(doc_values::SortedNumericReader<'a>),
+}
+
+impl<'a> RangeMatches<'a> {
+    /// Docs decoded between two hand-offs to the bulk scorer.
+    const SPAN: i32 = 4096;
+
+    fn single(data: &'a [u8], entry: &'a NumericEntry, lo: i64, hi: i64) -> Self {
+        RangeMatches {
+            source: RangeSource::Single(doc_values::NumericReader::new(data, entry)),
+            lo,
+            hi,
+            hits: Vec::new(),
+        }
+    }
+
+    fn multi(data: &'a [u8], entry: &'a SortedNumericEntry, lo: i64, hi: i64) -> Self {
+        RangeMatches {
+            source: RangeSource::Multi(doc_values::SortedNumericReader::new(data, entry)),
+            lo,
+            hi,
+            hits: Vec::new(),
+        }
+    }
+
+    /// The scan over a numeric column's values in `[lo, hi]`.
+    fn of_numeric(data: &'a [u8], column: NumericColumn<'a>, lo: i64, hi: i64) -> Self {
+        match column {
+            NumericColumn::Numeric(e) => Self::single(data, e, lo, hi),
+            NumericColumn::SortedNumeric(e) if e.addresses.is_none() => {
+                Self::single(data, &e.numeric, lo, hi)
+            }
+            NumericColumn::SortedNumeric(e) => Self::multi(data, e, lo, hi),
+        }
+    }
+
+    /// The scan over a sorted column's ordinals in `[lo, hi]`.
+    fn of_ords(data: &'a [u8], column: OrdsColumn<'a>, lo: i64, hi: i64) -> Self {
+        match column {
+            OrdsColumn::Sorted(e) => Self::single(data, &e.ords, lo, hi),
+            OrdsColumn::Multi(e, _) if e.addresses.is_none() => {
+                Self::single(data, &e.numeric, lo, hi)
+            }
+            OrdsColumn::Multi(e, _) => Self::multi(data, e, lo, hi),
+        }
+    }
+
+    /// Decodes `start..end` into `self.hits`.
+    fn decode(&mut self, start: i32, end: i32) -> Result<()> {
+        let (lo, hi) = (self.lo, self.hi);
+        let hits = &mut self.hits;
+        match &mut self.source {
+            RangeSource::Single(reader) => reader.for_each_value(start, end, |doc, value| {
+                if value >= lo && value <= hi {
+                    hits.push(doc);
+                }
+            })?,
+            RangeSource::Multi(reader) => reader.for_each_doc(start, end, |doc, values| {
+                // Ascending: the first value not below `lo` decides.
+                if values.iter().find(|&&v| v >= lo).is_some_and(|&v| v <= hi) {
+                    hits.push(doc);
+                }
+            })?,
+        }
+        Ok(())
+    }
+
+    /// Every match in `from..to`, in doc order, through `bulk`; `run` is the
+    /// end of the run of matches a `YES` skip block proves, when it does.
+    /// Whether the bulk scorer stopped the search.
+    #[allow(clippy::too_many_arguments)]
+    fn scan(
+        &mut self,
+        leaf: &OpenSegment<'_>,
+        bulk: &mut Bulk,
+        from: i32,
+        to: i32,
+        run: Option<i32>,
+        boost: f32,
+        collector: &mut dyn ScoringCollector,
+    ) -> Result<bool> {
+        // An exhaustive collector never saturates, so the bulk scorer has
+        // nothing to stop for or to window: every live hit is collected.
+        let exhaustive = collector.score_mode().is_exhaustive();
+        // A multi-valued column streams from the start of what it is asked
+        // for, so it is asked for the whole range once.
+        let span = match self.source {
+            RangeSource::Single(_) => Self::SPAN,
+            RangeSource::Multi(_) => i32::MAX,
+        };
+        let mut start = from;
+        let mut next = from;
+        while start < to {
+            let end = start.saturating_add(span).min(to);
+            self.hits.clear();
+            self.decode(start, end)?;
+            if exhaustive {
+                for &doc in &self.hits {
+                    super::collect_live(leaf, doc, boost, collector);
+                }
+                start = end;
+                continue;
+            }
+            for &doc in &self.hits {
+                if bulk.pass(next, doc.saturating_sub(1), boost, collector) {
+                    return Ok(true);
+                }
+                match bulk.candidate_run(leaf, doc, run.unwrap_or(doc), boost, collector) {
+                    Step::Stop => return Ok(true),
+                    Step::Skip => {}
+                    Step::Check => {
+                        if bulk.hit(leaf, doc, boost, collector) {
+                            return Ok(true);
+                        }
+                    }
+                }
+                next = doc.saturating_add(1);
+            }
+            start = end;
+        }
+        Ok(!exhaustive && bulk.pass(next, to.saturating_sub(1), boost, collector))
     }
 }
 
@@ -726,30 +852,12 @@ impl DocumentQuery for SortedSetDocValuesRangeQuery {
             }
             return Ok(());
         }
-        let mut ords = Vec::new();
-        let in_range = |ords: &[i64]| {
-            ords.iter()
-                .find(|&&o| o >= min_ord)
-                .is_some_and(|&o| o <= max_ord)
-        };
         // `DocValuesRangeIterator.forOrdinalRange`: the skip blocks meeting
         // the range (cost `NO_MORE_DOCS`) or else the column's documents.
+        let mut matches = RangeMatches::of_ords(data, column, min_ord, max_ord);
         let Some(s) = skip else {
             let mut bulk = Bulk::new(needs_scores, r.max_doc, column.docs_with_field());
-            for doc in 0..r.max_doc {
-                column.ords(data, doc, &mut ords)?;
-                if ords.is_empty() {
-                    continue;
-                }
-                match bulk.candidate(leaf, doc, boost, collector) {
-                    Step::Stop => return Ok(()),
-                    Step::Skip => continue,
-                    Step::Check => {}
-                }
-                if in_range(&ords) && bulk.hit(leaf, doc, boost, collector) {
-                    return Ok(());
-                }
-            }
+            matches.scan(leaf, &mut bulk, 0, r.max_doc, None, boost, collector)?;
             return Ok(());
         };
         let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(i32::MAX));
@@ -760,15 +868,13 @@ impl DocumentQuery for SortedSetDocValuesRangeQuery {
                 return Ok(());
             }
             let run_end = approximation.match_run_end();
-            match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
-                Step::Stop => return Ok(()),
-                Step::Skip => continue,
-                Step::Check => {}
-            }
-            column.ords(data, doc, &mut ords)?;
-            if in_range(&ords) && bulk.hit(leaf, doc, boost, collector) {
+            let (block_end, _, _) = approximation.block();
+            let end = block_end.saturating_add(1).min(r.max_doc);
+            let run = (run_end > doc).then_some(run_end);
+            if matches.scan(leaf, &mut bulk, doc, end, run, boost, collector)? {
                 return Ok(());
             }
+            approximation.skip_to(block_end);
         }
     }
 }
