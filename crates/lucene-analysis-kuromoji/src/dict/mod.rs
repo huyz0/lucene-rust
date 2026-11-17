@@ -45,7 +45,7 @@ pub const VERSION: i32 = 1;
 
 /// Inflates a vendored resource.
 pub(crate) fn inflate(z: &[u8]) -> Vec<u8> {
-    miniz_oxide::inflate::decompress_to_vec_zlib(z).expect("a vendored dictionary inflates")
+    lucene_analysis::data_pack::inflate_vendored(z, "dictionary")
 }
 
 /// Reads a caller's dictionary file (`Files.newInputStream(path)`).
