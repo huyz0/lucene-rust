@@ -477,7 +477,9 @@ fn merge_and_recalculate_centroids(
         let mut count = 0usize;
         for s in sources {
             for (i, v) in s.vectors.chunks_exact(dim).enumerate() {
-                if s.live.is_some_and(|live| !live.get(i).copied().unwrap_or(true)) {
+                if s.live
+                    .is_some_and(|live| !live.get(i).copied().unwrap_or(true))
+                {
                     continue;
                 }
                 count = count.saturating_add(1);

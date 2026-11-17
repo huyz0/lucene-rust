@@ -1518,7 +1518,9 @@ fn the_base_graph_is_picked_by_live_count() {
     let docs_a = identity(3000);
     let docs_b = identity(2500);
     // Delete 30% of the first graph's documents: 2100 live of 3000.
-    let map_a: Vec<i32> = (0..3000i32).map(|d| if d % 10 < 3 { -1 } else { d }).collect();
+    let map_a: Vec<i32> = (0..3000i32)
+        .map(|d| if d % 10 < 3 { -1 } else { d })
+        .collect();
     let map_b = identity(2500);
     let sources = [
         GraphMergeSource {

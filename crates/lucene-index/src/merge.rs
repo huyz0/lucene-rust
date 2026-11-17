@@ -4313,7 +4313,8 @@ fn merge_vector_group(
                 let live = match source.live_docs {
                     Some(live_docs) => {
                         let values = group.flat.float_vector_values(fs.original_field_number)?;
-                        let mut flags = Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
+                        let mut flags =
+                            Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
                         for ord in 0..values.size() {
                             flags.push(live_docs.get_doc(values.ord_to_doc(ord)?));
                         }
