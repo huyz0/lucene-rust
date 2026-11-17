@@ -106,6 +106,20 @@ fn to_string_radix(v: i64, radix: u32) -> String {
 }
 
 fn parse_int(s: &str, radix: u32, min: i64, max: i64) -> Result<i64, Throw> {
+    // `Integer.parseInt` refuses a radix outside 2..=36 before it looks at
+    // the text; `char::to_digit` would panic on one.
+    if radix < 2 {
+        return Err(Throw::new(
+            "java.lang.NumberFormatException",
+            format!("radix {} less than Character.MIN_RADIX", radix as i32),
+        ));
+    }
+    if radix > 36 {
+        return Err(Throw::new(
+            "java.lang.NumberFormatException",
+            format!("radix {radix} greater than Character.MAX_RADIX"),
+        ));
+    }
     parse_long_radix(s, radix, min, max).ok_or_else(|| nfe(s))
 }
 
@@ -598,3 +612,6 @@ fn decode(s: &str, min: i64, max: i64) -> Result<i64, Throw> {
 fn _i(v: &Value) -> Option<i64> {
     as_i64(v)
 }
+
+#[cfg(test)]
+mod tests;

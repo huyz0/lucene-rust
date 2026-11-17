@@ -627,3 +627,6 @@ pub fn get_by_path(_vm: &mut Vm, recv: &Value, args: &[Value]) -> Result<Value, 
 fn _int(v: &Value) -> Result<i32, Throw> {
     int_arg(v)
 }
+
+#[cfg(test)]
+mod tests;

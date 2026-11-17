@@ -125,3 +125,6 @@ pub fn exception_of(class: &str, args: &[Value], at: i32) -> Result<Value, Throw
         at: Some(at),
     }))
 }
+
+#[cfg(test)]
+mod tests;
