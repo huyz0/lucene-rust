@@ -107,8 +107,8 @@ pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-/// `Float.compare(a, 0.0f) == 0`: `a` is `+0.0` exactly (`-0.0` is not).
-fn is_positive_zero(a: f32) -> bool {
+/// `Double.compare(a, 0.0d) == 0`: `a` is `+0.0` exactly (`-0.0` is not).
+fn is_positive_zero_f64(a: f64) -> bool {
     a.to_bits() == 0
 }
 
@@ -446,7 +446,9 @@ pub struct TermsWithScoreCollector<'a> {
     sv: Option<Box<dyn SortedDocValues + 'a>>,
     mv: Option<Box<dyn SortedSetDocValues + 'a>>,
     terms: BytesRefHash,
-    score_sums: Vec<f32>,
+    /// Summed in double precision (Lucene 10.6, #16378): float addition is
+    /// not associative, so a different order could round differently.
+    score_sums: Vec<f64>,
     score_counts: Vec<i32>,
     pending: PendingOrds,
     /// The ordinal a single-valued document without a value is pended
@@ -475,10 +477,10 @@ impl<'a> TermsWithScoreCollector<'a> {
 
     /// The value a new term's slot starts from (`ArrayUtil.grow` then the
     /// `Arrays.fill` of `Min`/`Max`; `Avg`'s arrays are not filled).
-    fn unset(&self) -> f32 {
+    fn unset(&self) -> f64 {
         match self.score_mode {
-            ScoreMode::Min => f32::INFINITY,
-            ScoreMode::Max => f32::NEG_INFINITY,
+            ScoreMode::Min => f64::INFINITY,
+            ScoreMode::Max => f64::NEG_INFINITY,
             _ => 0.0,
         }
     }
@@ -499,10 +501,11 @@ impl<'a> TermsWithScoreCollector<'a> {
     }
 
     fn collect_sv(&mut self, id: usize, current: f32) {
+        let current = f64::from(current);
         let existing = self.score_sums[id];
         if self.score_mode == ScoreMode::Avg {
             // `SV.Avg.collect`.
-            if is_positive_zero(existing) {
+            if is_positive_zero_f64(existing) {
                 self.score_sums[id] = current;
                 self.score_counts[id] = 1;
             } else {
@@ -511,7 +514,7 @@ impl<'a> TermsWithScoreCollector<'a> {
             }
             return;
         }
-        if is_positive_zero(existing) {
+        if is_positive_zero_f64(existing) {
             self.score_sums[id] = current;
         } else {
             match self.score_mode {
@@ -534,12 +537,15 @@ impl<'a> TermsWithScoreCollector<'a> {
     }
 
     fn collect_mv(&mut self, id: usize, score: f32) {
+        // Min and Max only ever hold an exact float, so the float helpers
+        // give the double answer.
+        let sum = self.score_sums[id];
         match self.score_mode {
-            ScoreMode::Total => self.score_sums[id] += score,
-            ScoreMode::Min => self.score_sums[id] = java_min_f32(self.score_sums[id], score),
-            ScoreMode::Max => self.score_sums[id] = java_max_f32(self.score_sums[id], score),
+            ScoreMode::Total => self.score_sums[id] += f64::from(score),
+            ScoreMode::Min => self.score_sums[id] = f64::from(java_min_f32(sum as f32, score)),
+            ScoreMode::Max => self.score_sums[id] = f64::from(java_max_f32(sum as f32, score)),
             ScoreMode::Avg => {
-                self.score_sums[id] += score;
+                self.score_sums[id] += f64::from(score);
                 self.score_counts[id] = self.score_counts[id].wrapping_add(1);
             }
             ScoreMode::None => {}
@@ -554,12 +560,13 @@ impl<'a> TermsWithScoreCollector<'a> {
     /// them (term order within each drain). Only the pairing of terms,
     /// ids and scores, and the term order, are Java's.
     pub fn into_terms_and_scores(self) -> (Vec<Vec<u8>>, Vec<u32>, Vec<f32>) {
-        let mut scores = self.score_sums;
+        let mut sums = self.score_sums;
         if self.score_mode == ScoreMode::Avg {
-            for (s, &c) in scores.iter_mut().zip(&self.score_counts) {
-                *s /= c as f32;
+            for (s, &c) in sums.iter_mut().zip(&self.score_counts) {
+                *s /= f64::from(c);
             }
         }
+        let mut scores: Vec<f32> = sums.into_iter().map(|s| s as f32).collect();
         let (terms, ords) = sorted_terms(self.terms);
         scores.truncate(terms.len());
         (terms, ords, scores)
@@ -1065,7 +1072,7 @@ pub struct NumericJoinCollector<'a> {
     mv: Option<Box<dyn SortedNumericDocValues + 'a>>,
     /// Every join value, with its combined score and (for `Avg`) how many
     /// documents had it: one probe per value. `(0.0, 0)` without scores.
-    values: FxHashMap<i64, (f32, i32)>,
+    values: FxHashMap<i64, (f64, i32)>,
 }
 
 impl<'a> NumericJoinCollector<'a> {
@@ -1088,7 +1095,7 @@ impl<'a> NumericJoinCollector<'a> {
     /// [`Self::add`] on the map alone, so a caller holding the doc values
     /// borrowed can add.
     #[inline]
-    fn add_to(values: &mut FxHashMap<i64, (f32, i32)>, mode: ScoreMode, value: i64, score: f32) {
+    fn add_to(values: &mut FxHashMap<i64, (f64, i32)>, mode: ScoreMode, value: i64, score: f32) {
         use std::collections::hash_map::Entry;
         match values.entry(value) {
             Entry::Vacant(v) => {
@@ -1097,18 +1104,18 @@ impl<'a> NumericJoinCollector<'a> {
                 // value alike).
                 v.insert(match mode {
                     ScoreMode::None => (0.0, 0),
-                    _ => (score, 1),
+                    _ => (f64::from(score), 1),
                 });
             }
             Entry::Occupied(mut o) => {
                 let (s, n) = o.get_mut();
                 match mode {
                     ScoreMode::None => {}
-                    ScoreMode::Max => *s = java_max_f32(*s, score),
-                    ScoreMode::Min => *s = java_min_f32(*s, score),
-                    ScoreMode::Total => *s += score,
+                    ScoreMode::Max => *s = f64::from(java_max_f32(*s as f32, score)),
+                    ScoreMode::Min => *s = f64::from(java_min_f32(*s as f32, score)),
+                    ScoreMode::Total => *s += f64::from(score),
                     ScoreMode::Avg => {
-                        *s += score;
+                        *s += f64::from(score);
                         *n = n.wrapping_add(1);
                     }
                 }
@@ -1124,11 +1131,11 @@ impl<'a> NumericJoinCollector<'a> {
             .into_iter()
             .map(|(v, (s, n))| {
                 let s = if mode == ScoreMode::Avg {
-                    s / n as f32
+                    s / f64::from(n)
                 } else {
                     s
                 };
-                (v, s)
+                (v, s as f32)
             })
             .collect();
         values.sort_unstable_by_key(|&(v, _)| v);
@@ -1535,7 +1542,7 @@ pub struct CollectedOrdinals {
     pub(crate) score_mode: ScoreMode,
     pub(crate) collected: FixedBitSet,
     /// `Scores`, every slot starting at `unset()`; empty for `None`.
-    pub(crate) scores: Blocks<f32>,
+    pub(crate) scores: Blocks<f64>,
     /// `Occurrences`; empty unless `Avg` or a min/max bound.
     pub(crate) occurrences: Blocks<i32>,
     pub(crate) do_min_max: bool,
@@ -1563,15 +1570,15 @@ impl CollectedOrdinals {
         };
         match self.score_mode {
             ScoreMode::None => 1.0,
-            ScoreMode::Avg => self.scores.get(o) / self.occurrences.get(o) as f32,
-            _ => self.scores.get(o),
+            ScoreMode::Avg => (self.scores.get(o) / f64::from(self.occurrences.get(o))) as f32,
+            _ => self.scores.get(o) as f32,
         }
     }
 }
 
 /// `GlobalOrdinalsWithScoreCollector` (`Sum`, `Min`, `Max`, `Avg`,
 /// `NoScore`): per global ordinal, whether it matched, its scores combined
-/// in `float` (`Math.min`/`Math.max` from `+Inf`/`-Inf`, sums from `0`), and
+/// in `double` (`Math.min`/`Math.max` from `+Inf`/`-Inf`, sums from `0`), and
 /// -- for `Avg` or a min/max bound -- how many documents had it.
 pub struct GlobalOrdinalsWithScoreCollector<'a> {
     field: String,
@@ -1604,8 +1611,8 @@ impl<'a> GlobalOrdinalsWithScoreCollector<'a> {
         }
         let do_min_max = min > 1 || max < i32::MAX;
         let unset = match score_mode {
-            ScoreMode::Min => f32::INFINITY,
-            ScoreMode::Max => f32::NEG_INFINITY,
+            ScoreMode::Min => f64::INFINITY,
+            ScoreMode::Max => f64::NEG_INFINITY,
             _ => 0.0,
         };
         // Java's `Scores`/`Occurrences`: blocks of 4096 allocated as
@@ -1674,9 +1681,11 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsWithScoreCollector<'a> {
         };
         if let Some(existing) = s.scores.get_mut(o) {
             *existing = match s.score_mode {
-                ScoreMode::Min => java_min_f32(*existing, score),
-                ScoreMode::Max => java_max_f32(*existing, score),
-                ScoreMode::Total | ScoreMode::Avg => *existing + score,
+                // Min and Max hold an exact float, so the float helpers give
+                // the double answer.
+                ScoreMode::Min => f64::from(java_min_f32(*existing as f32, score)),
+                ScoreMode::Max => f64::from(java_max_f32(*existing as f32, score)),
+                ScoreMode::Total | ScoreMode::Avg => *existing + f64::from(score),
                 ScoreMode::None => *existing,
             };
         }

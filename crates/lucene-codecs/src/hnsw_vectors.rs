@@ -456,7 +456,7 @@ fn add_readers<G: HnswGraphView>(
 ) -> Result<(Vec<usize>, Option<usize>)> {
     let mut usable: Vec<usize> = Vec::new();
     let mut largest: Option<usize> = None;
-    let mut largest_graph_size = -1i32;
+    let mut largest_live = -1i64;
     for (i, source) in sources.iter().enumerate() {
         let Some(graph) = source.graph else { continue };
         let graph_size = graph.size();
@@ -484,15 +484,14 @@ fn add_readers<G: HnswGraphView>(
         // magnitude short of overflow.
         #[allow(clippy::arithmetic_side_effects)]
         let delete_pct = (i64::from(graph_size) - live) * 100 / i64::from(graph_size);
-        // Java compares the candidate's *live* count against the incumbent's
-        // *total* size, not against its live count. Kept as-is: this only ever
-        // picks a base graph, and at equal size a graph with deletions is the
-        // worse base, which is what the asymmetry expresses.
+        // The candidate's live count is compared against the incumbent's live
+        // count, so a graph with deletions does not stay the base over a
+        // larger deletion-free one because of reader order.
         if delete_pct <= i64::from(DELETE_PCT_THRESHOLD)
-            && (largest.is_none() || live > i64::from(largest_graph_size))
+            && (largest.is_none() || live > largest_live)
         {
             largest = Some(i);
-            largest_graph_size = graph_size;
+            largest_live = live;
         }
         if live == i64::from(graph_size) {
             usable.push(i);

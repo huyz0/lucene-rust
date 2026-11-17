@@ -170,11 +170,15 @@ pub struct QuantizedMergeSource<'a> {
     /// (`tests/scalar_quantized_fixtures.rs` pins this against Lucene).
     pub centroid: Option<&'a [f32]>,
     /// Every vector the source holds for the field, deleted ones included,
-    /// in its ordinal order (Java's `calculateCentroid` iterates them all).
+    /// in its ordinal order.
     pub vectors: &'a [f32],
     /// Whether the source has deletions (Java's `mergeState.liveDocs[i] != null`),
     /// which forces the centroid to be recomputed from the live vectors.
     pub has_deletions: bool,
+    /// Per vector of `vectors`, whether its document is live; `None` when
+    /// every vector is. The recomputed centroid skips the deleted ones
+    /// (Lucene 10.6, #16764).
+    pub live: Option<&'a [bool]>,
 }
 
 /// Port of `Lucene104ScalarQuantizedVectorsWriter` (the quantized half; the
@@ -433,8 +437,7 @@ fn vector_util_dot(a: &[f32], b: &[f32]) -> f32 {
 /// `Lucene104ScalarQuantizedVectorsWriter.mergeAndRecalculateCentroids` (+
 /// `calculateCentroid`): the vector-count-weighted mean of the sources'
 /// centroids, or -- when a source has deletions or no quantized centroid --
-/// the mean of every source vector (deleted ones included, as Java's
-/// `calculateCentroid` iterates the readers' values without live docs).
+/// the mean of every live source vector.
 fn merge_and_recalculate_centroids(
     sources: &[QuantizedMergeSource<'_>],
     cosine: bool,
@@ -473,7 +476,12 @@ fn merge_and_recalculate_centroids(
         centroid.fill(0.0);
         let mut count = 0usize;
         for s in sources {
-            for v in s.vectors.chunks_exact(dim) {
+            for (i, v) in s.vectors.chunks_exact(dim).enumerate() {
+                if s.live
+                    .is_some_and(|live| !live.get(i).copied().unwrap_or(true))
+                {
+                    continue;
+                }
                 count = count.saturating_add(1);
                 for (c, &x) in centroid.iter_mut().zip(v) {
                     *c += x;
