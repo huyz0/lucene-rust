@@ -79,6 +79,17 @@ impl Flat {
     pub fn vector(&self, i: usize) -> &[f32] {
         &self.data[i * self.d..(i + 1) * self.d]
     }
+
+    /// Starts loading vector `i`'s cache lines.
+    #[inline]
+    pub fn prefetch(&self, i: usize) {
+        let start = i * self.d;
+        let mut at = start;
+        while at < start + self.d {
+            lucene_util::simd::prefetch(&self.data, at);
+            at += 16;
+        }
+    }
 }
 
 /// `faiss::HNSW`: the graph, over storage held elsewhere.
