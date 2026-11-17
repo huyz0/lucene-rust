@@ -1,12 +1,11 @@
 {
- "org/lucenerust/opensearch/AcceleratedQueryPhaseSearcher.java": 1048,
- "org/lucenerust/opensearch/AcceleratedQueryPhaseSearcher.java#searchHybrid": 143,
  "org/lucenerust/opensearch/AcceleratedQueryPhaseSearcher.java#searchNative": 181,
  "org/lucenerust/opensearch/AnalyzerSpec.java": 1274,
  "org/lucenerust/opensearch/ExtendedEncoder.java": 1452,
  "org/lucenerust/opensearch/ExtendedEncoder.java#expressionSpec": 141,
  "org/lucenerust/opensearch/ExtendedEncoder.java#function": 144,
  "org/lucenerust/opensearch/ExtendedEncoder.java#source": 111,
+ "org/lucenerust/opensearch/HybridPhase.java#search": 143,
  "org/lucenerust/opensearch/NativeAggregationTree.java": 1585,
  "org/lucenerust/opensearch/NativeAggregationTree.java#node": 172,
  "org/lucenerust/opensearch/NativeSearch.java": 1066,
