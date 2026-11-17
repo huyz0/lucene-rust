@@ -356,6 +356,12 @@ pub(crate) fn key_of_parent(keys: &mut [Option<i64>], is_parent: &dyn Fn(usize) 
     }
 }
 
+/// Buffered postings bytes from which a flush streams its `.doc`/`.pos`/`.pay`
+/// to the directory: they are as large as the postings' encoding of the buffer.
+/// A test lowers or raises it to compare the two ways of writing.
+pub(crate) static POSTINGS_STREAM_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(4 << 20);
+
 impl IndexingConfig {
     /// Whether this configuration takes explicit documents.
     pub(crate) fn takes_explicit(&self) -> bool {
@@ -392,8 +398,12 @@ impl IndexingConfig {
                     has_payloads: f.payloads,
                 })
                 .collect();
+            // A big flush writes `.doc`/`.pos`/`.pay` as they are encoded: held
+            // whole they are as large as the postings' encoding of the buffer.
+            let stream_from = POSTINGS_STREAM_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+            let sink = (pending.bytes() >= stream_from).then_some((state.directory, state.segment));
             let streamed = per_field_postings::write_streaming::<Error>(
-                None,
+                sink,
                 &specs,
                 state.field_infos,
                 &name_of,
@@ -1360,6 +1370,12 @@ impl IndexingConfig {
             flushed.info.files.extend(names);
         };
         if let Some(output) = postings_output {
+            record(
+                output
+                    .iter()
+                    .flat_map(|g| g.streamed_files.clone())
+                    .collect(),
+            );
             record(IndexWriter::write_postings_files(
                 dir,
                 segment_name,
