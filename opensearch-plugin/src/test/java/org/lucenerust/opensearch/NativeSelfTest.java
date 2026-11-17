@@ -839,7 +839,7 @@ public final class NativeSelfTest {
             compareMinScore(where, searcher, acquired.handle(), rewritten, enc.blob());
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
-            Term shortcut = AcceleratedQueryPhaseSearcher.shortcutTerm(reader, rewritten);
+            Term shortcut = SearchSupport.shortcutTerm(reader, rewritten);
             if (shortcut != null) {
                 // The term shortcut's one call: the document frequency, and the hits a search with
                 // the same limit finds.
@@ -1012,7 +1012,7 @@ public final class NativeSelfTest {
                             long[] out = new long[1];
                             int trc = NativeSearch.countTerminates(handle, blob, spec.toByteArray(), out);
                             check(trc == NativeBridge.OK, what + ": countTerminates status " + trc);
-                            boolean replay = AcceleratedQueryPhaseSearcher.replayCountTerminated(slices, leaves, iterate, perSegment, n);
+                            boolean replay = SegmentQueryCache.replayCountTerminated(slices, leaves, iterate, perSegment, n);
                             check(replay == (out[0] != 0), what + ": replayed terminated_early " + replay + " at n " + n + ", native " + out[0]);
                         }
                     }
@@ -1385,7 +1385,7 @@ public final class NativeSelfTest {
     @SuppressWarnings("deprecation")
     private static void compareTerminateAfter(String where, IndexSearcher searcher, long handle, Query query, byte[] blob, Random r)
         throws Exception {
-        if (AcceleratedQueryPhaseSearcher.rangeCollected(query)) {
+        if (SearchEligibility.rangeCollected(query)) {
             return;
         }
         int[] ns = { 1, 2, 3, 7, 20, 100, 1000 };

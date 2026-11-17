@@ -1307,7 +1307,7 @@ fn the_aggregations_counts_replay_the_count_collector() {
                             }
                         }
                         let want = count_terminates_blobs(h, &q, &spec).unwrap();
-                        // `AcceleratedQueryPhaseSearcher.replayCountTerminated`
+                        // `SegmentQueryCache.replayCountTerminated`
                         let replay = slices.iter().any(|slice| {
                             let mut order = slice.clone();
                             order.sort_unstable(); // doc-base order is segment order here

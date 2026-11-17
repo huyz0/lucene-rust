@@ -13,15 +13,11 @@ import org.lucenerust.opensearch.painless.PainlessScore;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.search.BoostQuery;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.NumberFieldMapper;
-import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.index.QueryTimeout;
-import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Sort;
@@ -33,20 +29,14 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
-import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.search.aggregations.AggregationProcessor;
 import org.opensearch.search.aggregations.InternalAggregations;
 import org.opensearch.search.aggregations.GlobalAggCollectorManager;
-import org.opensearch.search.aggregations.NonGlobalAggCollectorManager;
-import org.opensearch.search.approximate.ApproximateScoreQuery;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.internal.ScrollContext;
 import org.opensearch.search.internal.SearchContext;
-import org.opensearch.action.search.SearchType;
-import org.opensearch.search.query.QueryCollectorArguments;
 import org.opensearch.search.query.QueryCollectorContext;
-import org.opensearch.search.query.QueryCollectorContextSpecRegistry;
 import org.opensearch.search.query.QueryPhaseExecutionException;
 import org.opensearch.search.query.QueryPhaseSearcher;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
@@ -55,7 +45,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.function.ToLongFunction;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
@@ -258,10 +247,10 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             return false;
         }
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
-        NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
+        NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || SearchFlags.of(ctx).enabled() == false
             ? null
             : NativeAggregationTree.plan(ctx, field -> true);
-        String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
+        String reason = SearchEligibility.ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         if (reason == null || FallbackReason.SEARCH_AFTER.key().equals(reason)) {
             // A request Lucene's collector refuses: its error, as QueryPhase raises it.
             RuntimeException refused = SortEncoder.searchAfterRefusal(ctx.sort() == null ? null : ctx.sort().sort, ctx.searchAfter(), ctx.size(), searcher.getIndexReader());
@@ -286,12 +275,12 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             reason = executeNative(plan, aggs, tree, hasTimeout);
             if (reason == null) {
                 stats.nativeQuery();
-                if (plan.memoryTimedOut || hasTimeout && deadlinePassed(ctx)) {
-                    timedOut(ctx);
+                if (plan.memoryTimedOut || hasTimeout && SearchSupport.deadlinePassed(ctx)) {
+                    SearchSupport.timedOut(ctx);
                 }
                 stats.nativeTime(System.nanoTime() - start);
                 if (NativeProfile.requested(ctx)) {
-                    profile(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, plan.searchedHandle, plan.blob, similarities(searcher), System.nanoTime() - start);
+                    SearchProfiling.profile(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, plan.searchedHandle, plan.blob, SearchProfiling.similarities(searcher), System.nanoTime() - start);
                 }
                 return false;
             }
@@ -331,7 +320,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             // out -- which is what its own path does fastest.
             if (ctx.isCancelled()) {
                 reason = FallbackReason.CANCELLED.key();
-            } else if (hasTimeout && deadlinePassed(ctx)) {
+            } else if (hasTimeout && SearchSupport.deadlinePassed(ctx)) {
                 reason = FallbackReason.TIMEOUT.key();
             } else {
                 // What the native calls allocate is charged to the request breaker while they run.
@@ -379,14 +368,14 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             && rescores == null && sort == null && terminateAfter == 0;
         if (live == null) {
             reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
-        } else if (liveIneligible(ctx) != null) {
+        } else if (SearchEligibility.liveIneligible(ctx) != null) {
             // Lucene sees the view's documents as deleted and answers from the reader's.
             reason = FallbackReason.REALTIME_VIEW.key();
-        } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+        } else if (plain && SearchEligibility.plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
             // A k-NN search's hits, found when the query was rewritten: nothing of the
             // buffers is read again.
             storeKnnHits(ctx, hits);
-        } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
+        } else if (plain == false || SearchEligibility.plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
             // Everything else reads the buffers written as segments, one per leaf of the
             // view: aggregations, sorts, collapse, rescore, and what the plain path's
             // buffers cannot answer.
@@ -443,10 +432,10 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         if (aggs.entries().size() != 1 || aggs.terms().size() != 1 || ctx.size() != 0 || ctx.from() != 0 || ctx.sort() != null
             || ctx.searchAfter() != null || ctx.scrollContext() != null || ctx.collapse() != null || ctx.parsedPostFilter() != null
             || ctx.minimumScore() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER || hasFilterCollector
-            || ctx.isCancelled() || NativeProfile.requested(ctx) || unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
-            || NativeRescore.applies(ctx) || flags(ctx).enabled() == false
+            || ctx.isCancelled() || NativeProfile.requested(ctx) || SearchSupport.unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
+            || NativeRescore.applies(ctx) || SearchFlags.of(ctx).enabled() == false
             || LiveDirectoryReader.find(searcher.getIndexReader()) != null
-            || ineligible(ctx, collectors, hasFilterCollector, true) != null) {
+            || SearchEligibility.ineligible(ctx, collectors, hasFilterCollector, true) != null) {
             return false;
         }
         int[][] slices = NativeAggregations.slices(ctx);
@@ -469,7 +458,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         try {
             shortcut = ctx.trackTotalHitsUpTo() == SearchContext.TRACK_TOTAL_HITS_DISABLED
                 ? -1
-                : shortcutTotalHitCount(searcher.getIndexReader(), query, 0L);
+                : SearchSupport.shortcutTotalHitCount(searcher.getIndexReader(), query, 0L);
         } catch (IOException e) {
             shortcut = -1;
         }
@@ -478,163 +467,6 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         ctx.queryResult().aggregations(built);
         return true;
-    }
-
-    private static SimilarityEncoder similarities(ContextIndexSearcher searcher) {
-        return new SimilarityEncoder(searcher.getSimilarity());
-    }
-
-    /**
-     * The profile of a search the native engine answered: the query's scorer tree timed clause by
-     * clause ({@link NativeProfile}), the collector tree OpenSearch builds for the request with the
-     * time the native calls took, laid into the request's profilers.
-     */
-    private void profile(
-        SearchContext ctx,
-        ContextIndexSearcher searcher,
-        Query query,
-        LinkedList<QueryCollectorContext> collectors,
-        boolean hasFilterCollector,
-        boolean hasTimeout,
-        long handle,
-        byte[] blob,
-        SimilarityEncoder similarities,
-        long totalNanos
-    ) throws IOException {
-        NativeProfile.Phases phases = NativeProfile.phases();
-        phases.totalNanos = totalNanos;
-        NativeProfile.aggregated(ctx, System.nanoTime() - totalNanos, phases.aggNanos);
-        phases.slices = ctx.shouldUseConcurrentSearch() && searcher.getSlices() != null ? Math.max(1, searcher.getSlices().length) : 1;
-        long[] javaClock = new long[1];
-        NativeProfile.Report report = NativeProfile.run(handle, blob, phases.topScores, phases.topN, phases.countLimit, javaClock);
-        ToLongFunction<Query> weights = q -> {
-            long t0 = System.nanoTime();
-            QueryEncoder.encode(q, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-            return System.nanoTime() - t0;
-        };
-        int roots = layPostFilter(ctx, searcher, similarities, handle, weights);
-        NativeProfile.recordCollectors(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, phases);
-        NativeProfile.dropRootsAfter(ctx, roots);
-        if (report != null) {
-            try {
-                NativeProfile.recordQuery(ctx, searcher, query, report, weights, javaClock[0], phases.topScores, false);
-            } catch (RuntimeException e) {
-                logger.warn("accelerated-search: laying the native profile into the response failed", e);
-            }
-        }
-        layRescores(ctx, searcher, similarities, handle, weights);
-    }
-
-    /** The profile of a native hybrid search: the post_filter's tree, the collectors', and the hybrid query's with a tree per sub-query. */
-    private void profileHybrid(
-        SearchContext ctx,
-        ContextIndexSearcher searcher,
-        HybridQuery hybrid,
-        Query query,
-        LinkedList<QueryCollectorContext> collectors,
-        boolean hasFilterCollector,
-        boolean hasTimeout,
-        long handle,
-        List<byte[]> blobs,
-        SimilarityEncoder similarities,
-        int topN,
-        long threshold,
-        long totalNanos
-    ) throws IOException {
-        NativeProfile.Phases phases = NativeProfile.phases();
-        if (phases == null) {
-            return;
-        }
-        phases.totalNanos = totalNanos;
-        phases.hitsNanos = totalNanos;
-        phases.aggNanos = totalNanos / 2;
-        NativeProfile.aggregated(ctx, System.nanoTime() - totalNanos, phases.aggNanos);
-        phases.slices = ctx.shouldUseConcurrentSearch() && searcher.getSlices() != null ? Math.max(1, searcher.getSlices().length) : 1;
-        ToLongFunction<Query> weights = q -> {
-            long t0 = System.nanoTime();
-            QueryEncoder.encode(q, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-            return System.nanoTime() - t0;
-        };
-        List<Query> subs = new ArrayList<>(hybrid.getSubQueries());
-        List<NativeProfile.Report> reports = new ArrayList<>();
-        long[] clocks = new long[subs.size()];
-        for (int i = 0; i < subs.size(); i++) {
-            long[] clock = new long[1];
-            NativeProfile.Report r = NativeProfile.run(handle, blobs.get(i), true, topN, threshold, clock);
-            if (r == null) {
-                break;
-            }
-            reports.add(r);
-            clocks[i] = clock[0];
-        }
-        int roots = layPostFilter(ctx, searcher, similarities, handle, weights);
-        NativeProfile.recordCollectors(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, phases);
-        NativeProfile.dropRootsAfter(ctx, roots);
-        if (reports.size() == subs.size()) {
-            try {
-                NativeProfile.Report merged = NativeProfile.hybridReport(hybrid, subs, reports, clocks);
-                NativeProfile.recordQuery(ctx, searcher, hybrid, merged, weights, 0, true, false);
-            } catch (RuntimeException e) {
-                logger.warn("accelerated-search: laying the native hybrid profile into the response failed", e);
-            }
-        }
-        layRescores(ctx, searcher, similarities, handle, weights);
-    }
-
-    /** QueryPhase makes the post_filter's weight before the search makes the query's: its tree, first. */
-    private int layPostFilter(
-        SearchContext ctx,
-        ContextIndexSearcher searcher,
-        SimilarityEncoder similarities,
-        long handle,
-        ToLongFunction<Query> weights
-    ) throws IOException {
-        if (ctx.parsedPostFilter() == null) {
-            return -1;
-        }
-        Query filter = searcher.rewrite(ctx.parsedPostFilter().query());
-        try {
-            QueryEncoder.Encoded encoded = QueryEncoder.encode(filter, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-            long[] filterClock = new long[1];
-            NativeProfile.Report filtered = encoded.blob() == null
-                ? null
-                : NativeProfile.run(handle, encoded.blob(), false, 0, Long.MAX_VALUE, filterClock);
-            if (filtered != null) {
-                NativeProfile.recordQuery(ctx, searcher, filter, filtered, weights, filterClock[0], true, true);
-            }
-        } catch (RuntimeException e) {
-            logger.warn("accelerated-search: laying the native post_filter profile into the response failed", e);
-        }
-        return NativeProfile.rootCount(ctx);
-    }
-
-    private void layRescores(
-        SearchContext ctx,
-        ContextIndexSearcher searcher,
-        SimilarityEncoder similarities,
-        long handle,
-        ToLongFunction<Query> weights
-    ) throws IOException {
-        // RescorePhase makes each rescore query's weight after the search.
-        if (ctx.rescore() != null) {
-            for (org.opensearch.search.rescore.RescoreContext r : ctx.rescore()) {
-                if (r instanceof org.opensearch.search.rescore.QueryRescorer.QueryRescoreContext q) {
-                    try {
-                        Query rescoring = searcher.rewrite(q.parsedQuery().query());
-                        QueryEncoder.Encoded encoded = QueryEncoder.encode(rescoring, similarities, EncodeContext.of(ctx, searcher.getTopReaderContext()));
-                        long[] rescoreClock = new long[1];
-                        NativeProfile.Report rescored = encoded.blob() == null
-                            ? null
-                            : NativeProfile.run(handle, encoded.blob(), false, 0, Long.MAX_VALUE, rescoreClock);
-                        if (rescored != null) {
-                            NativeProfile.recordQuery(ctx, searcher, rescoring, rescored, weights, rescoreClock[0], true, true);
-                        }
-                    } catch (RuntimeException e) {
-                        logger.warn("accelerated-search: laying the native rescore profile into the response failed", e);
-                    }
-                }
-            }
-        }
     }
 
     /** How long a search Lucene answers waits for a buffer being flushed to be published. */
@@ -688,7 +520,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        if (flags(ctx).enabled() == false) return FallbackReason.DISABLED.key();
+        if (SearchFlags.of(ctx).enabled() == false) return FallbackReason.DISABLED.key();
         // The aggregations as the plain path plans them; they run over the documents the hybrid
         // collection counted.
         long searchStart = System.nanoTime();
@@ -708,8 +540,8 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         // The post filter is rewritten as QueryPhase rewrites it; an approximate range in it matches
         // only the first documents it visits, which the native engine would not reproduce.
         Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
-        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return FallbackReason.APPROXIMATE.key();
-        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes(), EncodeContext.of(ctx, searcher.getTopReaderContext()));
+        if (postFilter != null && SearchSupport.approximated(postFilter) && SearchSupport.buffered(searcher) == false && SearchFlags.of(ctx).nativeApproximate() == false) return FallbackReason.APPROXIMATE.key();
+        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, similarities, searcher, SearchFlags.of(ctx).allShapes(), EncodeContext.of(ctx, searcher.getTopReaderContext()));
         if (enc.fallbackReason() != null) return enc.fallbackReason();
         byte[] filterBlob = null;
         if (postFilter != null) {
@@ -730,7 +562,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
         if (acquired.fallbackReason() != null) return acquired.fallbackReason();
         if (ctx.isCancelled()) return FallbackReason.CANCELLED.key();
-        if (hasTimeout && deadlinePassed(ctx)) return FallbackReason.TIMEOUT.key();
+        if (hasTimeout && SearchSupport.deadlinePassed(ctx)) return FallbackReason.TIMEOUT.key();
         // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
         int topN = NativeHybrid.numHits(ctx, hybrid);
         // The hits sorted: by the request's sort, after the search_after document when there is one.
@@ -806,7 +638,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             NativeHybrid.store(ctx, answer, rescores != null && sortFields == null);
             if (NativeProfile.requested(ctx)) {
-                profileHybrid(ctx, searcher, hybrid, query, collectors, hasFilterCollector, hasTimeout, acquired.handle(), enc.blobs(), similarities, topN, threshold, System.nanoTime() - searchStart);
+                SearchProfiling.profileHybrid(ctx, searcher, hybrid, query, collectors, hasFilterCollector, hasTimeout, acquired.handle(), enc.blobs(), similarities, topN, threshold, System.nanoTime() - searchStart);
             }
             if (aggResult != null) {
                 ctx.queryResult().aggregations(aggResult);
@@ -818,8 +650,8 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             memory.close();
             stats.nativeMemory(memory.peak());
         }
-        if (memory.timedOut() || hasTimeout && deadlinePassed(ctx)) {
-            timedOut(ctx);
+        if (memory.timedOut() || hasTimeout && SearchSupport.deadlinePassed(ctx)) {
+            SearchSupport.timedOut(ctx);
         }
         return null;
     }
@@ -887,96 +719,6 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
     /** Whether {@code query} is or holds a {@link HybridQuery}. */
     static boolean containsHybrid(Query query) {
         return org.lucenerust.opensearch.neural.util.HybridQueryUtil.containsHybridQuery(query);
-    }
-
-    /**
-     * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (highlighting, scripts), a query that
-     * was expanded or given term statistics over the reader's terms alone (a multi-term query under
-     * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested k-NN hits.
-     */
-    static String liveIneligible(SearchContext ctx) {
-        if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
-            && ctx.innerHits().getInnerHits().isEmpty() == false) return FallbackReason.FETCH_DOC_VALUES.key();
-        // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
-        if (ctx.mapperService().hasNested() && holdsKnnHits(ctx.query())) return FallbackReason.NESTED.key();
-        boolean[] expands = new boolean[1];
-        org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
-            @Override
-            public void consumeTerms(Query query, org.apache.lucene.index.Term... terms) {
-                // Statistics a blended query computed from the reader's terms: the buffers' are not in them.
-                if (query instanceof org.opensearch.lucene.queries.BlendedTermQuery
-                    || query instanceof org.apache.lucene.search.TermQuery tq && tq.getTermStates() != null) {
-                    expands[0] = true;
-                }
-            }
-
-            @Override
-            public void consumeTermsMatching(
-                Query query,
-                String field,
-                java.util.function.Supplier<org.apache.lucene.util.automaton.ByteRunAutomaton> automaton
-            ) {
-                // A multi-term query the native search expands over every segment, the buffers'
-                // too; one a rewrite expands over the reader's terms alone is not.
-                if (!(query instanceof org.apache.lucene.search.MultiTermQuery m) || expandsNatively(m) == false) {
-                    expands[0] = true;
-                }
-            }
-
-            @Override
-            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
-                return this;
-            }
-        };
-        // The query as parsed too: a scoring rewrite expanded its terms already, maybe to nothing.
-        if (ctx.parsedQuery() != null) {
-            ctx.parsedQuery().query().visit(visitor);
-        }
-        ctx.query().visit(visitor);
-        return expands[0] ? "multi_term" : null;
-    }
-
-    /** Whether {@code query} is or holds a {@link KnnHitsQuery}, under any wrapper. */
-    private static boolean holdsKnnHits(Query query) {
-        boolean[] found = new boolean[1];
-        query.visit(new org.apache.lucene.search.QueryVisitor() {
-            @Override
-            public void visitLeaf(Query q) {
-                if (q instanceof KnnHitsQuery) {
-                    found[0] = true;
-                }
-            }
-
-            @Override
-            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
-                return this;
-            }
-        });
-        return found[0] || query instanceof KnnHitsQuery;
-    }
-
-    /** Whether {@code q}'s rewrite leaves its terms to the search: a constant-score or doc-values one. */
-    private static boolean expandsNatively(org.apache.lucene.search.MultiTermQuery q) {
-        org.apache.lucene.search.MultiTermQuery.RewriteMethod m = q.getRewriteMethod();
-        return m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_REWRITE
-            || m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE
-            || m == org.apache.lucene.search.MultiTermQuery.DOC_VALUES_REWRITE;
-    }
-
-    /**
-     * Whether a plain scored search goes to the buffers written as segments rather than the view's
-     * own postings: {@code min_score}, a concurrent count's per-slice early termination, and a
-     * scroll or {@code search_after} page, which the view's search does not do, and an index with
-     * nested documents, whose blocks the view's postings do not tell apart (the buffers written as
-     * segments keep each block whole, its root last). A scroll's or point in time's pages share one
-     * searcher supplier, so one view and one numbering of its documents.
-     */
-    private static boolean plainIneligible(SearchContext ctx) {
-        return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
-            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested()
-            // An explanation is Lucene's, over the postings of the buffers written as segments.
-            || ctx.explain();
     }
 
     /**
@@ -1049,257 +791,6 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         stats.liveQuery();
     }
 
-    /** Why this request cannot run native, or null when it can. */
-    static String ineligible(
-        SearchContext ctx,
-        LinkedList<QueryCollectorContext> collectors,
-        boolean hasFilterCollector,
-        boolean nativeAggs
-    ) {
-        if (flags(ctx).enabled() == false) return FallbackReason.DISABLED.key();
-        // The specific reasons first: each of these also adds a collector, and "collectors" alone
-        // would not tell an operator which request feature to look at.
-        // Aggregations only when NativeAggregations plans every one of them, and nothing else (a
-        // global aggregation, another plugin's manager) added a collector manager.
-        if (ctx.queryCollectorManagers().isEmpty() == false
-            && (nativeAggs == false
-                || ctx.queryCollectorManagers()
-                    .keySet()
-                    .stream()
-                    .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) {
-            return NativeAggregationTree.unsupportedReason(ctx);
-        }
-        boolean minScore = ctx.minimumScore() != null;
-        // min_score natively by score or behind a sort (MinimumScoreCollector around the sort's
-        // collector: no competitive iterator); behind a scroll's later pages or terminate_after it
-        // stays on Lucene.
-        if (minScore && (ctx.scrollContext() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER)) {
-            return FallbackReason.MIN_SCORE.key();
-        }
-        boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
-        if (terminating && terminateAfterIneligible(ctx)) return FallbackReason.TERMINATE_AFTER.key();
-        // What is left in "collectors": the aggregations' context and the filter collectors
-        // (post_filter, terminate_after, min_score).
-        boolean postFilter = ctx.parsedPostFilter() != null;
-        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (terminating ? 1 : 0) + (minScore ? 1 : 0)
-            || hasFilterCollector != (postFilter || terminating || minScore)) return FallbackReason.COLLECTORS.key();
-        // A sort runs native when SortEncoder can encode it (searchWith); search_after only
-        // with one. track_scores runs native too: the score leading the sort gives the max
-        // score (the first hit), and otherwise the native search tracks it over every match.
-        if (ctx.searchAfter() != null && ctx.sort() == null) return FallbackReason.SEARCH_AFTER.key();
-        // size 0 behind search_after: ContextIndexSearcher skips segments the after value rules out
-        // before any collector sees them, which the native count does not.
-        if (ctx.searchAfter() != null && ctx.size() == 0) return FallbackReason.SEARCH_AFTER.key();
-        // collapse natively (NativeCollapse) on a keyword or numeric field, behind terminate_after
-        // too: EarlyTerminatingCollector lets the first matches in index order through, which the
-        // native collector takes as the plain sorted search does (terminateAfterIneligible above).
-        if (ctx.collapse() != null && ctx.size() > 0) {
-            if (NativeCollapse.blob(ctx.collapse()) == null) return FallbackReason.COLLAPSE_FIELD.key();
-            // CollapsingTopDocsCollector refuses search_after unless the sort
-            // is the collapse field.
-            SortField[] keys = NativeCollapse.sort(ctx).getSort();
-            if (ctx.searchAfter() != null
-                && (keys.length != 1 || java.util.Objects.equals(keys[0].getField(), ctx.collapse().getFieldName()) == false)) {
-                return FallbackReason.COLLAPSE_SEARCH_AFTER.key();
-            }
-        }
-        // rescore natively (NativeRescore) when every rescorer is OpenSearch's
-        // QueryRescorer, over the top docs however they were collected (behind
-        // terminate_after too); a scroll or a size-0 search never rescores.
-        if (ctx.rescore() != null && ctx.rescore().isEmpty() == false && ctx.scrollContext() == null && ctx.size() > 0) {
-            if (NativeRescore.supported(ctx) == false) return FallbackReason.RESCORE.key();
-        }
-        // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
-        // each slice's segments last first: NativeAggregations.slices hands the native pass that order.
-        // terminate_after cuts the segments in index order, which the reversed visit does not.
-        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminating) return FallbackReason.TIME_SERIES_ORDER.key();
-        // dfs_query_then_fetch scores with statistics aggregated across shards
-        // (ContextIndexSearcher.setAggregatedDfs), which NativeDfs hands the native statistics pass.
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return FallbackReason.DFS.key();
-        // Another plugin may replace the top-docs collector (QueryPhase's own first question).
-        try {
-            if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(
-                ctx,
-                ctx.query(),
-                new QueryCollectorArguments.Builder().hasFilterCollector(hasFilterCollector).build()
-            ).isPresent()) return FallbackReason.COLLECTOR_SPEC.key();
-        } catch (IOException e) {
-            return FallbackReason.COLLECTOR_SPEC.key();
-        }
-        return null;
-    }
-
-    /**
-     * Whether a {@code terminate_after} request needs something the native cut does not give it.
-     * With aggregations: OpenSearch's collectors let an aggregation see the whole of a segment it
-     * answers from index statistics (the points min/max, terms from doc frequencies) past the cut.
-     * With {@code search_after}: ContextIndexSearcher skips a segment the after value rules out
-     * before EarlyTerminatingCollector counts it. A scroll: each page recounts its prefix. And
-     * more documents than {@code track_total_hits} counts exactly: the collector's total there is a
-     * lower bound whose value depends on when it stopped counting.
-     */
-    static boolean terminateAfterIneligible(SearchContext ctx) {
-        int trackUpTo = ctx.trackTotalHitsUpTo();
-        return ctx.queryCollectorManagers().isEmpty() == false
-            || (countSegments(ctx, ctx.terminateAfter()) && segmentCountable(ctx.query()) == false)
-            || (ctx.size() > 0
-                && ctx.parsedPostFilter() == null
-                && ((scoresNeeded(ctx) == false && neverCached(ctx) == false) || rangeCollected(ctx.query())))
-            || ctx.searchAfter() != null
-            || ctx.scrollContext() != null
-            || (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE
-                && trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
-                && ctx.terminateAfter() > trackUpTo);
-    }
-
-    /**
-     * Whether an unscored search's query never goes through the query cache, whose cached bulk
-     * scorer hands the collector whole ranges once a query has been seen often enough (history
-     * no native search reproduces): a plain {@code TermQuery}, which {@code
-     * UsageTrackingQueryCachingPolicy.shouldNeverCache} turns away, unless the index caches
-     * everything ({@code index.queries.cache.everything}).
-     */
-    static boolean neverCached(SearchContext ctx) {
-        Query q = ctx.query();
-        while (q instanceof BoostQuery b) {
-            q = b.getQuery();
-        }
-        return q.getClass() == TermQuery.class
-            && org.opensearch.index.IndexModule.INDEX_QUERY_CACHE_EVERYTHING_SETTING.get(ctx.indexShard().indexSettings().getSettings())
-                == false;
-    }
-
-    /**
-     * Whether a {@code terminate_after} search's total is a {@code size: 0} search's: counted by
-     * TotalHitCountCollector (EmptyTopDocsCollectorContext), which takes a segment's {@code
-     * Weight.count} whole where there is one -- past the cut -- rather than the documents let
-     * through.
-     */
-    static boolean countSegments(SearchContext ctx, int terminateAfter) {
-        // FilteredCollector passes no weight on: under a post_filter the count collector counts
-        // the documents let through.
-        return terminateAfter > 0 && ctx.size() == 0 && ctx.parsedPostFilter() == null
-            && ctx.trackTotalHitsUpTo() != SearchContext.TRACK_TOTAL_HITS_DISABLED;
-    }
-
-    /**
-     * Whether the top-docs collector needs scores, so that the MultiCollector beside
-     * EarlyTerminatingCollector (which needs none) runs the search {@code COMPLETE}.
-     */
-    static boolean scoresNeeded(SearchContext ctx) {
-        if (ctx.sort() == null || ctx.trackScores()) {
-            return true;
-        }
-        for (SortField f : ctx.sort().sort.getSort()) {
-            if (f.getType() == SortField.Type.SCORE) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Whether Lucene may hand {@code query}'s matches to the collector in {@code collectRange}
-     * batches when searching {@code COMPLETE}: DenseConjunctionBulkScorer (a constant-score
-     * query's bulk scorer when dense, a conjunction of filters) and the query cache's. MultiCollector
-     * gives a batch to EarlyTerminatingCollector first, which throws inside it, so the top-docs
-     * collector loses the whole batch the cut falls in -- which the native cut, document by
-     * document, does not reproduce. The positive bulk scorer is BooleanScorerSupplier.booleanScorer's
-     * choice: a lone optional or required clause's own, else one that collects by document.
-     */
-    static boolean rangeCollected(Query query) {
-        Query q = query;
-        while (q instanceof BoostQuery b) {
-            q = b.getQuery();
-        }
-        if (q instanceof org.apache.lucene.search.BooleanQuery bq) {
-            List<Query> must = new ArrayList<>();
-            List<Query> filter = new ArrayList<>();
-            List<Query> should = new ArrayList<>();
-            for (var c : bq.clauses()) {
-                switch (c.occur()) {
-                    case MUST -> must.add(c.query());
-                    case FILTER -> filter.add(c.query());
-                    case SHOULD -> should.add(c.query());
-                    default -> {
-                    }
-                }
-            }
-            int required = must.size() + filter.size();
-            if (required == 0) {
-                return should.size() == 1 && rangeCollected(should.get(0));
-            }
-            if (should.isEmpty() && bq.getMinimumNumberShouldMatch() == 0) {
-                if (required == 1) {
-                    // A lone filter: its non-scoring (possibly cached) bulk scorer.
-                    return must.isEmpty() || rangeCollected(must.get(0));
-                }
-                // Filters only: DenseConjunctionBulkScorer when dense.
-                return must.isEmpty();
-            }
-            return false;
-        }
-        return q instanceof TermQuery == false
-            && q instanceof org.apache.lucene.search.PhraseQuery == false
-            && q instanceof org.apache.lucene.search.DisjunctionMaxQuery == false;
-    }
-
-    /**
-     * Whether {@code query}'s {@code Weight.count} is one the native side has: a term's, a
-     * match-all's or a match-none's, through the wrappers whose weights pass {@code count} on.
-     * (With a post_filter, FilteredCollector does not pass the weight to the count collector at
-     * all; that case falls back too.)
-     */
-    static boolean segmentCountable(Query query) {
-        Query q = query;
-        while (true) {
-            if (q instanceof BoostQuery b) {
-                q = b.getQuery();
-            } else if (q instanceof ConstantScoreQuery c) {
-                q = c.getQuery();
-            } else if (q instanceof ApproximateScoreQuery a) {
-                q = a.getOriginalQuery();
-            } else {
-                break;
-            }
-        }
-        return q.getClass() == TermQuery.class || q.getClass() == MatchAllDocsQuery.class
-            || q.getClass() == org.apache.lucene.search.MatchNoDocsQuery.class;
-    }
-
-    /** The plugin's index settings as last read, and the settings version they were read at. */
-    record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate, boolean aggCache) {}
-
-    private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
-
-    /**
-     * The plugin's index settings for {@code ctx}'s index, re-read only when the index's settings
-     * version moves: {@code IndexSettings.getValue} parses the setting's string on every call, a
-     * cost every search paid twice. One small entry per index ever searched on this node.
-     */
-    static Flags flags(SearchContext ctx) {
-        org.opensearch.index.IndexSettings settings = ctx.indexShard().indexSettings();
-        long version = settings.getIndexMetadata().getSettingsVersion();
-        String uuid = settings.getUUID();
-        Flags f = FLAGS.get(uuid);
-        if (f == null || f.version() != version) {
-            f = new Flags(
-                version,
-                settings.getValue(ENABLED),
-                "all".equals(settings.getValue(NATIVE_SHAPES)),
-                settings.getValue(NATIVE_APPROXIMATE),
-                settings.getValue(AGG_SEGMENT_CACHE)
-            );
-            FLAGS.put(uuid, f);
-        }
-        return f;
-    }
-
-    /** Whether {@code ctx}'s index runs every shape native ({@code accelerated_shapes: all}). */
-    static boolean allShapes(SearchContext ctx) {
-        return flags(ctx).allShapes();
-    }
-
     /**
      * Runs the blob and stores the result; returns null, or the fallback reason when it did not.
      *
@@ -1357,7 +848,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         // A term query's shortcut, left to the unsorted search's own native call (searchDocFreq):
         // each crossing into native code costs more than the term lookup it makes.
         Term shortcutTerm = null;
-        // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
+        // TopDocsCollectorContext: "hasFilterCollector ? -1 : SearchSupport.shortcutTotalHitCount(...)".
         // (A collapsed search counts every match itself, whatever track_total_hits says.)
         // The shortcuts read the searcher's reader, to which the buffered documents are deleted:
         // with them (live), every total is counted.
@@ -1368,11 +859,11 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             && terminating == false
             && ctx.minimumScore() == null) {
             if (sortBlob == null && aggs == null && tree == null) {
-                shortcutTerm = shortcutTerm(ctx.searcher().getIndexReader(), ctx.query());
+                shortcutTerm = SearchSupport.shortcutTerm(ctx.searcher().getIndexReader(), ctx.query());
             }
             if (shortcutTerm == null) {
                 try {
-                    shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
+                    shortcut = SearchSupport.shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
                 } catch (IOException e) {
                     return FallbackReason.NATIVE_ERROR.key();
                 }
@@ -1388,7 +879,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         if (phases != null) {
             phases.topN = numDocs;
             phases.countLimit = countLimit;
-            phases.topScores = numDocs > 0 && (sort == null || sortByScore(sort));
+            phases.topScores = numDocs > 0 && (sort == null || SearchSupport.sortByScore(sort));
         }
         long aggStart = System.nanoTime();
         // The aggregations first, kept aside until the hits are in too: a failure in either
@@ -1440,7 +931,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
                 return FallbackReason.INTRA_SEGMENT.key();
             }
             byte[][] result = new byte[1][];
-            int rc = NativeSearch.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), flags(ctx).aggCache(), result);
+            int rc = NativeSearch.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), SearchFlags.of(ctx).aggCache(), result);
             if (rc != NativeBridge.OK) {
                 NativeAggregations.checkBuckets(ctx, rc);
                 NativeMemory.check(rc);
@@ -1615,7 +1106,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total, segCounts, used);
         if (terminated != null && used[0] == false) {
             try {
-                useQueryCache(ctx);
+                SegmentQueryCache.useQueryCache(ctx);
             } catch (IOException e) {
                 return null;
             }
@@ -1657,7 +1148,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             // Lucene weight it would take (a geo filter's builds its whole grid) is not built.
             boolean[] everywhere = new boolean[leaves.size()];
             java.util.Arrays.fill(everywhere, true);
-            if (replayCountTerminated(slices, leaves, everywhere, segCounts, trackUpTo) == false) {
+            if (SegmentQueryCache.replayCountTerminated(slices, leaves, everywhere, segCounts, trackUpTo) == false) {
                 return false;
             }
         }
@@ -1680,7 +1171,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
                 // Weight.count recorded the use (on a segment without deletions; on one with
                 // them the cache never answers a count): cache what Lucene's search would.
                 used[0] = true;
-                fillQueryCache(ctx, weight, leaves, iterate);
+                SegmentQueryCache.fillQueryCache(ctx, weight, leaves, iterate);
             }
         } catch (IOException e) {
             return null;
@@ -1688,7 +1179,7 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         if (counted) {
             // The aggregations' pass already counted each segment's live matches: replay the
             // collectors from those instead of searching again.
-            return replayCountTerminated(slices, leaves, iterate, segCounts, trackUpTo);
+            return SegmentQueryCache.replayCountTerminated(slices, leaves, iterate, segCounts, trackUpTo);
         }
         NativeAggregations.writeSlices(spec, slices);
         long[] out = new long[1];
@@ -1700,101 +1191,6 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
             return null;
         }
         return out[0] != 0;
-    }
-
-    /**
-     * What Lucene's search of a {@code size: 0} query leaves in the query cache, for a native one:
-     * the policy records the use, and a query it now caches is cached on the segments without
-     * deletions -- the only ones whose {@code Weight.count} the cache answers, which is how a later
-     * search's {@code terminated_early} (above) sees it.
-     */
-    private static void useQueryCache(SearchContext ctx) throws IOException {
-        ContextIndexSearcher searcher = ctx.searcher();
-        org.apache.lucene.search.QueryCache cache = searcher.getQueryCache();
-        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
-        if (cache == null || leaves.isEmpty()) {
-            return;
-        }
-        Query query = ctx.query();
-        org.apache.lucene.search.QueryCachingPolicy policy = searcher.getQueryCachingPolicy();
-        policy.onUse(query);
-        if (policy.shouldCache(query) == false || leaves.stream().allMatch(l -> l.reader().hasDeletions())) {
-            return;
-        }
-        // The use is recorded: a weight whose policy does not record it again.
-        Weight weight = cache.doCache(
-            query.createWeight(searcher, org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f),
-            new org.apache.lucene.search.QueryCachingPolicy() {
-                @Override
-                public void onUse(Query q) {}
-
-                @Override
-                public boolean shouldCache(Query q) throws IOException {
-                    return policy.shouldCache(q);
-                }
-            }
-        );
-        boolean[] every = new boolean[leaves.size()];
-        java.util.Arrays.fill(every, true);
-        fillQueryCache(ctx, weight, leaves, every);
-    }
-
-    /** Caches {@code weight}'s query on the iterated segments without deletions, when the policy says to. */
-    private static void fillQueryCache(SearchContext ctx, Weight weight, List<LeafReaderContext> leaves, boolean[] iterate)
-        throws IOException {
-        if (ctx.searcher().getQueryCache() == null || ctx.searcher().getQueryCachingPolicy().shouldCache(ctx.query()) == false) {
-            return;
-        }
-        for (int i = 0; i < leaves.size(); i++) {
-            if (iterate[i] && leaves.get(i).reader().hasDeletions() == false) {
-                // The caching supplier fills the cache when its iterator is asked for, under the
-                // top-level lead cost of a search.
-                org.apache.lucene.search.ScorerSupplier supplier = weight.scorerSupplier(leaves.get(i));
-                if (supplier != null) {
-                    supplier.get(Long.MAX_VALUE);
-                }
-            }
-        }
-    }
-
-    /**
-     * Whether some slice's {@code EarlyTerminatingCollector(TotalHitCountCollector, n)} stops, given
-     * each segment's live match count -- the native {@code count_terminates} replay, without the
-     * search: each slice's segments in doc-base order, a collector already holding {@code n}
-     * documents stops at the next segment, one that iterates a segment ({@code iterate}, where
-     * {@code Weight.count} gave -1) stops at its {@code n + 1}th document, and a segment the count
-     * answers from {@code Weight.count} reaches it with nothing. {@code
-     * the_aggregations_counts_replay_the_count_collector} in {@code reader_search.rs} holds the two
-     * to the same answer.
-     */
-    static boolean replayCountTerminated(
-        int[][] slices,
-        List<LeafReaderContext> leaves,
-        boolean[] iterate,
-        long[] segCounts,
-        int n
-    ) {
-        for (int[] slice : slices) {
-            Integer[] order = new Integer[slice.length];
-            for (int k = 0; k < slice.length; k++) {
-                order[k] = slice[k];
-            }
-            java.util.Arrays.sort(order, java.util.Comparator.comparingInt(i -> leaves.get(i).docBase));
-            long collected = 0;
-            for (int i : order) {
-                if (collected >= n) {
-                    return true;
-                }
-                if (iterate[i] == false) {
-                    continue;
-                }
-                if (collected + segCounts[i] > n) {
-                    return true;
-                }
-                collected += segCounts[i];
-            }
-        }
-        return false;
     }
 
     /**
@@ -1928,189 +1324,11 @@ public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // The score leading the sort: its first hit's; a tracked max score (track_scores
         // behind another key): the native MaxScoreCollector's, NaN without matches.
-        float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0]
+        float maxScore = n > 0 && SearchSupport.sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0]
             : ctx.trackScores() ? Float.intBitsToFloat((int) counts[3])
             : Float.NaN;
         store(ctx, new TopDocsAndMaxScore(new TopFieldDocs(total, hits, fields), maxScore), ctx.sort().formats);
         return null;
     }
 
-    /**
-     * Whether the searcher's cancellation checks -- QueryPhase's timeout, and the task's own with
-     * {@code low_level_cancellation} -- say stop, as ContextIndexSearcher asks them before each
-     * segment.
-     */
-    static boolean deadlinePassed(SearchContext ctx) {
-        QueryTimeout timeout = ctx.searcher().getTimeout();
-        return timeout != null && timeout.shouldExit();
-    }
-
-    /**
-     * A native search that ran past its timeout, answered as QueryPhase answers one: the task
-     * cancelled fails it, as the TaskCancelledException ContextIndexSearcher does not catch would;
-     * otherwise the request fails without {@code allow_partial_search_results} and is flagged
-     * {@code timed_out} with it. Its results are what it collected by the deadline: the native
-     * collection stops there, between windows of documents, as Lucene's under QueryPhase's timeout
-     * check does.
-     */
-    static void timedOut(SearchContext ctx) {
-        // Only a registered low_level_cancellation check sees the task; the
-        // timeout's alone does not.
-        if (ctx.lowLevelCancellation() && ctx.isCancelled()) {
-            throw new TaskCancelledException("cancelled task with reason: " + ctx.getTask().getReasonCancelled());
-        }
-        if (ctx.request().allowPartialSearchResults() == false) {
-            throw new QueryPhaseExecutionException(ctx.shardTarget(), "Time exceeded");
-        }
-        ctx.queryResult().searchTimedOut(true);
-    }
-
-    /** {@code +query #filter}: the documents both match, scored by {@code query} alone. */
-    static Query postFiltered(Query query, Query filter) {
-        return new org.apache.lucene.search.BooleanQuery.Builder().add(query, org.apache.lucene.search.BooleanClause.Occur.MUST)
-            .add(filter, org.apache.lucene.search.BooleanClause.Occur.FILTER)
-            .build();
-    }
-
-    private static final java.lang.reflect.Field RESOLVED_QUERY = resolvedQueryField();
-
-    private static java.lang.reflect.Field resolvedQueryField() {
-        try {
-            java.lang.reflect.Field f = ApproximateScoreQuery.class.getDeclaredField("resolvedQuery");
-            f.setAccessible(true);
-            return f;
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            return null;
-        }
-    }
-
-    /** Whether the searcher reads a view of the writer's buffered documents that holds some. */
-    static boolean buffered(ContextIndexSearcher searcher) {
-        LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
-        return live != null && live.view().maxDoc() > 0;
-    }
-
-    /**
-     * Whether {@code query} holds an {@link ApproximateScoreQuery} that OpenSearch resolved to its
-     * approximation for this request ({@code setContext}; the choice is package-private, so it is
-     * read reflectively). Unreadable counts as approximated: falling back is always correct.
-     */
-    static boolean approximated(Query query) {
-        if (query instanceof ApproximateScoreQuery a) {
-            if (RESOLVED_QUERY == null) {
-                return true;
-            }
-            try {
-                return RESOLVED_QUERY.get(a) instanceof org.opensearch.search.approximate.ApproximateQuery;
-            } catch (ReflectiveOperationException | RuntimeException e) {
-                return true;
-            }
-        }
-        if (query instanceof org.apache.lucene.search.BooleanQuery b) {
-            for (var c : b.clauses()) {
-                if (approximated(c.query())) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (query instanceof ConstantScoreQuery c) {
-            return approximated(c.getQuery());
-        }
-        if (query instanceof BoostQuery b) {
-            return approximated(b.getQuery());
-        }
-        return false;
-    }
-
-    /** {@code SortField.FIELD_SCORE.equals(sort.getSort()[0])}: the score, descending, leads. */
-    static boolean sortByScore(Sort sort) {
-        return SortField.FIELD_SCORE.equals(sort.getSort()[0]);
-    }
-
-    /**
-     * {@code TopDocsCollectorContext.shortcutTotalHitCount} (OpenSearch 3.8.0), for the queries the
-     * native engine runs: a match-all's count is the reader's {@code numDocs}, and an exact term's
-     * the sum of its {@code docFreq}s when nothing is deleted (from {@code handle}'s segments, the
-     * same ones); {@code -1} otherwise.
-     */
-    static int shortcutTotalHitCount(IndexReader reader, Query query, long handle) throws IOException {
-        query = unwrapShortcut(query);
-        if (query.getClass() == MatchAllDocsQuery.class) {
-            return reader.numDocs();
-        }
-        Term term = shortcutTerm(reader, query);
-        if (term != null) {
-            // Summed by the native term dictionaries, which the search reads straight after:
-            // Lucene's own, in every segment, cost more than the search itself.
-            BytesRef bytes = term.bytes();
-            long[] out = new long[1];
-            int rc = NativeSearch.docFreq(
-                handle,
-                term.field().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                java.util.Arrays.copyOfRange(bytes.bytes, bytes.offset, bytes.offset + bytes.length),
-                out
-            );
-            if (rc != NativeBridge.OK) {
-                NativeMemory.check(rc);
-                throw new IOException("native docFreq failed (" + rc + "): " + NativeBridge.lastError());
-            }
-            return Math.toIntExact(out[0]);
-        }
-        if (query.getClass() == org.apache.lucene.search.FieldExistsQuery.class && reader.hasDeletions() == false) {
-            // The documents with an indexed value: the points' or terms' doc count.
-            String field = ((org.apache.lucene.search.FieldExistsQuery) query).getField();
-            int count = 0;
-            for (LeafReaderContext leaf : reader.leaves()) {
-                org.apache.lucene.index.FieldInfo info = leaf.reader().getFieldInfos().fieldInfo(field);
-                if (info == null) {
-                    continue;
-                }
-                if (info.getPointIndexDimensionCount() > 0) {
-                    org.apache.lucene.index.PointValues points = leaf.reader().getPointValues(field);
-                    if (points != null) {
-                        count += points.getDocCount();
-                    }
-                } else if (info.getIndexOptions() != org.apache.lucene.index.IndexOptions.NONE) {
-                    org.apache.lucene.index.Terms terms = leaf.reader().terms(field);
-                    if (terms != null) {
-                        count += terms.getDocCount();
-                    }
-                } else {
-                    // Not indexed: no shortcut.
-                    return -1;
-                }
-            }
-            return count;
-        }
-        return -1;
-    }
-
-    /**
-     * The term whose document frequency {@link #shortcutTotalHitCount} answers the total with: a
-     * plain {@code TermQuery}'s, behind any constant-score or boost wrappers, on a reader without
-     * deletions; else null.
-     */
-    static Term shortcutTerm(IndexReader reader, Query query) {
-        query = unwrapShortcut(query);
-        if (query.getClass() == TermQuery.class && reader.hasDeletions() == false) {
-            return ((TermQuery) query).getTerm();
-        }
-        return null;
-    }
-
-    /** The wrappers {@code shortcutTotalHitCount} looks through. */
-    private static Query unwrapShortcut(Query query) {
-        while (true) {
-            if (query instanceof ConstantScoreQuery c) {
-                query = c.getQuery();
-            } else if (query instanceof BoostQuery b) {
-                query = b.getQuery();
-            } else if (query instanceof ApproximateScoreQuery a) {
-                query = a.getOriginalQuery();
-            } else {
-                return query;
-            }
-        }
-    }
 }
