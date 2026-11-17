@@ -145,14 +145,14 @@ final class ExtendedEncoder {
      * Appends {@code q} when it is one of these shapes: null when it was written, a fallback reason
      * when it cannot be, {@link #NOT_EXTENDED} when it is none of them.
      */
-    static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {
+    static String node(EncodeContext cx, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {
         try {
             if (q instanceof FunctionScoreQuery fs) {
-                return functionScore(fs, out, fieldOk, child);
+                return functionScore(cx, fs, out, fieldOk, child);
             }
             if (q instanceof ScriptScoreQuery ss) {
                 minScore(field(ss, "minScore"), out);
-                return knnScore(ss, out, child);
+                return knnScore(cx, ss, out, child);
             }
             if (q instanceof MaxSimQuery ms) {
                 return maxSim(ms, out, child);
@@ -184,13 +184,13 @@ final class ExtendedEncoder {
                 return span(sq, out, fieldOk);
             }
             if (q instanceof IntervalQuery iq) {
-                return interval(iq, out);
+                return interval(cx, iq, out);
             }
             if (q instanceof CombinedFieldQuery cf) {
                 return combinedField(cf, out, fieldOk);
             }
             if (q.getClass().getName().equals("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")) {
-                return painlessFilter(q, out);
+                return painlessFilter(cx, q, out);
             }
             return NOT_EXTENDED;
         } catch (ReflectiveOperationException | ClassCastException e) {
@@ -377,7 +377,7 @@ final class ExtendedEncoder {
 
     private static final String INTERVALS = "org.apache.lucene.queries.intervals.";
 
-    private static String interval(IntervalQuery q, ByteArrayOutputStream out) throws ReflectiveOperationException {
+    private static String interval(EncodeContext cx, IntervalQuery q, ByteArrayOutputStream out) throws ReflectiveOperationException {
         Field fieldF = Reflect.declared(IntervalQuery.class, "field");
         Field sourceF = Reflect.declared(IntervalQuery.class, "intervalsSource");
         Field scoringF = Reflect.declared(IntervalQuery.class, "scoreFunction");
@@ -398,7 +398,7 @@ final class ExtendedEncoder {
         } else {
             return FallbackReason.INTERVAL_SCORING.key();
         }
-        return source((IntervalsSource) sourceF.get(q), out);
+        return source(cx, (IntervalsSource) sourceF.get(q), out);
     }
 
     private static float floatField(Object o, String name) throws ReflectiveOperationException {
@@ -418,14 +418,14 @@ final class ExtendedEncoder {
     }
 
     @SuppressWarnings("unchecked")
-    private static String source(IntervalsSource s, ByteArrayOutputStream out) throws ReflectiveOperationException {
+    private static String source(EncodeContext cx, IntervalsSource s, ByteArrayOutputStream out) throws ReflectiveOperationException {
         String name = s.getClass().getName();
         if (name.equals("org.opensearch.index.query.IntervalsSourceProvider$ScriptFilterSource")) {
             out.write(6);
             out.write(2);
             writeString(out, (String) field(s, "name"));
-            String why = painlessInterval((IntervalFilterScript) field(s, "script"), out);
-            return why != null ? why : source((IntervalsSource) field(s, "in"), out);
+            String why = painlessInterval(cx, (IntervalFilterScript) field(s, "script"), out);
+            return why != null ? why : source(cx, (IntervalsSource) field(s, "in"), out);
         }
         if (name.startsWith(INTERVALS) == false) {
             return FallbackReason.INTERVAL_ANY.key() + s.getClass().getSimpleName();
@@ -438,16 +438,16 @@ final class ExtendedEncoder {
             }
             case "BlockIntervalsSource" -> {
                 out.write(1);
-                return sources((Collection<IntervalsSource>) field(s, "subSources"), out);
+                return sources(cx, (Collection<IntervalsSource>) field(s, "subSources"), out);
             }
             case "DisjunctionIntervalsSource" -> {
                 out.write(2);
                 out.write((boolean) field(s, "pullUpDisjunctions") ? 1 : 0);
-                return sources((Collection<IntervalsSource>) field(s, "subSources"), out);
+                return sources(cx, (Collection<IntervalsSource>) field(s, "subSources"), out);
             }
             case "OrderedIntervalsSource", "UnorderedIntervalsSource" -> {
                 out.write(name.endsWith("UnorderedIntervalsSource") ? 4 : 3);
-                return sources((Collection<IntervalsSource>) field(s, "subSources"), out);
+                return sources(cx, (Collection<IntervalsSource>) field(s, "subSources"), out);
             }
             case "RepeatingIntervalsSource" -> {
                 int count = (int) field(s, "childCount");
@@ -464,30 +464,30 @@ final class ExtendedEncoder {
                     // Lucene names a repeating source only ORDERED or UNORDERED (its own setName callers).
                     throw new ClassCastException("repeating source name " + n);
                 }
-                return source((IntervalsSource) field(s, "in"), out);
+                return source(cx, (IntervalsSource) field(s, "in"), out);
             }
             case "FilteredIntervalsSource$MaxGaps", "FilteredIntervalsSource$MaxWidth" -> {
                 boolean gaps = name.endsWith("MaxGaps");
                 out.write(6);
                 out.write(gaps ? 0 : 1);
                 writeInt(out, (int) field(s, gaps ? "maxGaps" : "maxWidth"));
-                return source((IntervalsSource) field(s, "in"), out);
+                return source(cx, (IntervalsSource) field(s, "in"), out);
             }
             case "ExtendedIntervalsSource" -> {
                 out.write(7);
                 writeInt(out, (int) field(s, "before"));
                 writeInt(out, (int) field(s, "after"));
-                return source((IntervalsSource) field(s, "source"), out);
+                return source(cx, (IntervalsSource) field(s, "source"), out);
             }
             case "OffsetIntervalsSource" -> {
                 out.write(8);
                 out.write((boolean) field(s, "before") ? 1 : 0);
-                return source((IntervalsSource) field(s, "in"), out);
+                return source(cx, (IntervalsSource) field(s, "in"), out);
             }
             case "FixedFieldIntervalsSource" -> {
                 out.write(9);
                 writeString(out, (String) field(s, "field"));
-                return source((IntervalsSource) field(s, "source"), out);
+                return source(cx, (IntervalsSource) field(s, "source"), out);
             }
             case "NoMatchIntervalsSource" -> {
                 out.write(10);
@@ -495,27 +495,27 @@ final class ExtendedEncoder {
                 return null;
             }
             case "ContainingIntervalsSource" -> {
-                return pair(11, field(s, "big"), field(s, "small"), out);
+                return pair(cx, 11, field(s, "big"), field(s, "small"), out);
             }
             case "ContainedByIntervalsSource" -> {
-                return pair(12, field(s, "small"), field(s, "big"), out);
+                return pair(cx, 12, field(s, "small"), field(s, "big"), out);
             }
             case "NotContainingIntervalsSource" -> {
-                return pair(13, field(s, "minuend"), field(s, "subtrahend"), out);
+                return pair(cx, 13, field(s, "minuend"), field(s, "subtrahend"), out);
             }
             case "NotContainedByIntervalsSource" -> {
-                return pair(14, field(s, "minuend"), field(s, "subtrahend"), out);
+                return pair(cx, 14, field(s, "minuend"), field(s, "subtrahend"), out);
             }
             case "OverlappingIntervalsSource" -> {
-                return pair(15, field(s, "source"), field(s, "reference"), out);
+                return pair(cx, 15, field(s, "source"), field(s, "reference"), out);
             }
             case "NonOverlappingIntervalsSource" -> {
-                return pair(16, field(s, "minuend"), field(s, "subtrahend"), out);
+                return pair(cx, 16, field(s, "minuend"), field(s, "subtrahend"), out);
             }
             case "MinimumShouldMatchIntervalsSource" -> {
                 out.write(17);
                 writeInt(out, (int) field(s, "minShouldMatch"));
-                return sources(List.of((IntervalsSource[]) field(s, "sources")), out);
+                return sources(cx, List.of((IntervalsSource[]) field(s, "sources")), out);
             }
             case "MultiTermIntervalsSource" -> {
                 out.write(18);
@@ -532,16 +532,16 @@ final class ExtendedEncoder {
     /** At most this many copies in a repeating source ({@code MAX_CLAUSE_COUNT} natively). */
     private static final int MAX_REPEATS = 1 << 20;
 
-    private static String pair(int tag, Object a, Object b, ByteArrayOutputStream out) throws ReflectiveOperationException {
+    private static String pair(EncodeContext cx, int tag, Object a, Object b, ByteArrayOutputStream out) throws ReflectiveOperationException {
         out.write(tag);
-        String reason = source((IntervalsSource) a, out);
-        return reason != null ? reason : source((IntervalsSource) b, out);
+        String reason = source(cx, (IntervalsSource) a, out);
+        return reason != null ? reason : source(cx, (IntervalsSource) b, out);
     }
 
-    private static String sources(Collection<IntervalsSource> list, ByteArrayOutputStream out) throws ReflectiveOperationException {
+    private static String sources(EncodeContext cx, Collection<IntervalsSource> list, ByteArrayOutputStream out) throws ReflectiveOperationException {
         writeInt(out, list.size());
         for (IntervalsSource s : list) {
-            String reason = source(s, out);
+            String reason = source(cx, s, out);
             if (reason != null) {
                 return reason;
             }
@@ -732,10 +732,10 @@ final class ExtendedEncoder {
      * knn_vector} space: the sub-query's documents, each scored by the script's distance (0 without
      * a value), times the boost. Other scripts run in Java, as does a {@code hammingbit} over a field without doc values (which fails there).
      */
-    private static String knnScore(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+    private static String knnScore(EncodeContext cx, ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
         Object builder = field(q, "scriptBuilder");
         if ((builder instanceof KnnScoringScriptEngine.KnnLeafFactory) == false) {
-            return painlessKnn(q, out, child);
+            return painlessKnn(cx, q, out, child);
         }
         KnnScoringScriptEngine.Native spec = ((KnnScoringScriptEngine.KnnLeafFactory) builder).nativeSpec();
         if (spec == null) {
@@ -766,51 +766,24 @@ final class ExtendedEncoder {
     }
 
     /**
-     * The field types of the index being searched, for scripts that name a field: set by the
-     * searcher around encoding ({@link #withFieldTypes}); without them such scripts run in Java.
-     */
-    private static final ThreadLocal<Function<String, MappedFieldType>> FIELD_TYPES = new ThreadLocal<>();
-
-    /** Runs {@code encode} with {@code fieldTypes} as the index's field types. */
-    static <T> T withFieldTypes(
-        Function<String, MappedFieldType> fieldTypes,
-        org.opensearch.search.internal.SearchContext ctx,
-        java.util.function.Supplier<T> encode
-    ) {
-        Function<String, MappedFieldType> previous = FIELD_TYPES.get();
-        FIELD_TYPES.set(fieldTypes);
-        ExtendedScripts.set(ExtendedScripts.ENABLED.get(ctx.getQueryShardContext().getIndexSettings().getSettings()));
-        try {
-            return encode.get();
-        } finally {
-            ExtendedScripts.clear();
-            if (previous == null) {
-                FIELD_TYPES.remove();
-            } else {
-                FIELD_TYPES.set(previous);
-            }
-        }
-    }
-
-    /**
      * A Painless {@code script_score} script made of one k-NN Painless function call inside
      * arithmetic ({@link PainlessKnnScript}), as the {@code knn_score} node with the script's
      * formula. Other scripts run in Java.
      */
-    private static String painlessKnn(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+    private static String painlessKnn(EncodeContext cx, ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
         Script script = PainlessScore.inline((Script) field(q, "script"));
         if (field(q, "scriptBuilder") instanceof JsScripts.Leaf js) {
-            return jsScore(q, js, out, child);
+            return jsScore(cx, q, js, out, child);
         }
         if (isExpression(field(q, "scriptBuilder"))) {
-            return expressionScore(q, (ScoreScript.LeafFactory) field(q, "scriptBuilder"), out, child, "script_score_script");
+            return expressionScore(cx, q, (ScoreScript.LeafFactory) field(q, "scriptBuilder"), out, child, "script_score_script");
         }
         if (script == null || "painless".equals(script.getLang()) == false) {
             return FallbackReason.SCRIPT_SCORE_SCRIPT.key();
         }
-        PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), FIELD_TYPES.get());
+        PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), cx.fieldTypes());
         if (c == null) {
-            return painlessScore(q, script, out, child);
+            return painlessScore(cx, q, script, out, child);
         }
         out.write(NODE_KNN_SCORE);
         String reason = child.node((Query) field(q, "subQuery"));
@@ -843,10 +816,10 @@ final class ExtendedEncoder {
      * A Painless {@code script_score} script run by the native Painless runtime: its IR, params,
      * and how each field it names by a constant reads in {@code doc} (node 43).
      */
-    private static String painlessScore(ScriptScoreQuery q, Script script, ByteArrayOutputStream out, Child child)
+    private static String painlessScore(EncodeContext cx, ScriptScoreQuery q, Script script, ByteArrayOutputStream out, Child child)
         throws ReflectiveOperationException {
         ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(q, "scriptBuilder");
-        Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
+        Object prepared = painless(cx, script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -876,15 +849,15 @@ final class ExtendedEncoder {
      * A {@code script} query ({@code ScriptQuery}) with an inline Painless script run by the
      * native runtime: node 45, its script's spec. Other scripts run in Java.
      */
-    private static String painlessFilter(Query q, ByteArrayOutputStream out) throws ReflectiveOperationException {
+    private static String painlessFilter(EncodeContext cx, Query q, ByteArrayOutputStream out) throws ReflectiveOperationException {
         Script script = PainlessScore.inline((Script) field(q, "script"));
         if (field(q, "filterScript") instanceof JsScripts.Leaf js) {
-            Object prepared = js(js, PainlessScore.FILTER, "script_query");
+            Object prepared = js(cx, js, PainlessScore.FILTER, "script_query");
             if (prepared instanceof String reason) {
                 return reason;
             }
             out.write(NODE_PAINLESS_FILTER);
-            jsSpec(out, (Js) prepared, "", 0);
+            jsSpec(cx, out, (Js) prepared, "", 0);
             return null;
         }
         Object wrapped = wrappedExpression(field(q, "filterScript"));
@@ -893,7 +866,7 @@ final class ExtendedEncoder {
                 return FallbackReason.SCRIPT_QUERY_SCRIPT.key();
             }
             ByteArrayOutputStream spec = new ByteArrayOutputStream();
-            String why = expressionSpec(wrapped, PainlessScore.FILTER, "", 0, spec, "script_query_script");
+            String why = expressionSpec(cx, wrapped, PainlessScore.FILTER, "", 0, spec, "script_query_script");
             if (why != null) {
                 return why;
             }
@@ -904,7 +877,7 @@ final class ExtendedEncoder {
         if (script == null || "painless".equals(script.getLang()) == false) {
             return FallbackReason.SCRIPT_QUERY_SCRIPT.key();
         }
-        Object prepared = painless(script, PainlessScore.FILTER, "script_query");
+        Object prepared = painless(cx, script, PainlessScore.FILTER, "script_query");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -919,16 +892,16 @@ final class ExtendedEncoder {
      * runtime runs it: its spec (context {@link PainlessScore#SORT}, or {@link
      * PainlessScore#SORT_WITH_SCORE} for a script reading {@code _score}), or why it stays in Java.
      */
-    static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
+    static String painlessSort(EncodeContext cx, NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
         byte context = factory.needs_score() ? PainlessScore.SORT_WITH_SCORE : PainlessScore.SORT;
         if (factory instanceof JsScripts.Leaf js) {
-            return jsSpec(out, js, context, "sort_script");
+            return jsSpec(cx, out, js, context, "sort_script");
         }
         if (isExpression(factory)) {
-            return expressionSpec(factory, context, "", 0, out, "sort_script");
+            return expressionSpec(cx, factory, context, "", 0, out, "sort_script");
         }
         if (isExpression(factory)) {
-            return expressionSpec(factory, PainlessScore.SORT, "", 0, out, "sort_script");
+            return expressionSpec(cx, factory, PainlessScore.SORT, "", 0, out, "sort_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -939,7 +912,7 @@ final class ExtendedEncoder {
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
             return FallbackReason.SORT_SCRIPT_OPTIONS.key();
         }
-        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), context, "sort_script");
+        Object prepared = painless(cx, new Script(ScriptType.INLINE, "painless", (String) sp[0], params), context, "sort_script");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -952,15 +925,15 @@ final class ExtendedEncoder {
      * (context {@link PainlessScore#AGGREGATION}), or why it stays in Java. A script reading
      * {@code _score} stays in Java.
      */
-    static String painlessAggregation(AggregationScript.LeafFactory factory, ByteArrayOutputStream out) {
+    static String painlessAggregation(EncodeContext cx, AggregationScript.LeafFactory factory, ByteArrayOutputStream out) {
         if (factory == null || factory.needs_score()) {
             return FallbackReason.AGGREGATION_SCRIPT_SCORE.key();
         }
         if (factory instanceof JsScripts.Leaf js) {
-            return jsSpec(out, js, PainlessScore.AGGREGATION, "aggregation_script");
+            return jsSpec(cx, out, js, PainlessScore.AGGREGATION, "aggregation_script");
         }
         if (isExpression(factory)) {
-            return expressionSpec(factory, PainlessScore.AGGREGATION, "", 0, out, "aggregation_script");
+            return expressionSpec(cx, factory, PainlessScore.AGGREGATION, "", 0, out, "aggregation_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -971,7 +944,7 @@ final class ExtendedEncoder {
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
             return FallbackReason.AGGREGATION_SCRIPT_OPTIONS.key();
         }
-        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
+        Object prepared = painless(cx, new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -984,12 +957,12 @@ final class ExtendedEncoder {
      * the native runtime runs it: its spec (context {@link PainlessScore#TERMS_SET}), or why it
      * stays in Java.
      */
-    static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
+    static String painlessTermsSet(EncodeContext cx, TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
         if (factory instanceof JsScripts.Leaf js) {
-            return jsSpec(out, js, PainlessScore.TERMS_SET, "covering");
+            return jsSpec(cx, out, js, PainlessScore.TERMS_SET, "covering");
         }
         if (isExpression(factory)) {
-            return expressionSpec(factory, PainlessScore.TERMS_SET, "", 0, out, "covering_script");
+            return expressionSpec(cx, factory, PainlessScore.TERMS_SET, "", 0, out, "covering_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -1000,7 +973,7 @@ final class ExtendedEncoder {
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
             return FallbackReason.COVERING_OPTIONS.key();
         }
-        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
+        Object prepared = painless(cx, new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -1012,7 +985,7 @@ final class ExtendedEncoder {
      * An {@code intervals} query's script filter, as the native runtime runs it: its spec (context
      * {@link PainlessScore#INTERVAL}), or why it stays in Java.
      */
-    private static String painlessInterval(IntervalFilterScript script, ByteArrayOutputStream out) {
+    private static String painlessInterval(EncodeContext cx, IntervalFilterScript script, ByteArrayOutputStream out) {
         String source = PainlessScore.sourceOf(script);
         if (source == null) {
             return FallbackReason.INTERVAL_SCRIPT.key();
@@ -1020,7 +993,7 @@ final class ExtendedEncoder {
         if (PainlessScore.compiledWithDefaults(source) == false) {
             return FallbackReason.INTERVAL_OPTIONS.key();
         }
-        Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
+        Object prepared = painless(cx, new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -1125,8 +1098,8 @@ final class ExtendedEncoder {
      * PainlessScore#SCORE_WITH_SCORE} or {@link PainlessScore#FILTER}) as the native runtime runs
      * it: a {@link Painless}, or why it stays in Java ({@code reason} and why).
      */
-    private static Object painless(Script script, byte context, String reason) {
-        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+    private static Object painless(EncodeContext cx, Script script, byte context, String reason) {
+        Function<String, MappedFieldType> types = cx.fieldTypes();
         if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
             return reason + "_script";
         }
@@ -1155,13 +1128,13 @@ final class ExtendedEncoder {
             MappedFieldType ft = types.apply(compiled.docFields().get(i));
             kinds[i] = PainlessScore.fieldKind(ft);
             names[i] = ft == null ? compiled.docFields().get(i) : ft.name();
-            if ((kinds[i] == PainlessScore.DATE || kinds[i] == PainlessScore.DATE_NANOS) && ExtendedScripts.on() == false) {
+            if ((kinds[i] == PainlessScore.DATE || kinds[i] == PainlessScore.DATE_NANOS) && cx.extendedScripts() == false) {
                 // Dates reach the script as ZonedDateTime through `def` calls: 2 to 5 times slower than
                 // OpenSearch's own Painless on a whole-index scan.
                 return FallbackReason.SCRIPT_DATE_VALUES.key();
             }
         }
-        if (context == PainlessScore.SORT_WITH_SCORE && ExtendedScripts.on() == false) {
+        if (context == PainlessScore.SORT_WITH_SCORE && cx.extendedScripts() == false) {
             // A sort script that reads the score is evaluated one hit at a time through the interpreter:
             // 1.5 to 2 times slower than OpenSearch's own compiled Painless.
             return FallbackReason.SCRIPT_SORT_SCORE.key();
@@ -1201,9 +1174,9 @@ final class ExtendedEncoder {
      * A {@code js} {@code script_score} query as node 43: its sub-query, then its script. A
      * search the native runtime does not run fails before the script runs ({@link JsScripts}).
      */
-    private static String jsScore(ScriptScoreQuery q, JsScripts.Leaf js, ByteArrayOutputStream out, Child child)
+    private static String jsScore(EncodeContext cx, ScriptScoreQuery q, JsScripts.Leaf js, ByteArrayOutputStream out, Child child)
         throws ReflectiveOperationException {
-        Object prepared = js(js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
+        Object prepared = js(cx, js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -1213,17 +1186,17 @@ final class ExtendedEncoder {
             return reason;
         }
         String index = (String) field(q, "indexName");
-        jsSpec(out, (Js) prepared, index == null ? "" : index, (int) field(q, "shardId"));
+        jsSpec(cx, out, (Js) prepared, index == null ? "" : index, (int) field(q, "shardId"));
         return null;
     }
 
     /** {@code js} in {@code context} written to {@code out}, or why not ({@code reason} and why). */
-    private static String jsSpec(ByteArrayOutputStream out, JsScripts.Leaf js, byte context, String reason) {
-        Object prepared = js(js, context, reason);
+    private static String jsSpec(EncodeContext cx, ByteArrayOutputStream out, JsScripts.Leaf js, byte context, String reason) {
+        Object prepared = js(cx, js, context, reason);
         if (prepared instanceof String why) {
             return why;
         }
-        jsSpec(out, (Js) prepared, "", 0);
+        jsSpec(cx, out, (Js) prepared, "", 0);
         return null;
     }
 
@@ -1231,8 +1204,8 @@ final class ExtendedEncoder {
      * {@code js} in {@code context} as the native runtime runs it: a {@link Js} with the fields
      * its source names that the mapping has, or why not.
      */
-    private static Object js(JsScripts.Leaf js, byte context, String reason) {
-        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+    private static Object js(EncodeContext cx, JsScripts.Leaf js, byte context, String reason) {
+        Function<String, MappedFieldType> types = cx.fieldTypes();
         if (types == null) {
             return reason + "_script";
         }
@@ -1267,7 +1240,7 @@ final class ExtendedEncoder {
     }
 
     /** A js script's node fields, after any sub-query, registered as this request's next run. */
-    private static void jsSpec(ByteArrayOutputStream out, Js js, String index, int shard) {
+    private static void jsSpec(EncodeContext cx, ByteArrayOutputStream out, Js js, String index, int shard) {
         int run = PainlessScore.runJs(js.source());
         JsScripts.writeSpec(out, js.context(), js.source(), js.params(), js.names(), js.reads(), js.kinds(), index, shard, run);
     }
@@ -1318,12 +1291,12 @@ final class ExtendedEncoder {
      * out}: its source, the fields its variables read, and what each variable is. Returns null, or
      * {@code reason} when the script binds a variable the native runtime does not read.
      */
-    private static String expressionSpec(Object factory, byte context, String index, int shard, ByteArrayOutputStream out, String reason) {
-        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+    private static String expressionSpec(EncodeContext cx, Object factory, byte context, String index, int shard, ByteArrayOutputStream out, String reason) {
+        Function<String, MappedFieldType> types = cx.fieldTypes();
         if (types == null) {
             return reason;
         }
-        if (context != PainlessScore.AGGREGATION && context != PainlessScore.TERMS_SET && ExtendedScripts.on() == false) {
+        if (context != PainlessScore.AGGREGATION && context != PainlessScore.TERMS_SET && cx.extendedScripts() == false) {
             // One value read per document costs more here than in Lucene's expression engine.
             return FallbackReason.SCRIPT_EXPRESSION_PER_DOCUMENT.key();
         }
@@ -1461,10 +1434,10 @@ final class ExtendedEncoder {
     }
 
     /** A {@code script_score} query's expression as node 43: its sub-query, then its spec. */
-    private static String expressionScore(ScriptScoreQuery q, ScoreScript.LeafFactory factory, ByteArrayOutputStream out, Child child, String reason)
+    private static String expressionScore(EncodeContext cx, ScriptScoreQuery q, ScoreScript.LeafFactory factory, ByteArrayOutputStream out, Child child, String reason)
         throws ReflectiveOperationException {
         ByteArrayOutputStream spec = new ByteArrayOutputStream();
-        String why = expressionSpec(
+        String why = expressionSpec(cx, 
             factory, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE,
             (String) field(q, "indexName"), (int) field(q, "shardId"), spec, reason
         );
@@ -1484,7 +1457,7 @@ final class ExtendedEncoder {
     // function_score
     // ---------------------------------------------------------------------------------------------
 
-    private static String functionScore(
+    private static String functionScore(EncodeContext cx, 
         FunctionScoreQuery q,
         ByteArrayOutputStream out,
         Predicate<String> fieldOk,
@@ -1523,7 +1496,7 @@ final class ExtendedEncoder {
             } else {
                 out.write(0);
             }
-            reason = function(f, out, true);
+            reason = function(cx, f, out, true);
             if (reason != null) {
                 return reason;
             }
@@ -1533,12 +1506,12 @@ final class ExtendedEncoder {
 
     private static final String FUNCTIONS = "org.opensearch.index.query.functionscore.";
 
-    private static String function(ScoreFunction f, ByteArrayOutputStream out, boolean outer) throws ReflectiveOperationException {
+    private static String function(EncodeContext cx, ScoreFunction f, ByteArrayOutputStream out, boolean outer) throws ReflectiveOperationException {
         if (f instanceof WeightFactorFunction w && outer) {
             ScoreFunction inner = w.getScoreFunction();
             out.write(1);
             writeInt(out, Float.floatToIntBits(w.getWeight()));
-            return function(inner, out, false);
+            return function(cx, inner, out, false);
         }
         String name = f.getClass().getName();
         if (name.equals(WeightFactorFunction.class.getName() + "$ScoreOne")) {
@@ -1575,7 +1548,7 @@ final class ExtendedEncoder {
             String dataClass = data.getClass().getName();
             byte[] numeric = null;
             if (dataClass.equals("org.opensearch.index.mapper.IdFieldMapper$IdFieldType$1$1")) {
-                if (ExtendedScripts.on() == false) {
+                if (cx.extendedScripts() == false) {
                     // The stored `_id` of every scored document is decompressed: twice stock's time.
                     return FallbackReason.RANDOM_SCORE_ID.key();
                 }
@@ -1640,17 +1613,17 @@ final class ExtendedEncoder {
             Script script = PainlessScore.inline((Script) field(f, "sScript"));
             ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(f, "script");
             if (factory instanceof JsScripts.Leaf js) {
-                Object prepared = js(js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
+                Object prepared = js(cx, js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
                 if (prepared instanceof String) {
                     return FallbackReason.FUNCTION_SCORE_SCRIPT.key();
                 }
                 out.write(5);
-                jsSpec(out, (Js) prepared, (String) field(f, "indexName"), (int) field(f, "shardId"));
+                jsSpec(cx, out, (Js) prepared, (String) field(f, "indexName"), (int) field(f, "shardId"));
                 return null;
             }
             if (isExpression(factory)) {
                 ByteArrayOutputStream spec = new ByteArrayOutputStream();
-                String why = expressionSpec(
+                String why = expressionSpec(cx, 
                     factory, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE,
                     (String) field(f, "indexName"), (int) field(f, "shardId"), spec, "function_score_script"
                 );
@@ -1664,7 +1637,7 @@ final class ExtendedEncoder {
             if (script == null || "painless".equals(script.getLang()) == false) {
                 return FallbackReason.FUNCTION_SCORE_SCRIPT.key();
             }
-            Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
+            Object prepared = painless(cx, script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
             if (prepared instanceof String why) {
                 return FallbackReason.SCRIPT_DATE_VALUES.key().equals(why) ? why : FallbackReason.FUNCTION_SCORE_SCRIPT.key();
             }

@@ -18,20 +18,5 @@ public final class ExtendedScripts {
         Setting.Property.Dynamic
     );
 
-    private static final ThreadLocal<Boolean> ON = ThreadLocal.withInitial(() -> Boolean.FALSE);
-
     private ExtendedScripts() {}
-
-    /** Whether the request being encoded may use the shapes of {@code index.script.accelerated_extended}. */
-    static boolean on() {
-        return ON.get();
-    }
-
-    static void set(boolean on) {
-        ON.set(on);
-    }
-
-    static void clear() {
-        ON.remove();
-    }
 }

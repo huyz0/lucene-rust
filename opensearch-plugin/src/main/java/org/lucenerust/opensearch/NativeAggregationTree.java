@@ -889,7 +889,7 @@ public final class NativeAggregationTree {
 
     /** A block join's filter (a nested path's type filter, or the non-nested one), or null. */
     private static byte[] joinBlob(SearchContext ctx, Query q) throws java.io.IOException {
-        return q == null ? null : QueryEncoder.encode(ctx.searcher().rewrite(q), field -> true).blob();
+        return q == null ? null : QueryEncoder.encode(ctx.searcher().rewrite(q), field -> true, EncodeContext.of(ctx)).blob();
     }
 
     /** {@code nested} ({@code children} set) or {@code reverse_nested}: one bucket per owner. */
@@ -1172,7 +1172,7 @@ public final class NativeAggregationTree {
             return null;
         }
         ByteArrayOutputStream script = new ByteArrayOutputStream();
-        if (ExtendedEncoder.painlessAggregation(config.script(), script) != null) {
+        if (ExtendedEncoder.painlessAggregation(EncodeContext.of(ctx), config.script(), script) != null) {
             return null;
         }
         Node n;
@@ -1285,7 +1285,7 @@ public final class NativeAggregationTree {
             }
         }
         ByteArrayOutputStream spec = new ByteArrayOutputStream();
-        if (ExtendedEncoder.painlessAggregation(config.script(), spec) != null) {
+        if (ExtendedEncoder.painlessAggregation(EncodeContext.of(ctx), config.script(), spec) != null) {
             return null;
         }
         n.script = spec.toByteArray();
@@ -1312,7 +1312,7 @@ public final class NativeAggregationTree {
             case AGGS + "bucket.global.GlobalAggregatorFactory":
                 return top ? new GlobalNode(agg, subs) : null;
             case AGGS + "metrics.TopHitsAggregatorFactory":
-                return NativeTopHits.node(agg);
+                return NativeTopHits.node(EncodeContext.of(ctx), agg);
             case AGGS + "bucket.nested.NestedAggregatorFactory": {
                 // NestedAggregator itself (not the unmapped one), its parent filter the bitset
                 // producer's query; nothing below reads a score (Java hands a child its parent's).
@@ -1707,7 +1707,7 @@ public final class NativeAggregationTree {
         if (q == null) {
             return null;
         }
-        return QueryEncoder.encode(ctx.searcher().rewrite(q), fieldOk).blob();
+        return QueryEncoder.encode(ctx.searcher().rewrite(q), fieldOk, EncodeContext.of(ctx)).blob();
     }
 
     // ---- reflection ----

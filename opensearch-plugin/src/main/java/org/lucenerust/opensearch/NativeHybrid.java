@@ -332,10 +332,10 @@ final class NativeHybrid {
     /** The blob of each sub-query, or the reason one cannot be encoded. */
     record Encoded(List<byte[]> blobs, String fallbackReason) {}
 
-    static Encoded encode(HybridQuery query, SimilarityEncoder similarities, ContextIndexSearcher searcher, boolean allShapes) {
+    static Encoded encode(HybridQuery query, SimilarityEncoder similarities, ContextIndexSearcher searcher, boolean allShapes, EncodeContext cx) {
         List<byte[]> blobs = new ArrayList<>();
         for (Query sub : query.getSubQueries()) {
-            QueryEncoder.Encoded enc = QueryEncoder.encode(sub, similarities, searcher.getTopReaderContext());
+            QueryEncoder.Encoded enc = QueryEncoder.encode(sub, similarities, cx);
             if (enc.fallbackReason() != null) {
                 return new Encoded(null, enc.fallbackReason());
             }
