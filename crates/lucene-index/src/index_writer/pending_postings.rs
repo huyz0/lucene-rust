@@ -1397,8 +1397,7 @@ impl FieldRuns {
     }
 
     /// `document`'s occurrences of `id`, as [`InvertedField`] holds them:
-    /// what tests read back after inverting a document.
-    #[cfg(test)]
+    /// what tests and the detached inversion read back.
     fn doc_term(&self, id: u32, doc: i32) -> Option<super::explicit::InvertedTerm> {
         let mut cols = Columns::default();
         self.decode(id, &mut cols).ok()?;
@@ -1735,7 +1734,6 @@ impl PendingPostings {
     }
 
     /// Field `number`'s terms of document `doc`, in no particular order.
-    #[cfg(test)]
     pub(crate) fn doc_terms(&self, number: i32, doc: i32) -> Vec<super::explicit::InvertedTerm> {
         self.fields.get(&number).map_or_else(Vec::new, |f| {
             (0..f.runs.len() as u32)

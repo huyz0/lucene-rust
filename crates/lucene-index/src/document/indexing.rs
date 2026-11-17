@@ -1013,6 +1013,38 @@ impl IndexWriter<'_> {
         Ok((explicit, vectors))
     }
 
+    /// Inverts `docs` as [`IndexWriter::add_fields_documents`] would -- the
+    /// same field registration, analysis and validation -- but returns each
+    /// document with its terms in hand instead of leaving them buffered in
+    /// this writer: the postings are read back out and the buffer rolled
+    /// back, so the writer holds nothing of the block afterwards. For a
+    /// caller that buffers the documents elsewhere
+    /// ([`ConcurrentIndexWriter::update_fields_documents`](crate::concurrent_writer::ConcurrentIndexWriter::update_fields_documents)).
+    pub(crate) fn invert_fields_documents_detached(
+        &mut self,
+        docs: &[Document],
+    ) -> Result<(Vec<ExplicitDocument>, Vec<Vec<DocumentVector>>)> {
+        self.enable_explicit_documents()?;
+        let base = self.pending_doc_id_upto();
+        let checkpoint = self.pending_postings.checkpoint(base);
+        let inverted = self.invert_fields_block(docs, Vec::new());
+        let out = inverted.map(|(mut explicit, vectors)| {
+            let mut doc_id = base;
+            for e in &mut explicit {
+                for inv in &mut e.fields.inverted {
+                    inv.terms = self
+                        .pending_postings
+                        .doc_terms(inv.field_number, doc_id)
+                        .into();
+                }
+                doc_id = doc_id.saturating_add(1);
+            }
+            (explicit, vectors)
+        });
+        self.pending_postings.rollback(checkpoint);
+        out
+    }
+
     /// `updateDocFieldSchema` over `types` (one field instance each, in
     /// order), then `initializeFieldInfo` for each name in first-appearance
     /// order: the schemas and their global numbers.

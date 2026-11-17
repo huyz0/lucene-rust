@@ -977,6 +977,37 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.add(Some(DeleteNode::terms(vec![term])), vec![doc])
     }
 
+    /// `IndexWriter.addDocuments(Iterable<Iterable<IndexableField>>)`: `docs`
+    /// as one block of rich documents ([`IndexWriter::add_fields_documents`]),
+    /// buffered in a slot and flushed, snapshotted and committed with the
+    /// documents of every other add. The block is inverted on the control
+    /// plane under its lock, so field registration and analysis are the
+    /// wrapped writer's; the terms are then buffered by the slot.
+    pub fn add_fields_documents(&self, docs: &[crate::document::Document]) -> Result<SeqNo> {
+        self.add_fields(None, docs)
+    }
+
+    /// `IndexWriter.updateDocuments(term, docs)` for rich documents
+    /// ([`IndexWriter::update_fields_documents`]): every document matching
+    /// `term` added before this call is deleted, and `docs` are added as one
+    /// block, atomically.
+    pub fn update_fields_documents(
+        &self,
+        term: Term,
+        docs: &[crate::document::Document],
+    ) -> Result<SeqNo> {
+        self.add_fields(Some(DeleteNode::terms(vec![term])), docs)
+    }
+
+    fn add_fields(
+        &self,
+        delete: Option<DeleteNode>,
+        docs: &[crate::document::Document],
+    ) -> Result<SeqNo> {
+        let (explicit, vectors) = self.with_writer(|w| w.invert_fields_documents_detached(docs))?;
+        self.add_explicit(None, delete, explicit, Some(vectors))
+    }
+
     /// `IndexWriter.deleteDocuments(Term...)`.
     pub fn delete_documents_by_term(&self, terms: &[Term]) -> Result<SeqNo> {
         self.buffer_delete(DeleteNode::terms(terms.to_vec()))
@@ -2884,6 +2915,9 @@ impl Drop for RetireGraphs<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod fields_tests;
 
 #[cfg(test)]
 mod partition_tests;
