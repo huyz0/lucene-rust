@@ -4,3 +4,9 @@ hnsw_plain_l2	HNSW8	l2	24	1500	10	efSearch=48
 ivf_idmap_l2	IDMap,IVF16,Flat	l2	24	1500	10	nprobe=6
 ivf_idmap_ip	IDMap,IVF16,Flat	ip	24	1500	10	nprobe=6
 flat_idmap_l2	IDMap,Flat	l2	24	1500	10	
+sq8_idmap_l2	IDMap,SQ8	l2	24	1500	10	
+sq8_idmap_ip	IDMap,SQ8	ip	24	1500	10	
+ivfsq8_idmap_l2	IDMap,IVF16,SQ8	l2	24	1500	10	nprobe=6
+ivfsq8_idmap_ip	IDMap,IVF16,SQ8	ip	24	1500	10	nprobe=6
+hnswsq8_idmap_l2	IDMap,HNSW8,SQ8	l2	24	1500	10	efSearch=48
+hnswsq8_idmap_ip	IDMap,HNSW8,SQ8	ip	24	1500	10	efSearch=48

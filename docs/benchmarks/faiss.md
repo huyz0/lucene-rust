@@ -89,3 +89,33 @@ IVF-flat build 26 s → 9.5 s (python Faiss 7.5 s, BLAS), same recall. Our own I
 `full_assign` for the same GEMM was measured (390k x 100, 1693 clusters, 10 full
 rounds): 13.8 s vs 13.1 s with identical recall, about 5% on a non-default setting,
 so it was not adopted.
+
+## SQ8 storage (2026-11-18)
+
+`IDMap,SQ8`, `IDMap,IVF<n>,SQ8` (residual codes, as Faiss builds them) and
+`IDMap,HNSW<M>,SQ8` are read, written, searched and built: one byte per component
+between a per-dimension minimum and range (`QT_8bit`). The six fixtures made by
+real Faiss 1.16 (L2 and inner product) read and write back byte for byte, and
+searches return Faiss's ranked ids and distances, plain and filtered; indexes built
+here open and search in real Faiss (`scripts/verify-faiss-read.py`). Other
+quantizers (`SQ4`, `SQfp16`, PQ) are refused by name. Decoding follows Faiss's
+vector kernels (multiply by 1/255, fused multiply-add), and a code is scored
+directly, without decoding to a temporary vector.
+
+glove100, 390k x 100, one thread, three-run medians; python Faiss 1.16 in the same window:
+
+| index | setting | recall@10 | latency µs | python Faiss | size MB |
+|---|---|---|---|---|---|
+| native IVF-flat | nprobe 64 | 0.974 | 990 | 1102 | 163 |
+| native IVF-SQ8 | nprobe 16 | 0.871 | 389 | 1021 | 45.7 |
+| native IVF-SQ8 | nprobe 32 | 0.924 | 837 | 2193 | 45.7 |
+| native IVF-SQ8 | nprobe 64 | 0.953 | 1388 | 4245 | 45.7 (Faiss 42.5) |
+| native HNSW-flat | ef 128 | 0.933 | 233 | 288 | 215 |
+| native HNSW-SQ8 | ef 64 | 0.866 | 146 | 388 (recall 0.844) | 98.4 |
+| native HNSW-SQ8 | ef 128 | 0.916 | 272 | 636 (0.893) | 98.4 (Faiss 95.3) |
+| native HNSW-SQ8 | ef 256 | 0.943 | 546 | 1091 (0.928) | 98.4 |
+
+Build: IVF-SQ8 8.9 s (python Faiss 9.3 s), HNSW-SQ8 57.8 s (python 57.0 s). Against flat
+storage SQ8 is 3.6x (IVF) and 2.2x (HNSW) smaller at 0.02 lower recall; IVF-SQ8 costs
+1.4x the flat scan time (decoding), HNSW-SQ8 about 1.2x. Serialization itself was not
+the cost: 1.0-1.7 GB/s, 0.1-0.2 s for a 160 MB index.

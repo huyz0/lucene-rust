@@ -121,7 +121,7 @@ fn unsupported_descriptions_are_refused_with_the_supported_list() {
         "PQ8",
         "IDMap,IVF16,PQ4",
         "IDMap2,Flat",
-        "HNSW16,SQ8",
+        "IDMap,HNSW16,SQ4",
         "OPQ16,IVF4,Flat",
         "",
         "IVF0,Flat",

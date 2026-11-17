@@ -26,11 +26,17 @@ mod kmeans;
 // ARITH: ids and list positions come from an index `read_index` validated (sizes against the remaining bytes, ids against `ntotal`); loops run over those bounds.
 #[allow(clippy::arithmetic_side_effects)]
 pub mod search;
+// ARITH: loops run over the `d` components of a quantizer whose vectors have `d` entries (checked on read and in `search`); `c * 8 + i` is below `d`.
+#[allow(clippy::arithmetic_side_effects)]
+mod sq;
+// ARITH: `i * d` indexes a store whose code or float array holds `len * d` entries, with `i < len` from the validated graph.
+#[allow(clippy::arithmetic_side_effects)]
+mod store;
 mod visited;
 
 pub use build::build_index;
 pub use error::{Error, Result};
 pub use factory::{parse_description, parse_params, Description, IndexParams, Kind};
 pub use field::{FaissField, Similarity};
-pub use format::{read_index, write_index, Index, Metric};
+pub use format::{read_index, write_index, Index, Metric, Sq8};
 pub use search::{SearchParams, Selector};
