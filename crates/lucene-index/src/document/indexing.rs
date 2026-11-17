@@ -1013,6 +1013,53 @@ impl IndexWriter<'_> {
         Ok((explicit, vectors))
     }
 
+    /// Inverts `docs` as [`IndexWriter::add_fields_documents`] would -- the
+    /// same field registration, analysis and validation -- but returns each
+    /// document with its terms in hand instead of leaving them buffered in
+    /// this writer: the postings are read back out and the buffer rolled
+    /// back, so the writer holds nothing of the block afterwards. For a
+    /// caller that buffers the documents elsewhere
+    /// ([`ConcurrentIndexWriter::update_fields_documents`](crate::concurrent_writer::ConcurrentIndexWriter::update_fields_documents)).
+    pub(crate) fn invert_fields_documents_detached(
+        &mut self,
+        docs: &[Document],
+    ) -> Result<(Vec<ExplicitDocument>, Vec<Vec<DocumentVector>>)> {
+        self.enable_explicit_documents()?;
+        let base = self.pending_doc_id_upto();
+        let checkpoint = self.pending_postings.checkpoint(base);
+        let inverted = self.invert_fields_block(docs, Vec::new());
+        let out = inverted.and_then(|(mut explicit, vectors)| {
+            // Every field's terms for the whole block, each decoded once.
+            let mut fields: Vec<i32> = explicit
+                .iter()
+                .flat_map(|e| e.fields.inverted.iter().map(|inv| inv.field_number))
+                .collect();
+            fields.sort_unstable();
+            fields.dedup();
+            for number in fields {
+                let mut terms = vec![Vec::new(); explicit.len()];
+                self.pending_postings
+                    .block_terms(number, base, &mut terms)?;
+                for (e, terms) in explicit.iter_mut().zip(terms) {
+                    // A document's repeated instances of a field share the
+                    // field's terms: the first instance carries them.
+                    let mut terms = Some(terms);
+                    for inv in e
+                        .fields
+                        .inverted
+                        .iter_mut()
+                        .filter(|inv| inv.field_number == number)
+                    {
+                        inv.terms = terms.take().unwrap_or_default().into();
+                    }
+                }
+            }
+            Ok((explicit, vectors))
+        });
+        self.pending_postings.rollback(checkpoint);
+        out
+    }
+
     /// `updateDocFieldSchema` over `types` (one field instance each, in
     /// order), then `initializeFieldInfo` for each name in first-appearance
     /// order: the schemas and their global numbers.
