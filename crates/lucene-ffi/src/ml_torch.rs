@@ -182,7 +182,7 @@ pub(crate) fn init(dir: &Path, shims: &[&Path], threads: u32) -> Result<()> {
         // SAFETY: the shim is the plugin's own library; RTLD_NOW refuses it
         // here when the loaded libtorch lacks a symbol it needs (the other
         // C++ string ABI).
-        match unsafe { Library::open(Some(path), RTLD_NOW | RTLD_LOCAL) } {
+        match unsafe { Library::open(Some(*path), RTLD_NOW | RTLD_LOCAL) } {
             Ok(library) => {
                 shim = Some(library);
                 break;
