@@ -225,7 +225,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             stats.nativeTime(System.nanoTime() - nativeStart);
             return false;
         }
-        if ("native_error".equals(why) && scriptFailed()) {
+        if (FallbackReason.NATIVE_ERROR.key().equals(why) && scriptFailed()) {
             throw scriptFailure(searcher.getIndexReader(), false);
         }
         stats.fallback(why);
@@ -262,7 +262,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             ? null
             : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, ctx, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
-        if (reason == null || "search_after".equals(reason)) {
+        if (reason == null || FallbackReason.SEARCH_AFTER.key().equals(reason)) {
             // A request Lucene's collector refuses: its error, as QueryPhase raises it.
             RuntimeException refused = SortEncoder.searchAfterRefusal(ctx.sort() == null ? null : ctx.sort().sort, ctx.searchAfter(), ctx.size(), searcher.getIndexReader());
             if (refused != null) {
@@ -295,7 +295,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
             if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
-                reason = "approximate";
+                reason = FallbackReason.APPROXIMATE.key();
             }
             if (reason == null && postFilter != null) {
                 Query filteredQuery = postFiltered(query, postFilter);
@@ -308,7 +308,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 fast = fast && filtered.fast();
             }
             if (reason == null && fast == false && flags(ctx).allShapes() == false) {
-                reason = "slower_shape";
+                reason = FallbackReason.SLOWER_SHAPE.key();
             }
             // min_score: OpenSearch's MinimumScoreCollector sits outside every other collector,
             // aggregations included, so every blob carries it.
@@ -336,7 +336,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Not over buffered documents: the approximation walks the reader's points alone, where
         // they have none, so only the native engine finds them.
         if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
-            reason = "approximate";
+            reason = FallbackReason.APPROXIMATE.key();
         }
         // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
         // order to keep, and runs as the unsorted count it is).
@@ -358,7 +358,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (last instanceof FieldDoc fd) {
                 after = fd;
             } else {
-                reason = "scroll_after";
+                reason = FallbackReason.SCROLL_AFTER.key();
             }
         }
         // terminate_after runs on the sorted search, which takes the cut
@@ -379,7 +379,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int[][] slices = NativeAggregations.slices(ctx);
             Sort collapseSort = NativeCollapse.sort(ctx);
             boolean trackMaxScore = ctx.trackScores() && NativeCollapse.sortByScore(ctx) == false;
-            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
+            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, FallbackReason.INTRA_SEGMENT.key())
                 : SortEncoder.encode(collapseSort, after, trackMaxScore, slices, terminateAfter, false, null);
             reason = sorted.fallbackReason();
             sortBlob = sorted.blob();
@@ -400,7 +400,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             boolean counts = countSegments(ctx, terminateAfter);
             int limit = terminateAfter;
             // A script key's script reads fields by the index's mappings.
-            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
+            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, FallbackReason.INTRA_SEGMENT.key())
                 : ExtendedEncoder.withFieldTypes(
                     ctx.mapperService()::fieldType, ctx,
                     () -> SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted)
@@ -420,9 +420,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // A timeout already past: Lucene would skip every segment and answer nothing, timed
             // out -- which is what its own path does fastest.
             if (ctx.isCancelled()) {
-                reason = "cancelled";
+                reason = FallbackReason.CANCELLED.key();
             } else if (hasTimeout && deadlinePassed(ctx)) {
-                reason = "timeout";
+                reason = FallbackReason.TIMEOUT.key();
             } else {
                 // What the native calls allocate is charged to the request breaker while they run.
                 NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_search");
@@ -437,7 +437,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                         reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
                     } else if (liveIneligible(ctx) != null) {
                         // Lucene sees the view's documents as deleted and answers from the reader's.
-                        reason = "realtime_view";
+                        reason = FallbackReason.REALTIME_VIEW.key();
                     } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
                         // A k-NN search's hits, found when the query was rewritten: nothing of the
                         // buffers is read again.
@@ -470,7 +470,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                         if (rc != NativeBridge.OK) {
                             NativeMemory.check(rc);
                             logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
-                            reason = "realtime_view";
+                            reason = FallbackReason.REALTIME_VIEW.key();
                         } else {
                             searchedHandle[0] = whole[0];
                             reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
@@ -499,7 +499,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // A native search that ran a Painless script fails as the script did: running it again in
         // Java would run the script twice.
-        if ("native_error".equals(reason) && scriptFailed()) {
+        if (FallbackReason.NATIVE_ERROR.key().equals(reason) && scriptFailed()) {
             throw scriptFailure(searcher.getIndexReader(), true);
         }
         stats.fallback(reason);
@@ -785,7 +785,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        if (flags(ctx).enabled() == false) return "disabled";
+        if (flags(ctx).enabled() == false) return FallbackReason.DISABLED.key();
         // The aggregations as the plain path plans them; they run over the documents the hybrid
         // collection counted.
         long searchStart = System.nanoTime();
@@ -799,13 +799,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuery(hybrid);
         int[][] slices = NativeAggregations.slices(ctx);
-        if (slices == null) return "intra_segment";
-        if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return "realtime_view";
+        if (slices == null) return FallbackReason.INTRA_SEGMENT.key();
+        if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return FallbackReason.REALTIME_VIEW.key();
         SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
         // The post filter is rewritten as QueryPhase rewrites it; an approximate range in it matches
         // only the first documents it visits, which the native engine would not reproduce.
         Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
-        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return "approximate";
+        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return FallbackReason.APPROXIMATE.key();
         NativeHybrid.Encoded enc = ExtendedEncoder.withFieldTypes(
             ctx.mapperService()::fieldType, ctx,
             () -> NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes())
@@ -825,15 +825,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // before anything runs.
         List<NativeRescore> rescores = null;
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) {
-            if (NativeRescore.supported(ctx) == false) return "rescore";
+            if (NativeRescore.supported(ctx) == false) return FallbackReason.RESCORE.key();
             rescores = new ArrayList<>();
             reason = NativeRescore.encode(ctx, searcher, new SimilarityEncoder(searcher.getSimilarity()), rescores);
             if (reason != null) return reason;
         }
         NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
         if (acquired.fallbackReason() != null) return acquired.fallbackReason();
-        if (ctx.isCancelled()) return "cancelled";
-        if (hasTimeout && deadlinePassed(ctx)) return "timeout";
+        if (ctx.isCancelled()) return FallbackReason.CANCELLED.key();
+        if (hasTimeout && deadlinePassed(ctx)) return FallbackReason.TIMEOUT.key();
         // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
         int topN = NativeHybrid.numHits(ctx, hybrid);
         // The hits sorted: by the request's sort, after the search_after document when there is one.
@@ -895,7 +895,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, collapseField, NativeHybrid.terminates(ctx));
             InternalAggregations[] aggOut = new InternalAggregations[1];
@@ -962,7 +962,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             out[0] = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
             NativeAggregations.consumeBuckets(ctx, out[0]);
@@ -975,16 +975,16 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return "native_error";
+            return FallbackReason.NATIVE_ERROR.key();
         }
         try {
             out[0] = tree.build(result[0], slices, ctx.partialOnShard());
         } catch (JavaRefuses e) {
-            return "aggregations";
+            return FallbackReason.AGGREGATIONS.key();
         } catch (ReflectiveOperationException | RuntimeException e) {
             stats.nativeError();
             logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
-            return "native_error";
+            return FallbackReason.NATIVE_ERROR.key();
         }
         NativeAggregations.consumeBuckets(ctx, out[0]);
         return null;
@@ -1003,9 +1003,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
-            && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
+            && ctx.innerHits().getInnerHits().isEmpty() == false) return FallbackReason.FETCH_DOC_VALUES.key();
         // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
-        if (ctx.mapperService().hasNested() && holdsKnnHits(ctx.query())) return "nested";
+        if (ctx.mapperService().hasNested() && holdsKnnHits(ctx.query())) return FallbackReason.NESTED.key();
         boolean[] expands = new boolean[1];
         org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
             @Override
@@ -1162,7 +1162,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean nativeAggs
     ) {
-        if (flags(ctx).enabled() == false) return "disabled";
+        if (flags(ctx).enabled() == false) return FallbackReason.DISABLED.key();
         // The specific reasons first: each of these also adds a collector, and "collectors" alone
         // would not tell an operator which request feature to look at.
         // Aggregations only when NativeAggregations plans every one of them, and nothing else (a
@@ -1180,57 +1180,57 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // collector: no competitive iterator); behind a scroll's later pages or terminate_after it
         // stays on Lucene.
         if (minScore && (ctx.scrollContext() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER)) {
-            return "min_score";
+            return FallbackReason.MIN_SCORE.key();
         }
         boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
-        if (terminating && terminateAfterIneligible(ctx)) return "terminate_after";
+        if (terminating && terminateAfterIneligible(ctx)) return FallbackReason.TERMINATE_AFTER.key();
         // What is left in "collectors": the aggregations' context and the filter collectors
         // (post_filter, terminate_after, min_score).
         boolean postFilter = ctx.parsedPostFilter() != null;
         if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (terminating ? 1 : 0) + (minScore ? 1 : 0)
-            || hasFilterCollector != (postFilter || terminating || minScore)) return "collectors";
+            || hasFilterCollector != (postFilter || terminating || minScore)) return FallbackReason.COLLECTORS.key();
         // A sort runs native when SortEncoder can encode it (searchWith); search_after only
         // with one. track_scores runs native too: the score leading the sort gives the max
         // score (the first hit), and otherwise the native search tracks it over every match.
-        if (ctx.searchAfter() != null && ctx.sort() == null) return "search_after";
+        if (ctx.searchAfter() != null && ctx.sort() == null) return FallbackReason.SEARCH_AFTER.key();
         // size 0 behind search_after: ContextIndexSearcher skips segments the after value rules out
         // before any collector sees them, which the native count does not.
-        if (ctx.searchAfter() != null && ctx.size() == 0) return "search_after";
+        if (ctx.searchAfter() != null && ctx.size() == 0) return FallbackReason.SEARCH_AFTER.key();
         // collapse natively (NativeCollapse) on a keyword or numeric field, behind terminate_after
         // too: EarlyTerminatingCollector lets the first matches in index order through, which the
         // native collector takes as the plain sorted search does (terminateAfterIneligible above).
         if (ctx.collapse() != null && ctx.size() > 0) {
-            if (NativeCollapse.blob(ctx.collapse()) == null) return "collapse_field";
+            if (NativeCollapse.blob(ctx.collapse()) == null) return FallbackReason.COLLAPSE_FIELD.key();
             // CollapsingTopDocsCollector refuses search_after unless the sort
             // is the collapse field.
             SortField[] keys = NativeCollapse.sort(ctx).getSort();
             if (ctx.searchAfter() != null
                 && (keys.length != 1 || java.util.Objects.equals(keys[0].getField(), ctx.collapse().getFieldName()) == false)) {
-                return "collapse_search_after";
+                return FallbackReason.COLLAPSE_SEARCH_AFTER.key();
             }
         }
         // rescore natively (NativeRescore) when every rescorer is OpenSearch's
         // QueryRescorer, over the top docs however they were collected (behind
         // terminate_after too); a scroll or a size-0 search never rescores.
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false && ctx.scrollContext() == null && ctx.size() > 0) {
-            if (NativeRescore.supported(ctx) == false) return "rescore";
+            if (NativeRescore.supported(ctx) == false) return FallbackReason.RESCORE.key();
         }
         // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
         // each slice's segments last first: NativeAggregations.slices hands the native pass that order.
         // terminate_after cuts the segments in index order, which the reversed visit does not.
-        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminating) return "time_series_order";
+        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminating) return FallbackReason.TIME_SERIES_ORDER.key();
         // dfs_query_then_fetch scores with statistics aggregated across shards
         // (ContextIndexSearcher.setAggregatedDfs), which NativeDfs hands the native statistics pass.
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return "dfs";
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return FallbackReason.DFS.key();
         // Another plugin may replace the top-docs collector (QueryPhase's own first question).
         try {
             if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(
                 ctx,
                 ctx.query(),
                 new QueryCollectorArguments.Builder().hasFilterCollector(hasFilterCollector).build()
-            ).isPresent()) return "collector_spec";
+            ).isPresent()) return FallbackReason.COLLECTOR_SPEC.key();
         } catch (IOException e) {
-            return "collector_spec";
+            return FallbackReason.COLLECTOR_SPEC.key();
         }
         return null;
     }
@@ -1431,7 +1431,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // A concurrent size-0 search reports terminated_early per slice: without whole-segment
         // slices there is nothing to replay.
         if (size == 0 && ctx.shouldUseConcurrentSearch() && NativeAggregations.slices(ctx) == null) {
-            return "intra_segment";
+            return FallbackReason.INTRA_SEGMENT.key();
         }
         // A scroll page is "size" hits whatever "from" says, and counts them on its first page only
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
@@ -1480,7 +1480,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 try {
                     shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
                 } catch (IOException e) {
-                    return "native_error";
+                    return FallbackReason.NATIVE_ERROR.key();
                 }
             }
             if (shortcut >= 0 || shortcutTerm != null) {
@@ -1488,7 +1488,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
         }
         if (ctx.isCancelled()) {
-            return "cancelled";
+            return FallbackReason.CANCELLED.key();
         }
         NativeProfile.Phases phases = NativeProfile.phases();
         if (phases != null) {
@@ -1508,7 +1508,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (aggs != null) {
             int[][] slices = NativeAggregations.slices(ctx);
             if (slices == null) {
-                return "intra_segment";
+                return FallbackReason.INTRA_SEGMENT.key();
             }
             int states = aggs.metrics().size() * Math.max(1, slices.length);
             long[] aggCounts = new long[states];
@@ -1530,7 +1530,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
             NativeAggregations.consumeBuckets(ctx, aggResult);
@@ -1543,7 +1543,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } else if (tree != null) {
             int[][] slices = NativeAggregations.slices(ctx);
             if (slices == null) {
-                return "intra_segment";
+                return FallbackReason.INTRA_SEGMENT.key();
             }
             byte[][] result = new byte[1][];
             int rc = NativeSearch.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), flags(ctx).aggCache(), result);
@@ -1552,18 +1552,18 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             try {
                 aggResult = tree.build(result[0], slices, ctx.partialOnShard());
             } catch (JavaRefuses e) {
                 // Values the Java aggregator would refuse (a NaN for a t-digest, a negative value
                 // for an HDR histogram): Lucene's pass raises its own error.
-                return "aggregations";
+                return FallbackReason.AGGREGATIONS.key();
             } catch (ReflectiveOperationException | RuntimeException e) {
                 stats.nativeError();
                 logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             NativeAggregations.consumeBuckets(ctx, aggResult);
         }
@@ -1632,7 +1632,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             shortcut = Math.toIntExact(counts[3]);
         } else if (numDocs == 0 && (shortcut >= 0 || countLimit == 0)) {
@@ -1644,7 +1644,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
         }
         int n = (int) counts[0];
@@ -1660,7 +1660,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (numDocs == 0 && ctx.shouldUseConcurrentSearch()) {
             Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total, segCounts);
             if (terminated == null) {
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             if (terminated) {
                 ctx.queryResult().terminatedEarly(true);
@@ -1931,7 +1931,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+                return FallbackReason.NATIVE_ERROR.key();
             }
             r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
         }
@@ -1955,11 +1955,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             String message = NativeBridge.lastError();
             if (NativeCollapse.refused(message)) {
                 // A multi-valued collapse field: Lucene's collector raises the request's error.
-                return "collapse_refused";
+                return FallbackReason.COLLAPSE_REFUSED.key();
             }
             stats.nativeError();
             logger.warn("lucene-rust: native collapsed search failed ({}), re-running on Lucene: {}", rc, message);
-            return "native_error";
+            return FallbackReason.NATIVE_ERROR.key();
         }
         TopDocsAndMaxScore td;
         try {
@@ -1967,7 +1967,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } catch (RuntimeException e) {
             stats.nativeError();
             logger.warn("lucene-rust: decoding native collapsed hits failed, re-running on Lucene", e);
-            return "native_error";
+            return FallbackReason.NATIVE_ERROR.key();
         }
         ctx.queryResult().topDocs(td, ctx.sort() == null ? new DocValueFormat[] { DocValueFormat.RAW } : ctx.sort().formats);
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) {
@@ -2004,7 +2004,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("lucene-rust: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return "native_error";
+            return FallbackReason.NATIVE_ERROR.key();
         }
         int n = (int) counts[0];
         FieldDoc[] hits = SortEncoder.hits(fields, n, docs, values, terms[0]);

@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.highlight;
 
+import org.lucenerust.opensearch.FallbackReason;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
@@ -146,7 +147,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
                 // Java's analysis reads a lone surrogate in ways the native text cannot mirror;
                 // the span fragmenter carries its state from hit to hit, so the rest of the hits
                 // are OpenSearch's too.
-                prepared.fallback = "highlight_lone_surrogate";
+                prepared.fallback = FallbackReason.HIGHLIGHT_LONE_SURROGATE.key();
                 stats.fallback(prepared.fallback);
                 return super.highlight(fieldContext);
             }
@@ -160,7 +161,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();
             // the rest of the search's hits go straight to OpenSearch's highlighter
-            prepared.fallback = "highlight_native_error";
+            prepared.fallback = FallbackReason.HIGHLIGHT_NATIVE_ERROR.key();
             stats.fallback(prepared.fallback);
             return super.highlight(fieldContext);
         }
@@ -168,7 +169,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         int status = b.get();
         if (status == STATUS_THROWS && extended == false) {
             // a hit OpenSearch's highlighter throws on: its answer, the rest of the hits with it
-            prepared.fallback = "highlight_plain_hit";
+            prepared.fallback = FallbackReason.HIGHLIGHT_PLAIN_HIT.key();
             stats.fallback(prepared.fallback);
             return super.highlight(fieldContext);
         }
@@ -237,7 +238,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
     private Prepared prepare(FieldHighlightContext fieldContext) {
         boolean extended = ExtendedHighlighting.on(fieldContext);
         if (extended == false && fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
-            return new Prepared(null, "highlight_derived_field");
+            return new Prepared(null, FallbackReason.HIGHLIGHT_DERIVED_FIELD.key());
         }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
         Integer fieldMaxAnalyzedOffset = options.maxAnalyzerOffset();
@@ -245,7 +246,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             && fieldMaxAnalyzedOffset != null
             && fieldMaxAnalyzedOffset > fieldContext.context.getIndexSettings().getHighlightMaxAnalyzedOffset()) {
             // OpenSearch's highlighter refuses it, and says so.
-            return new Prepared(null, "highlight_max_analyzer_offset");
+            return new Prepared(null, FallbackReason.HIGHLIGHT_MAX_ANALYZER_OFFSET.key());
         }
         byte fragmenter;
         if (options.numberOfFragments() == 0) {
@@ -256,7 +257,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             fragmenter = 2;
         } else if (extended == false) {
             // OpenSearch's highlighter refuses it, and says so.
-            return new Prepared(null, "highlight_fragmenter");
+            return new Prepared(null, FallbackReason.HIGHLIGHT_FRAGMENTER.key());
         } else {
             throw new IllegalArgumentException(
                 "unknown fragmenter option [" + options.fragmenter() + "] for the field [" + fieldContext.fieldName + "]"
@@ -279,7 +280,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         Analyzer analyzer = fieldContext.context.mapperService().documentMapper().mappers().indexAnalyzer();
         AnalyzerSpec.Spec spec = AnalyzerSpec.cached(analyzer, field);
         if (spec.ok() == false) {
-            return new Prepared(null, "highlight_" + spec.reason());
+            return new Prepared(null, FallbackReason.HIGHLIGHT_ANY.key() + spec.reason());
         }
         QueryEncoder.Encoded query = QueryEncoder.encodeForPlainHighlight(fieldContext.query, ExtendedHighlighting.on(fieldContext));
         if (query.blob() == null) {
