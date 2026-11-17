@@ -3,19 +3,18 @@
 //! dictionary is prepared once behind a handle, and each chunk's frame is
 //! decoded against it.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::OnceLock;
 
-use lucene_zstd::{DecoderDictionary, Dictionary};
+use lucene_engine::handle::RegistryTag;
+use lucene_zstd::Dictionary;
 
-use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::bytes_from_raw;
-use crate::registry::{lock_recovering, read_recovering};
-use lucene_engine::handle::{RegistryTag, SlotMap};
+use crate::error::{set_last_error, FfiStatus};
+use crate::zstd_shared::{self as shared, Registry};
 
 /// The prepared dictionaries, by handle.
-fn dictionaries() -> &'static RwLock<SlotMap<Arc<DecoderDictionary>>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<Arc<DecoderDictionary>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::ZstdDictionary)))
+fn dictionaries() -> &'static Registry {
+    static REGISTRY: OnceLock<Registry> = OnceLock::new();
+    REGISTRY.get_or_init(|| shared::new_registry(RegistryTag::ZstdDictionary))
 }
 
 /// Prepares the `len` dictionary bytes at `dict` and writes its handle to
@@ -29,29 +28,14 @@ pub unsafe extern "C" fn ffi_zstd_dictionary_open(
     len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    guard(|| {
-        if out_handle.is_null() {
-            return Err(FfiStatus::NullPointer);
-        }
-        // SAFETY: caller contract.
-        let dict = unsafe { bytes_from_raw(dict, len) }?;
-        let prepared = Arc::new(DecoderDictionary::new(dict));
-        let handle = lock_recovering(dictionaries()).insert_checked(prepared)?;
-        // SAFETY: caller contract.
-        unsafe { *out_handle = handle };
-        Ok(())
-    })
+    // SAFETY: caller contract.
+    unsafe { shared::open(dictionaries(), dict, len, out_handle) }
 }
 
 /// Releases a handle from [`ffi_zstd_dictionary_open`].
 #[no_mangle]
 pub extern "C" fn ffi_zstd_dictionary_close(handle: u64) -> i32 {
-    guard(|| {
-        lock_recovering(dictionaries())
-            .remove(handle)
-            .map(drop)
-            .ok_or(FfiStatus::InvalidHandle)
-    })
+    shared::close(dictionaries(), handle)
 }
 
 /// Decodes the zstd frame `src` (`src_len` bytes), compressed against the
@@ -67,43 +51,34 @@ pub unsafe extern "C" fn ffi_zstd_paged_decompress(
     dst: *mut u8,
     dst_len: usize,
 ) -> i32 {
-    guard(|| {
-        // SAFETY: caller contract.
-        let src = unsafe { bytes_from_raw(src, src_len) }?;
-        if dst.is_null() && dst_len > 0 {
-            return Err(FfiStatus::NullPointer);
-        }
-        let dst: &mut [u8] = if dst_len == 0 {
-            &mut []
-        } else {
-            // SAFETY: caller contract; non-null checked above.
-            unsafe { std::slice::from_raw_parts_mut(dst, dst_len) }
-        };
-        let dict = if handle == 0 {
-            None
-        } else {
-            Some(
-                read_recovering(dictionaries())
-                    .get(handle)
-                    .cloned()
-                    .ok_or(FfiStatus::InvalidHandle)?,
-            )
-        };
-        let d = dict
-            .as_deref()
-            .map_or(Dictionary::None, Dictionary::Prepared);
-        match lucene_zstd::with_decompressor(|z| z.decompress_to_slice(src, d, dst)) {
-            Ok(n) if n == dst_len => Ok(()),
-            Ok(n) => {
-                set_last_error(format!("zstd frame holds {n} bytes, expected {dst_len}"));
-                Err(FfiStatus::Decode)
-            }
-            Err(e) => {
-                set_last_error(format!("zstd stored fields: {e}"));
-                Err(FfiStatus::Decode)
-            }
-        }
-    })
+    // SAFETY: caller contract.
+    unsafe {
+        shared::decompress(
+            dictionaries(),
+            handle,
+            src,
+            src_len,
+            dst,
+            dst_len,
+            |src, dict, dst| {
+                let d = dict.map_or(Dictionary::None, Dictionary::Prepared);
+                match lucene_zstd::with_decompressor(|z| z.decompress_to_slice(src, d, dst)) {
+                    Ok(n) if n == dst.len() => Ok(()),
+                    Ok(n) => {
+                        set_last_error(format!(
+                            "zstd frame holds {n} bytes, expected {}",
+                            dst.len()
+                        ));
+                        Err(FfiStatus::Decode)
+                    }
+                    Err(e) => {
+                        set_last_error(format!("zstd stored fields: {e}"));
+                        Err(FfiStatus::Decode)
+                    }
+                }
+            },
+        )
+    }
 }
 
 #[cfg(test)]

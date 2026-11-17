@@ -113,6 +113,7 @@ mod sparse_writer;
 mod store;
 mod thai_break;
 mod zstd_dictionary;
+mod zstd_shared;
 mod zstd_terms;
 
 pub use error::FfiStatus;
