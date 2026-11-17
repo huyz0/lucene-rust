@@ -2138,7 +2138,11 @@ impl<S: UpdateableVectorScorer> HnswGraphBuilder<S> {
                 // candidates' -- so the "each new entry is worse than the last"
                 // precondition `addInOrder` asserts does not hold.
                 if is_link_repair {
-                    neighbors.add_out_of_order(c_node, c_score);
+                    // With an estimated scorer the node can already be a
+                    // neighbour; the diversity check does not catch it.
+                    if !neighbors.nodes().contains(&c_node) {
+                        neighbors.add_out_of_order(c_node, c_score);
+                    }
                 } else {
                     neighbors.add_in_order(c_node, c_score);
                 }
