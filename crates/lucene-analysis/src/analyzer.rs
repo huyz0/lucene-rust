@@ -51,6 +51,7 @@ use crate::{
     AnalysisError, AnalyzedTokens, CharArraySet, KeywordTokenizer, LowerCaseFilter, StopFilter,
     Token,
 };
+use lucene_util::shared_text::SharedText;
 
 /// `Analyzer.TokenStreamComponents`: the chain's source (what receives the
 /// reader) and its sink (what is consumed).
@@ -596,10 +597,10 @@ impl Analyzer {
     pub fn token_stream_shared(
         &self,
         field_name: &str,
-        text: &Arc<str>,
+        text: &SharedText,
     ) -> Result<AnalyzerTokenStream<'_>, AnalysisError> {
         self.token_stream_over(field_name, |_spare| {
-            Box::new(StrReader::shared(Arc::clone(text)))
+            Box::new(StrReader::shared(text.clone()))
         })
     }
 

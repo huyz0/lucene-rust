@@ -7,7 +7,7 @@
 //! exactly, and a [`CharFilter`]'s offset corrections are expressed in the
 //! same code units Java's are.
 
-use std::sync::Arc;
+use lucene_util::shared_text::SharedText;
 
 use crate::AnalysisError;
 
@@ -94,7 +94,7 @@ pub struct StrReader {
 #[derive(Debug, Clone)]
 enum ReaderText {
     Owned(String),
-    Shared(Arc<str>),
+    Shared(SharedText),
 }
 
 impl Default for ReaderText {
@@ -107,7 +107,7 @@ impl ReaderText {
     fn as_str(&self) -> &str {
         match self {
             ReaderText::Owned(s) => s,
-            ReaderText::Shared(s) => s,
+            ReaderText::Shared(s) => s.as_str(),
         }
     }
 }
@@ -121,11 +121,11 @@ impl StrReader {
         }
     }
 
-    /// A reader over text the caller keeps: the `Arc` is cloned, the bytes are
+    /// A reader over text the caller keeps: the handle is cloned, the bytes are
     /// not. Not recycled, since it holds no allocation of its own.
-    pub fn shared(text: Arc<str>) -> Self {
+    pub fn shared(text: impl Into<SharedText>) -> Self {
         StrReader {
-            text: ReaderText::Shared(text),
+            text: ReaderText::Shared(text.into()),
             pos: 0,
             pending_low: None,
         }
@@ -299,6 +299,7 @@ pub fn read_to_string(reader: &mut dyn CharReader) -> Result<String, AnalysisErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn drain(r: &mut dyn CharReader, chunk: usize) -> Vec<u16> {
         let mut out = Vec::new();

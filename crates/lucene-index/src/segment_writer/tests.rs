@@ -306,7 +306,7 @@ fn a_flush_with_large_stored_values_streams_the_fdt_the_buffered_path_writes() {
     docs.push(Document {
         fields: vec![StoredField {
             field_number: 0,
-            value: FieldValue::Shared(std::sync::Arc::from("shared text ".repeat(200_000))),
+            value: FieldValue::Shared("shared text ".repeat(200_000).into()),
         }],
     });
     let root = TempDir::new("flush-stored-spill");
