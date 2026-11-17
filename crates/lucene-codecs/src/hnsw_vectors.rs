@@ -238,6 +238,22 @@ pub struct GraphMergeSource<'a, G: HnswGraphView> {
 /// deleted has degraded connectivity and is not used as the base.
 const DELETE_PCT_THRESHOLD: i32 = 40;
 
+/// The most a base graph may have deleted for the *concurrent* merge to reuse
+/// it, given `workers` merge threads. Reuse repairs every damaged node on the
+/// merge thread (`fix_disconnected_nodes`), which costs roughly 1.9 s per
+/// percent deleted at 100k x 128 vectors (M 16, beam 100) and saturates near
+/// 60 s, while a rebuild spreads over the workers: 15-19 s on 4 workers. Break
+/// even is therefore near `40 / workers` percent (about 10% on 4 workers); past
+/// it the rebuild wins, 4-5x at 20-35% deleted (`hnsw_merge_repair_bench`).
+/// One worker keeps Java's 40.
+fn reuse_delete_pct_limit(workers: usize) -> i32 {
+    let workers = i32::try_from(workers.max(1)).unwrap_or(i32::MAX);
+    DELETE_PCT_THRESHOLD
+        .checked_div(workers)
+        .unwrap_or(5)
+        .max(5)
+}
+
 /// Port of `Lucene99HnswVectorsWriter.mergeOneField`'s graph half, i.e.
 /// `buildAndWriteGraph` + `createGraphMerger` +
 /// `IncrementalHnswGraphMerger.{addReader,createBuilder,getNewOrdMapping,merge}`.
@@ -311,7 +327,7 @@ pub fn merge_one_field<G: HnswGraphView, S: UpdateableVectorScorer>(
     }
 
     // `IncrementalHnswGraphMerger.addReader`, once per source.
-    let (usable, largest) = add_readers(sources)?;
+    let (usable, largest) = add_readers(sources, DELETE_PCT_THRESHOLD)?;
 
     let Some(largest) = largest else {
         // `HnswGraphBuilder.create(scorerSupplier, M, beamWidth, randSeed, maxOrd)`:
@@ -414,7 +430,7 @@ where
             hnsw::MAXIMUM_MAX_CONN
         )));
     }
-    let (_, largest) = add_readers(sources)?;
+    let (_, largest) = add_readers(sources, reuse_delete_pct_limit(num_workers))?;
     let (graph, initialized) = match largest {
         None => (OnHeapHnswGraph::with_size(m, total_vector_count), None),
         Some(largest) => {
@@ -453,6 +469,7 @@ where
 /// the base graph (`largestGraphReader`), if any qualifies.
 fn add_readers<G: HnswGraphView>(
     sources: &[GraphMergeSource<'_, G>],
+    max_delete_pct: i32,
 ) -> Result<(Vec<usize>, Option<usize>)> {
     let mut usable: Vec<usize> = Vec::new();
     let mut largest: Option<usize> = None;
@@ -487,9 +504,7 @@ fn add_readers<G: HnswGraphView>(
         // The candidate's live count is compared against the incumbent's live
         // count, so a graph with deletions does not stay the base over a
         // larger deletion-free one because of reader order.
-        if delete_pct <= i64::from(DELETE_PCT_THRESHOLD)
-            && (largest.is_none() || live > largest_live)
-        {
+        if delete_pct <= i64::from(max_delete_pct) && (largest.is_none() || live > largest_live) {
             largest = Some(i);
             largest_live = live;
         }
