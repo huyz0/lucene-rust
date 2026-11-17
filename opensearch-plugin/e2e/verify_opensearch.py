@@ -64,7 +64,7 @@ def check(ok, what):
 
 
 def stats():
-    return req("GET", "/_plugins/lucene_rust/stats")
+    return req("GET", "/_plugins/accelerated/stats")
 
 
 def set_native(index, on):
@@ -1113,7 +1113,7 @@ def js_rows():
 
 
 def run_js(index, shards):
-    """`"lang": "js"` scripts (a node built with -Pjs and lucene_rust.script.js.enabled): each
+    """`"lang": "js"` scripts (a node built with -Pjs and script.js.enabled): each
     runs natively and answers as the same script in Painless does; a failure is a
     ScriptException of lang js, never a run in Java."""
     set_native(index, True)
@@ -1155,7 +1155,7 @@ def run_js(index, shards):
 
 
 def js_off(index):
-    """Without lucene_rust.script.js.enabled a node has no js language."""
+    """Without script.js.enabled a node has no js language."""
     status, resp = raw_search(index, {"query": {"script_score": {"query": {"match_all": {}}, "script": {"lang": "js", "source": "1"}}}})
     check(status == 400 and "script_lang not supported [js]" in json.dumps(resp), f"js off {index}: {status} {json.dumps(resp)[:300]}")
 

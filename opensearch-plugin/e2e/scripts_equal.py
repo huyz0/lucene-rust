@@ -311,7 +311,7 @@ if __name__ == "__main__":
     elif cmd == "dump":
         json.dump(dump(sys.argv[2]), open(sys.argv[3], "w"))
     elif cmd == "stats":
-        st = bh.req(sys.argv[2], "GET", "/_plugins/lucene_rust/stats")
+        st = bh.req(sys.argv[2], "GET", "/_plugins/accelerated/stats")
         print(json.dumps({k: v for k, v in st.get("fallbacks", {}).items()}, indent=1, sort_keys=True))
         print("native_errors", st.get("native_errors"))
     else:

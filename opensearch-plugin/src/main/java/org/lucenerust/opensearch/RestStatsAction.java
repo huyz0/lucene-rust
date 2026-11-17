@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * {@code GET /_plugins/lucene_rust/stats}: this node's native and fallback query counts by reason,
+ * {@code GET /_plugins/accelerated/stats}: this node's native and fallback query counts by reason,
  * native errors, and open native readers -- the numbers that say whether the supported matrix fits
  * the traffic, and whether native readers are being released.
  */
@@ -37,12 +37,12 @@ public final class RestStatsAction extends BaseRestHandler {
 
     @Override
     public String getName() {
-        return "lucene_rust_stats";
+        return "accelerated_stats";
     }
 
     @Override
     public List<Route> routes() {
-        return List.of(new Route(RestRequest.Method.GET, "/_plugins/lucene_rust/stats"));
+        return List.of(new Route(RestRequest.Method.GET, "/_plugins/accelerated/stats"));
     }
 
     @Override

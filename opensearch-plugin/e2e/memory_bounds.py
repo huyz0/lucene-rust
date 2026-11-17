@@ -170,7 +170,7 @@ def concurrent_case(base, container, name, body, n):
 
 
 def plugin_stats(base):
-    st, r = req(base, "GET", "/_plugins/lucene_rust/stats")
+    st, r = req(base, "GET", "/_plugins/accelerated/stats")
     return r.get("off_heap_memory") if st == 200 else None
 
 

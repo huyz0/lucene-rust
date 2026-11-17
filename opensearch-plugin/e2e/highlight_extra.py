@@ -258,7 +258,7 @@ def check():
         if report is not None:
             bad += 1
             print(report)
-    stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
+    stats = S.get(f"{PLUGIN}/_plugins/accelerated/stats").json()
     print(f"{len(CASES) - bad}/{len(CASES)} rows identical")
     print("highlight fallbacks", {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k})
     return bad

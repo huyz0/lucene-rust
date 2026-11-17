@@ -208,7 +208,7 @@ def main():
             failures.append(what)
             print("FAIL:", what)
 
-    native = run(req, check, lambda: req("GET", "/_plugins/lucene_rust/stats"))
+    native = run(req, check, lambda: req("GET", "/_plugins/accelerated/stats"))
     print(f"compact_wildcard_matrix: {checks[0]} checks, {len(failures)} failures, {native} compact_wildcard shard queries native")
     sys.exit(1 if failures else 0)
 

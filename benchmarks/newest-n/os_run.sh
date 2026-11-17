@@ -14,5 +14,5 @@ if [ -n "${5:-}" ]; then
   curl -sf -XPUT $B/logs/_settings -H 'Content-Type: application/json' -d "$5" >/dev/null
   taskset -c 3 python3 $S run $B $OUT/$6.json 50
 fi
-curl -s $B/_plugins/lucene_rust/stats > $OUT/$L-stats.json || true
+curl -s $B/_plugins/accelerated/stats > $OUT/$L-stats.json || true
 python3 "$NODECTL" rm nn >/dev/null

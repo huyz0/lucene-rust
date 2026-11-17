@@ -509,7 +509,7 @@ def visibility(base, container, corpus, label, out, settings):
         for row in result["throughput"]:
             print(f"  throughput: {row}", flush=True)
     try:
-        result["plugin_stats"] = req("GET", "/_plugins/lucene_rust/stats")
+        result["plugin_stats"] = req("GET", "/_plugins/accelerated/stats")
     except Exception:  # optional: the stock node has no such endpoint
         pass
     print(f"{label}: {result['docs_per_second']} docs/s, {result['cpu_seconds']} CPU-s, visible p50/p99 "

@@ -233,7 +233,7 @@ In OpenSearch, `index.store.read_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
 mapped). `indices.store.page_cache.size` (default 1 GB) is the node's
 budget. A node where `userfaultfd` is blocked keeps every index mapped and
-says so at startup. `GET /_plugins/lucene_rust/stats` reports the page
+says so at startup. `GET /_plugins/accelerated/stats` reports the page
 cache under `page_cache` (budget, resident and whole-file bytes, faults,
 refaults, evictions, read errors, fault time), and the resident bytes are
 charged to the `indexing_buffers` breaker, whose default limit includes

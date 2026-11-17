@@ -142,15 +142,15 @@ def main():
         index("text", True, "text", docs, deleted)
         for name, engine in (("rust", True), ("lucene", False)):
             index(name, engine, "pattern_text", docs, deleted)
-        before = must("GET", "/_plugins/lucene_rust/stats")
+        before = must("GET", "/_plugins/accelerated/stats")
         for name in ("rust", "lucene"):
             for p in PHRASES:
                 for slop in (0, 1):
                     q = {"match_phrase": {"message": {"query": p, "slop": slop}}}
                     want = hits("text", q)
-                    pre = must("GET", "/_plugins/lucene_rust/stats")
+                    pre = must("GET", "/_plugins/accelerated/stats")
                     got = hits(name, q)
-                    post = must("GET", "/_plugins/lucene_rust/stats")
+                    post = must("GET", "/_plugins/accelerated/stats")
                     if name == "rust" and slop == 0:
                         new = {k: v for k, v in post.get("fallbacks", {}).items() if v != pre.get("fallbacks", {}).get(k, 0)}
                         if post["accelerated_queries"] - pre["accelerated_queries"] != 1 or new:
@@ -166,7 +166,7 @@ def main():
                 q = {"match": {"message": word}}
                 if set(hits(name, q)) != set(hits("text", q)):
                     failures.append(f"{name} match {word!r}: differs from text")
-        after = must("GET", "/_plugins/lucene_rust/stats")
+        after = must("GET", "/_plugins/accelerated/stats")
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {after['accelerated_queries'] - before['accelerated_queries']} shard queries in Rust, fallbacks {fallbacks}")

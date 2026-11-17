@@ -149,7 +149,7 @@ def norm(x):
 if sys.argv[1] == "dump":
     json.dump(dump(sys.argv[2]), open(sys.argv[3], "w"), indent=1, sort_keys=True)
 elif sys.argv[1] == "fallbacks":
-    st = bh.req(sys.argv[2], "GET", "/_plugins/lucene_rust/stats", None)
+    st = bh.req(sys.argv[2], "GET", "/_plugins/accelerated/stats", None)
     print({k: v for k, v in st.get("fallbacks", {}).items() if "aggregation" in k})
 else:
     a, b = (norm(json.load(open(p))) for p in sys.argv[2:4])

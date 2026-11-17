@@ -256,7 +256,7 @@ def neural_errors(mid):
 
 
 def rust_stats(n):
-    s, r = n.call("GET", "/_plugins/lucene_rust/stats")
+    s, r = n.call("GET", "/_plugins/accelerated/stats")
     return r if s == 200 else {}
 
 

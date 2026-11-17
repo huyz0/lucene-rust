@@ -732,7 +732,7 @@ def run_case(plugin, stock, index, body, ordered, params=""):
 
 
 def plugin_stats(node):
-    st, r = node.req("GET", "/_plugins/lucene_rust/stats")
+    st, r = node.req("GET", "/_plugins/accelerated/stats")
     return r if st == 200 and isinstance(r, dict) else None
 
 

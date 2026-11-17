@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """How much of a cluster's search traffic the lucene-rust plugin runs native,
 and why the rest falls back -- from every node's
-`GET /_plugins/lucene_rust/stats` (docs/feature-matrix.md).
+`GET /_plugins/accelerated/stats` (docs/feature-matrix.md).
 
     scripts/fallback-report.py [URL] [--save FILE] [--since FILE]
 
@@ -27,11 +27,11 @@ def reading(base):
     for n in nodes.values():
         addr = n["http"]["publish_address"].split("/")[-1]
         try:
-            s = get(f"http://{addr}/_plugins/lucene_rust/stats")
+            s = get(f"http://{addr}/_plugins/accelerated/stats")
         except OSError:
             # A publish address the caller cannot reach (a container's):
             # the node the caller named answers for itself only.
-            s = get(f"{base}/_plugins/lucene_rust/stats") if len(nodes) == 1 else None
+            s = get(f"{base}/_plugins/accelerated/stats") if len(nodes) == 1 else None
         if s is None:
             print(f"warning: node {n['name']} at {addr} unreachable; left out", file=sys.stderr)
             continue

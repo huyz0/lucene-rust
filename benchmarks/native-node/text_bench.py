@@ -131,7 +131,7 @@ MAPPING = {"properties": {"text": {"type": "text"}, "n": {"type": "long"}, "cat"
 
 def nstats(c):
     try:
-        return c.call("GET", "/_plugins/lucene_rust/stats")[0]
+        return c.call("GET", "/_plugins/accelerated/stats")[0]
     except RuntimeError:
         return None
 

@@ -85,7 +85,7 @@ def main():
         n.req("POST", f"/{INDEX}/_forcemerge?max_num_segments=1")
         for d in docs:
             d["_route"] = None
-    st, stats = plugin.req("GET", "/_plugins/lucene_rust/stats")
+    st, stats = plugin.req("GET", "/_plugins/accelerated/stats")
     before = dict(stats.get("fallbacks", {}))
     bad = total = 0
     for name, q in queries():
@@ -105,7 +105,7 @@ def main():
                 a, b = res
                 k = next((j for j, (x, y) in enumerate(zip(a[0], b[0])) if x != y), None) if isinstance(a[0], list) and isinstance(b[0], list) else None
                 print(f"{name} {json.dumps(extra)[:60]}: plugin {str(a)[:150] if k is None else a[0][k]} stock {str(b)[:150] if k is None else b[0][k]}")
-    st, stats = plugin.req("GET", "/_plugins/lucene_rust/stats")
+    st, stats = plugin.req("GET", "/_plugins/accelerated/stats")
     after = stats.get("fallbacks", {})
     new = {k: v - before.get(k, 0) for k, v in after.items() if v - before.get(k, 0) > 0}
     print(f"dfs searches checked: {total}, mismatches: {bad}, plugin fallbacks: {json.dumps(new)}")

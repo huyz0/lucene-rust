@@ -447,7 +447,7 @@ def main():
         setup(OURS[1], False)
         setup(STOCK[1], False)
         runs = searches()
-        before = ck.req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        before = ck.req(OURS[1], "GET", "/_plugins/accelerated/stats")
         for pipeline, body in runs:
             compare(pipeline, body, failures)
         compare("explain", {"query": hybrid(MATCH, KNN), "size": 5}, failures, explain=True)
@@ -473,7 +473,7 @@ def main():
             o, s = pipeline_error(OURS[1], body), pipeline_error(STOCK[1], body)
             if o != s:
                 failures.append(f"pipeline {json.dumps(body)}: ours {o}, stock {s}")
-        after = ck.req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        after = ck.req(OURS[1], "GET", "/_plugins/accelerated/stats")
         ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}

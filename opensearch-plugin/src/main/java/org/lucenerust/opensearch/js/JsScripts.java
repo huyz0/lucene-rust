@@ -66,11 +66,11 @@ public final class JsScripts {
     public static final String NAME = "js";
 
     /** Whether this node serves {@code "lang": "js"} scripts. */
-    public static final Setting<Boolean> ENABLED = Setting.boolSetting("lucene_rust.script.js.enabled", false, Setting.Property.NodeScope);
+    public static final Setting<Boolean> ENABLED = Setting.boolSetting("script.js.enabled", false, Setting.Property.NodeScope);
 
     /** How long one search may run a script, over all its documents. */
     public static final Setting<TimeValue> TIMEOUT = Setting.timeSetting(
-        "lucene_rust.script.js.timeout",
+        "script.js.timeout",
         TimeValue.timeValueSeconds(10),
         TimeValue.timeValueMillis(1),
         Setting.Property.NodeScope
@@ -82,7 +82,7 @@ public final class JsScripts {
      * moment as much again or 1 GB more, for a script that makes one large object past it.
      */
     public static final Setting<ByteSizeValue> MAX_HEAP = Setting.byteSizeSetting(
-        "lucene_rust.script.js.max_heap",
+        "script.js.max_heap",
         new ByteSizeValue(128, ByteSizeUnit.MB),
         new ByteSizeValue(16, ByteSizeUnit.MB),
         new ByteSizeValue(2, ByteSizeUnit.GB),

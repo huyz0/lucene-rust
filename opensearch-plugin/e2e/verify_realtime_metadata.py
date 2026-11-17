@@ -27,7 +27,7 @@ def req(method, path, body=None, ndjson=False):
 
 
 def stats():
-    return req("GET", "/_plugins/lucene_rust/stats")
+    return req("GET", "/_plugins/accelerated/stats")
 
 
 def main():

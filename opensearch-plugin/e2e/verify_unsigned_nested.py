@@ -47,7 +47,7 @@ def main():
         n.req("POST", f"/{INDEX}/_bulk", ("\n".join(lines) + "\n").encode(), raw=True)
         n.req("POST", f"/{INDEX}/_refresh")
         n.req("POST", f"/{INDEX}/_forcemerge?max_num_segments=2")
-    _, before = plugin.req("GET", "/_plugins/lucene_rust/stats")
+    _, before = plugin.req("GET", "/_plugins/accelerated/stats")
     bad = total = compared = 0
     for mode in ("min", "max", "sum", "avg"):
         for order in ("asc", "desc"):
@@ -94,7 +94,7 @@ def main():
                         bad += 1
                         if bad <= 15:
                             print("MISMATCH", json.dumps(spec)[:160], f"at {k}: plugin={ps[k:k + 2]} stock={ss[k:k + 2]}")
-    _, after_stats = plugin.req("GET", "/_plugins/lucene_rust/stats")
+    _, after_stats = plugin.req("GET", "/_plugins/accelerated/stats")
     fell = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after_stats.get("fallbacks", {}).items()}
     fell = {k: v for k, v in fell.items() if v}
     print(f"nested unsigned_long sorts: {total}, compared with stock: {compared}, mismatches: {bad}, new plugin fallbacks: {fell}")

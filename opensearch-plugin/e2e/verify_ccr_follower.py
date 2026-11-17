@@ -105,7 +105,7 @@ def all_vectors(base, index):
 
 def stats(base):
     try:
-        return req(base, "GET", "/_plugins/lucene_rust/stats").get("engines", {})
+        return req(base, "GET", "/_plugins/accelerated/stats").get("engines", {})
     except RuntimeError as e:
         return str(e)
 
