@@ -3219,7 +3219,7 @@ fn shared_copy(doc: &Document) -> Document {
             .map(|f| StoredField {
                 field_number: f.field_number,
                 value: match &f.value {
-                    FieldValue::String(s) => FieldValue::Shared(std::sync::Arc::from(&**s)),
+                    FieldValue::String(s) => FieldValue::Shared(s.as_str().into()),
                     other => other.clone(),
                 },
             })

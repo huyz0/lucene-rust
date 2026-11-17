@@ -169,7 +169,7 @@ pub enum FieldValue {
     /// reader. Rust-only; it keeps a large stored text from being copied
     /// once more on the way to the writer. It is not `==` to a
     /// [`Self::String`] of the same text (compare [`Self::as_text`]).
-    Shared(std::sync::Arc<str>),
+    Shared(lucene_util::shared_text::SharedText),
     Binary(Vec<u8>),
     Int(i32),
     Long(i64),
@@ -182,7 +182,7 @@ impl FieldValue {
     pub fn as_text(&self) -> Option<&str> {
         match self {
             FieldValue::String(s) => Some(s),
-            FieldValue::Shared(s) => Some(s),
+            FieldValue::Shared(s) => Some(s.as_str()),
             _ => None,
         }
     }

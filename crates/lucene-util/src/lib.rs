@@ -31,6 +31,7 @@ pub mod point_values_relation;
 pub(crate) mod popcount;
 pub mod quantization;
 pub mod s2;
+pub mod shared_text;
 pub mod simd;
 pub mod sloppy_math;
 pub mod small_float;

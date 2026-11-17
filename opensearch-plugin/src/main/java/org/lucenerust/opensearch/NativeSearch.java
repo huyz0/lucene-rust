@@ -1069,7 +1069,7 @@ public final class NativeSearch {
         try {
             MASK_CALL = java.lang.invoke.MethodHandles.lookup()
                 .findStatic(
-                    NativeBridge.class,
+                    NativeSearch.class,
                     "maskCall",
                     java.lang.invoke.MethodType.methodType(
                         long.class,
