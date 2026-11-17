@@ -629,4 +629,6 @@ fn _int(v: &Value) -> Result<i32, Throw> {
 }
 
 #[cfg(test)]
+mod function_tests;
+#[cfg(test)]
 mod tests;
