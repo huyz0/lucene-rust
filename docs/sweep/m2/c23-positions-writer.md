@@ -480,8 +480,8 @@ is untouched.
 Measured with `benchmarks/rust-runner`'s `index-bench`, 50 000 documents ×
 40 tokens from a 20 000-word vocabulary, postings + norms on one field — the
 same corpus and shape c3/c7/c17 measure against. A new
-`LUCENE_RUST_INDEX_OPTIONS` arm raises the `body` field's rung, following the
-`LUCENE_RUST_VECTOR_DIM`/`LUCENE_RUST_INDEX_SORT` pattern c10 and c17 added for
+`ACCELERATED_INDEX_OPTIONS` arm raises the `body` field's rung, following the
+`ACCELERATED_VECTOR_DIM`/`ACCELERATED_INDEX_SORT` pattern c10 and c17 added for
 exactly this purpose.
 
 **Read the ratios, not the absolutes.** This ran alongside several other sweep

@@ -29,26 +29,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The plugin's own tokenizers and analyzers ({@code thai_dictionary}, {@code japanese}, {@code korean}, {@code chinese}): Rust tokenizers ({@link RustTokenizer})
+ * The plugin's own tokenizers and analyzers ({@code thai_dictionary}, {@code japanese}, {@code korean}, {@code chinese}): Rust tokenizers ({@link AcceleratedTokenizer})
  * under an OpenSearch name, each with an optional analyzer chain around it.
  *
  * <p>Adding one is a row in {@link #TOKENIZERS}: the OpenSearch name, the Rust factory's SPI name
  * and its arguments, and, for an analyzer of the same name, how its chain wraps the tokenizer
  * (the stop word default comes from the analyzer's {@code stopwords} setting). The Rust factory
  * must be registered in {@code lucene-ffi}'s build; {@link AnalyzerSpec} maps every
- * {@link RustTokenizer} by its SPI name and arguments, so nothing else changes on either side.
+ * {@link AcceleratedTokenizer} by its SPI name and arguments, so nothing else changes on either side.
  *
  * <p>The language modules' tokenizers ({@code japanese}, {@code korean},
  * {@code chinese}) read their dictionaries from data packs, which a node opts into by
  * putting the pack directories (from {@code scripts/make-data-packs.sh}) under
- * {@code <config>/lucene-rust/packs/}. OpenSearch builds every registered tokenizer for every
+ * {@code <config>/accelerated-search/packs/}. OpenSearch builds every registered tokenizer for every
  * index, so a tokenizer whose pack is missing is not registered at all (the node logs which pack it
  * lacks), and an index naming it is refused as naming an unknown tokenizer.
  */
-final class RustAnalysis {
-    private RustAnalysis() {}
+final class AcceleratedAnalysis {
+    private AcceleratedAnalysis() {}
 
-    private static final Logger logger = LogManager.getLogger(RustAnalysis.class);
+    private static final Logger logger = LogManager.getLogger(AcceleratedAnalysis.class);
 
     /**
      * One of the plugin's tokenizers, and the analyzer of the same name if {@code chain} is set;
@@ -67,14 +67,14 @@ final class RustAnalysis {
             this.name = name;
             this.spi = spi;
             this.pack = pack;
-            this.args = RustTokenizer.args(args);
+            this.args = AcceleratedTokenizer.args(args);
             this.defaultStopWords = defaultStopWords;
             this.chain = chain;
-            this.spec = RustTokenizer.spec(spi, this.args);
+            this.spec = AcceleratedTokenizer.spec(spi, this.args);
         }
 
-        RustTokenizer tokenizer() {
-            return new RustTokenizer(name, spi, args, spec);
+        AcceleratedTokenizer tokenizer() {
+            return new AcceleratedTokenizer(name, spi, args, spec);
         }
 
         /** Builds the Rust tokenizer once: a missing data pack throws, naming the pack's file. */
@@ -129,7 +129,7 @@ final class RustAnalysis {
                 e.check();
                 out.add(e);
             } catch (IllegalArgumentException ex) {
-                logger.info("lucene-rust: [{}] not registered, its data pack [{}] is not installed: {}", e.name, e.pack, ex.getMessage());
+                logger.info("accelerated-search: [{}] not registered, its data pack [{}] is not installed: {}", e.name, e.pack, ex.getMessage());
             }
         }
         return out;
@@ -168,11 +168,11 @@ final class RustAnalysis {
     }
 
     /** An entry's analyzer: its chain over its tokenizer, with the given stop words. */
-    static final class RustAnalyzer extends Analyzer {
+    static final class AcceleratedAnalyzer extends Analyzer {
         private final Entry entry;
         private final CharArraySet stopWords;
 
-        RustAnalyzer(Entry entry, CharArraySet stopWords) {
+        AcceleratedAnalyzer(Entry entry, CharArraySet stopWords) {
             this.entry = entry;
             this.stopWords = stopWords;
         }
@@ -189,16 +189,16 @@ final class RustAnalysis {
         }
     }
 
-    static final class Provider extends AbstractIndexAnalyzerProvider<RustAnalyzer> {
-        private final RustAnalyzer analyzer;
+    static final class Provider extends AbstractIndexAnalyzerProvider<AcceleratedAnalyzer> {
+        private final AcceleratedAnalyzer analyzer;
 
         Provider(IndexSettings indexSettings, Environment env, String name, Settings settings, Entry entry) {
             super(indexSettings, name, settings);
-            analyzer = new RustAnalyzer(entry, Analysis.parseStopWords(env, settings, entry.defaultStopWords));
+            analyzer = new AcceleratedAnalyzer(entry, Analysis.parseStopWords(env, settings, entry.defaultStopWords));
         }
 
         @Override
-        public RustAnalyzer get() {
+        public AcceleratedAnalyzer get() {
             return analyzer;
         }
     }

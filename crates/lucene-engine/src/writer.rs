@@ -1,4 +1,4 @@
-//! The writer the OpenSearch plugin's `RustEngine` indexes through: one
+//! The writer the OpenSearch plugin's `AcceleratedEngine` indexes through: one
 //! handle per shard, wrapping a [`ConcurrentIndexWriter`] in
 //! *explicit-documents* mode.
 //!

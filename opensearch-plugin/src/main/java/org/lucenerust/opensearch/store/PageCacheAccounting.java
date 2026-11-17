@@ -5,7 +5,7 @@ package org.lucenerust.opensearch.store;
 
 import org.lucenerust.opensearch.NativeBridge;
 import org.lucenerust.opensearch.NativeStore;
-import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
 
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.breaker.CircuitBreaker;
@@ -33,7 +33,7 @@ public final class PageCacheAccounting {
 
     /** Moves the breaker's charge to the bytes resident now. */
     static void refresh() {
-        CircuitBreaker breaker = RustEngineSupport.breaker();
+        CircuitBreaker breaker = AcceleratedEngineSupport.breaker();
         if (breaker == null) {
             return;
         }

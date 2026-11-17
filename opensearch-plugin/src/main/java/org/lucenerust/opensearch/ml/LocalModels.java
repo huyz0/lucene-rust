@@ -178,11 +178,11 @@ public final class LocalModels {
                 return;
             }
             if (FUNCTIONS.contains(function) == false) {
-                throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
+                throw new IllegalArgumentException("accelerated-search does not deploy " + function + " models yet");
             }
             // A sparse tokenize model has no network, only its tokenizer and idf.json, whatever its format says.
             if ("SPARSE_TOKENIZE".equals(function) == false && "ONNX".equals(format) == false && "TORCH_SCRIPT".equals(format) == false) {
-                throw new IllegalArgumentException("lucene-rust runs ONNX and TorchScript models; this model's format is " + format);
+                throw new IllegalArgumentException("accelerated-search runs ONNX and TorchScript models; this model's format is " + format);
             }
             int chunks = ((Number) model.getOrDefault("total_chunks", 0)).intValue();
             Path dir = cacheDir.resolve("deploy").resolve(modelId);
@@ -326,7 +326,7 @@ public final class LocalModels {
             return;
         }
         if ("QUESTION_ANSWERING".equals(function)) {
-            throw new IllegalArgumentException("lucene-rust runs the question answering function on TorchScript models only");
+            throw new IllegalArgumentException("accelerated-search runs the question answering function on TorchScript models only");
         }
         if ("SPARSE_ENCODING".equals(function) || "TEXT_SIMILARITY".equals(function)) {
             loadRuntime();
@@ -391,7 +391,7 @@ public final class LocalModels {
     private void openHighlighter(String modelId, Map<String, Object> model, Map<String, Object> config, Path file, Path tokenizer)
         throws IOException {
         if ("sentence_highlighting".equalsIgnoreCase(String.valueOf(config.get("model_type"))) == false) {
-            throw new IllegalArgumentException("lucene-rust runs the sentence_highlighting question answering model only");
+            throw new IllegalArgumentException("accelerated-search runs the sentence_highlighting question answering model only");
         }
         Map<String, Object> extra = config.get("additional_config") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
         int maxLength = configInt(config, extra, "token_max_length", 512);
@@ -454,7 +454,7 @@ public final class LocalModels {
         if (previous != null) {
             close(previous);
         }
-        LOGGER.info("lucene-rust: deployed model [{}]", modelId);
+        LOGGER.info("accelerated-search: deployed model [{}]", modelId);
     }
 
     /** Takes the model document's new {@code is_enabled} and {@code rate_limiter} into the model deployed here, if any. */
@@ -539,7 +539,7 @@ public final class LocalModels {
         try {
             IOUtils.rm(cacheDir.resolve("deploy").resolve(modelId));
         } catch (IOException e) {
-            LOGGER.warn("lucene-rust: cannot remove the files of model [{}]", modelId, e);
+            LOGGER.warn("accelerated-search: cannot remove the files of model [{}]", modelId, e);
         }
         return true;
     }

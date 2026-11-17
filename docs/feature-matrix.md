@@ -1,6 +1,6 @@
 # Feature matrix (operators)
 
-What the lucene-rust plugin does for an OpenSearch 3.9.0 cluster, in
+What the accelerated-search plugin does for an OpenSearch 3.9.0 cluster, in
 OpenSearch's terms: what runs in Rust, what OpenSearch still does itself, and
 what is not supported. Read this to decide whether the plugin fits a workload;
 [`operations.md`](operations.md) covers installing and running it, and

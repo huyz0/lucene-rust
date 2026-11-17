@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ml-commons through the lucene-rust plugin against stock ml-commons.
+"""ml-commons through the accelerated-search plugin against stock ml-commons.
 
-Starts a node of the pinned OpenSearch image with the lucene-rust plugin (the
+Starts a node of the pinned OpenSearch image with the accelerated-search plugin (the
 bundled plugins removed, ml-commons among them) and, unless --stock names a
 running one, a stock node with ml-commons. Both run the same calls of the
 model registry, deploy and predict APIs on the fixtures/ml models, which this
@@ -516,7 +516,7 @@ def main():
         JAVA_EXTRA = (f" -Xms3g -Xmx3g -Dhttps.proxyHost={host} -Dhttps.proxyPort={port} -Djavax.net.ssl.trustStore=/proxy-ts.p12"
                       " -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12")
         MOUNT_EXTRA = (f"{os.path.abspath(a.proxy_truststore)}:/proxy-ts.p12:ro",)
-    zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips_dir:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

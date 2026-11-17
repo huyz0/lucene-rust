@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""neural_sparse speed: the lucene-rust plugin against stock neural-search.
+"""neural_sparse speed: the accelerated-search plugin against stock neural-search.
 
 Starts the two nodes scripts/check-sparse-plugin.py starts (or reuses them
 when they are up), indexes the same synthetic SPLADE-like corpus into each in

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """An index an OpenSearch 2.x node wrote, served
-natively after the upgrade to OpenSearch 3.9.0 with the lucene-rust plugin.
+natively after the upgrade to OpenSearch 3.9.0 with the accelerated-search plugin.
 
 Driven by scripts/verify-opensearch-upgrade.sh, in two phases:
 

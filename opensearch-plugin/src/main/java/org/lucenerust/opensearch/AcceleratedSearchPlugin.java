@@ -41,11 +41,11 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
 import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
-import org.lucenerust.opensearch.engine.RustEngineFactory;
-import org.lucenerust.opensearch.engine.RustEngineSupport;
-import org.lucenerust.opensearch.engine.RustIndexerFactory;
+import org.lucenerust.opensearch.engine.AcceleratedEngineFactory;
+import org.lucenerust.opensearch.engine.AcceleratedEngineSupport;
+import org.lucenerust.opensearch.engine.AcceleratedIndexerFactory;
 import org.lucenerust.opensearch.store.LocalKeySource;
-import org.lucenerust.opensearch.store.RustEncryptedDirectoryFactory;
+import org.lucenerust.opensearch.store.AcceleratedEncryptedDirectoryFactory;
 import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
@@ -131,16 +131,16 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * lucene-rust for OpenSearch: serves the query phase of supported searches from the Rust engine
- * ({@link RustQueryPhaseSearcher}) and everything else from Lucene, and -- for an index created with
+ * accelerated-search for OpenSearch: serves the query phase of supported searches from the Rust engine
+ * ({@link AcceleratedQueryPhaseSearcher}) and everything else from Lucene, and -- for an index created with
  * {@code index.engine.accelerated: true} -- indexes through the Rust writer ({@link
- * RustEngineFactory}).
+ * AcceleratedEngineFactory}).
  *
  * <p>The native library is loaded, and its ABI checked, in the constructor: a plugin whose library
  * is missing or stale stops the node at startup with one clear message rather than failing
  * searches later.
  */
-public class RustSearchPlugin extends Plugin implements
+public class AcceleratedSearchPlugin extends Plugin implements
     SearchPlugin,
     ActionPlugin,
     EnginePlugin,
@@ -251,7 +251,7 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.NodeScope
     );
 
-    private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
+    private static final Logger logger = LogManager.getLogger(AcceleratedSearchPlugin.class);
     /** Per thread, the memory scopes of the fetch phases running on it, innermost first. */
     private static final ThreadLocal<java.util.ArrayDeque<NativeMemory.Scope>> FETCH_MEMORY = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
@@ -281,14 +281,14 @@ public class RustSearchPlugin extends Plugin implements
     private SemanticMappingTransformer semanticMappingTransformer;
     private volatile SemanticModelResolver modelResolver;
 
-    public RustSearchPlugin(Settings settings, Path configPath) {
+    public AcceleratedSearchPlugin(Settings settings, Path configPath) {
         this.nodeSettings = settings;
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.stockKnn = stockKnnInstalled();
         this.stockMl = MlCommons.stockInstalled(pluginDir());
         if (stockKnn) {
-            logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
-            org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
+            logger.info("accelerated-search: the k-NN plugin is installed; it serves knn_vector and knn");
+            org.lucenerust.opensearch.engine.AcceleratedEngineSupport.refuseKnnVectorFields();
         } else {
             KnnTopVectorQuery.setNative(new KnnTopVectorQuery.NativeSearch() {
                 @Override
@@ -304,7 +304,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
-        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(settings);
+        org.lucenerust.opensearch.engine.AcceleratedEngineSupport.readFollowerEngine(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
         this.nativeFetch = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : true;
         // The index's one reader wrapper is the security plugin's when it is installed: stored
@@ -321,13 +321,13 @@ public class RustSearchPlugin extends Plugin implements
                 )
             );
         }
-        RustIndexerFactory.verify();
+        AcceleratedIndexerFactory.verify();
         // The keystore is only open during startup.
         this.localKey = LocalKeySource.Config.fromNode(settings);
         // The FIPS build checks its crypto now: a node that cannot encrypt with validated modules
         // does not start.
         if (StoreCrypto.buildIsFips()) {
-            logger.info("lucene-rust: encrypted store crypto is {}", StoreCrypto.get().description());
+            logger.info("accelerated-search: encrypted store crypto is {}", StoreCrypto.get().description());
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
@@ -339,7 +339,7 @@ public class RustSearchPlugin extends Plugin implements
     private static void configureAggSegmentCache(Settings settings) {
         int rc = NativeStore.aggCacheSetBudget(NODE_AGG_SEGMENT_CACHE_SIZE.get(settings).getBytes());
         if (rc != 0) {
-            throw new IllegalStateException("lucene-rust: cannot configure the aggregation segment cache (status " + rc + ")");
+            throw new IllegalStateException("accelerated-search: cannot configure the aggregation segment cache (status " + rc + ")");
         }
     }
 
@@ -348,7 +348,7 @@ public class RustSearchPlugin extends Plugin implements
         int rc = NativeStore.storeSetReadAdvice(spec, NODE_WARM_RANDOM.get(settings));
         if (rc != 0) {
             throw new IllegalArgumentException(
-                "lucene-rust: invalid [" + NODE_READ_ADVICE.getKey() + "] " + spec + ": " + NativeBridge.lastError()
+                "accelerated-search: invalid [" + NODE_READ_ADVICE.getKey() + "] " + spec + ": " + NativeBridge.lastError()
             );
         }
     }
@@ -356,28 +356,28 @@ public class RustSearchPlugin extends Plugin implements
     private static void configurePageCache(Settings settings) {
         int rc = NativeStore.storeSetPageCacheBudget(NODE_PAGE_CACHE_SIZE.get(settings).getBytes());
         if (rc != 0) {
-            throw new IllegalStateException("lucene-rust: cannot configure the page cache (status " + rc + ")");
+            throw new IllegalStateException("accelerated-search: cannot configure the page cache (status " + rc + ")");
         }
         if (NativeStore.storePageCacheAvailable() == false) {
-            logger.info("lucene-rust: userfaultfd is unavailable here; indices with index.store.read_mode [page_cache] stay mapped");
+            logger.info("accelerated-search: userfaultfd is unavailable here; indices with index.store.read_mode [page_cache] stay mapped");
         }
     }
 
     private static void configureLazyDecrypt(Settings settings) {
         if (NativeStore.storeLazyDecryptActive() == false) {
             logger.info(
-                "lucene-rust: userfaultfd is unavailable here; encrypted shard files are decrypted whole when opened"
+                "accelerated-search: userfaultfd is unavailable here; encrypted shard files are decrypted whole when opened"
             );
         }
     }
 
     /**
      * The {@code encrypted} store type: encryption at rest with keys from a KMS, which Lucene
-     * and the Rust engine both read and write ({@link RustEncryptedDirectoryFactory}).
+     * and the Rust engine both read and write ({@link AcceleratedEncryptedDirectoryFactory}).
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        return Map.of(RustEncryptedDirectoryFactory.TYPE, new RustEncryptedDirectoryFactory(localKey));
+        return Map.of(AcceleratedEncryptedDirectoryFactory.TYPE, new AcceleratedEncryptedDirectoryFactory(localKey));
     }
 
     /**
@@ -397,7 +397,7 @@ public class RustSearchPlugin extends Plugin implements
         long defaultLimit = 3 * indexBufferBytes(settings) + NODE_PAGE_CACHE_SIZE.get(settings).getBytes();
         return BreakerSettings.updateFromSettings(
             new BreakerSettings(
-                RustEngineSupport.BREAKER_NAME,
+                AcceleratedEngineSupport.BREAKER_NAME,
                 defaultLimit,
                 1.0,
                 CircuitBreaker.Type.MEMORY,
@@ -423,7 +423,7 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public void setCircuitBreaker(CircuitBreaker circuitBreaker) {
-        RustEngineSupport.setBreaker(circuitBreaker);
+        AcceleratedEngineSupport.setBreaker(circuitBreaker);
     }
 
     /**
@@ -441,7 +441,7 @@ public class RustSearchPlugin extends Plugin implements
                 Settings.Builder added = Settings.builder();
                 String adaptive = adaptiveDocValuesDefault(templateAndRequestSettings);
                 if (adaptive != null) {
-                    added.put(RustEngineSupport.ADAPTIVE_DOC_VALUES.getKey(), adaptive);
+                    added.put(AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES.getKey(), adaptive);
                 }
                 if (stockKnn == false && templateAndRequestSettings.getAsBoolean(KnnSettings.KNN_INDEX.getKey(), false)) {
                     added.put(KnnSettings.DERIVED_SOURCE.getKey(), true)
@@ -462,35 +462,35 @@ public class RustSearchPlugin extends Plugin implements
      */
     private String adaptiveDocValuesDefault(Settings templateAndRequestSettings) {
         org.opensearch.cluster.service.ClusterService cluster = clusterService.get();
-        if (cluster == null || nodeEngineEnabled == false || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)) {
+        if (cluster == null || nodeEngineEnabled == false || AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)) {
             return null;
         }
         // As IndexSettings sees them: the node's settings (indices.engine.accelerated.default)
         // under the index's own.
         Settings effective = Settings.builder().put(cluster.getSettings()).put(templateAndRequestSettings).build();
-        if (RustEngineSupport.servedByRust(effective) == false) {
+        if (AcceleratedEngineSupport.servedByRust(effective) == false) {
             return null;
         }
         // Only `true` is stored: it is not stock-readable whatever the settings say. `auto` and `false`
         // stay out of the index, so a node without the plugin still opens it (an unknown index setting
         // would refuse its replicas); an index without the setting follows the cluster default.
-        String value = cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
+        String value = cluster.getClusterSettings().get(AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
         return "true".equals(value) ? value : null;
     }
 
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
     @Override
     public void onIndexModule(IndexModule indexModule) {
-        RustIndexerFactory.install(indexModule);
+        AcceleratedIndexerFactory.install(indexModule);
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
-            indexModule.addIndexOperationListener(new DerivedSource.Listener(RustEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
+            indexModule.addIndexOperationListener(new DerivedSource.Listener(AcceleratedEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
         }
-        // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
+        // The fuzzy-set _id postings format is refused at creation (AcceleratedEngineSupport.unsupported); the
         // setting is dynamic, so turning it on later is refused too, rather than ignored.
-        if (RustEngineSupport.servedByRust(indexModule.getSettings())) {
+        if (AcceleratedEngineSupport.servedByRust(indexModule.getSettings())) {
             indexModule.addSettingsUpdateConsumer(IndexSettings.INDEX_DOC_ID_FUZZY_SET_ENABLED_SETTING, enabled -> {}, enabled -> {
                 if (enabled) {
-                    throw new IllegalArgumentException(RustEngineSupport.FUZZY_SET_REFUSED);
+                    throw new IllegalArgumentException(AcceleratedEngineSupport.FUZZY_SET_REFUSED);
                 }
             });
         }
@@ -524,7 +524,7 @@ public class RustSearchPlugin extends Plugin implements
                 } catch (SetOnce.AlreadySetException e) {
                     // Another plugin wrapped the index's readers first: its wrapper stays, and the
                     // engine's searchers read stored fields natively under it.
-                    logger.info("lucene-rust: [{}] already has a reader wrapper; stored fields are read natively under it", indexModule.getIndex());
+                    logger.info("accelerated-search: [{}] already has a reader wrapper; stored fields are read natively under it", indexModule.getIndex());
                 }
             }
             {
@@ -553,7 +553,7 @@ public class RustSearchPlugin extends Plugin implements
                             );
                         } catch (RuntimeException e) {
                             // Only a hint: the fetch phase reads every document itself.
-                            logger.debug("lucene-rust: stored-fields prefetch failed", e);
+                            logger.debug("accelerated-search: stored-fields prefetch failed", e);
                         }
                     }
 
@@ -638,45 +638,45 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
-        Optional<EngineFactory> openSearch = RustEngineSupport.servesFollower(indexSettings.getSettings())
-            ? Optional.of(RustEngineFactory.standardFollower())
+        Optional<EngineFactory> openSearch = AcceleratedEngineSupport.servesFollower(indexSettings.getSettings())
+            ? Optional.of(AcceleratedEngineFactory.standardFollower())
             : Optional.empty();
-        if (RustEngineSupport.openSearchEngine(indexSettings.getSettings())) {
+        if (AcceleratedEngineSupport.openSearchEngine(indexSettings.getSettings())) {
             return openSearch;
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
         // writer cannot serve it. Realtime search is the Rust engine's alone, so asking for it
         // asks for the engine: it is never dropped silently.
-        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings())
-            || indexSettings.getValue(RustEngineSupport.REALTIME_SEARCH);
+        boolean asked = AcceleratedEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings())
+            || indexSettings.getValue(AcceleratedEngineSupport.REALTIME_SEARCH);
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
-            if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
+            if (AcceleratedEngineSupport.unsupported(indexSettings, sorted) != null) {
                 return openSearch;
             }
             MappingMetadata mapping = indexSettings.getIndexMetadata().mapping();
-            if (mapping != null && RustEngineSupport.unsupportedField(mapping.sourceAsMap()) != null) {
+            if (mapping != null && AcceleratedEngineSupport.unsupportedField(mapping.sourceAsMap()) != null) {
                 return openSearch;
             }
         }
-        return Optional.of(new RustEngineFactory(nodeEngineEnabled, RustEngineSupport.servesFollower(indexSettings.getSettings())));
+        return Optional.of(new AcceleratedEngineFactory(nodeEngineEnabled, AcceleratedEngineSupport.servesFollower(indexSettings.getSettings())));
     }
 
     /**
      * Where Rust looks for the analysis modules' data packs (their dictionaries, see
-     * {@link RustAnalysis}): {@code <config>/lucene-rust/packs}, then the plugin's own {@code packs}
+     * {@link AcceleratedAnalysis}): {@code <config>/accelerated-search/packs}, then the plugin's own {@code packs}
      * directory (a zip built with {@code -PdataPacks}).
      */
     static void addDataPackDirs(Path configPath) {
         List<Path> dirs = new ArrayList<>();
         if (configPath != null) {
-            dirs.add(configPath.resolve("lucene-rust").resolve("packs"));
+            dirs.add(configPath.resolve("accelerated-search").resolve("packs"));
         }
         dirs.add(pluginDir().resolve("packs"));
         for (Path dir : dirs) {
             if (NativeStore.addDataPackDir(dir.toAbsolutePath().toString()) != 0) {
-                logger.warn("lucene-rust: cannot add data pack directory [{}]: {}", dir, NativeBridge.lastError());
+                logger.warn("accelerated-search: cannot add data pack directory [{}]: {}", dir, NativeBridge.lastError());
             }
         }
     }
@@ -688,19 +688,19 @@ public class RustSearchPlugin extends Plugin implements
 
     private static Path pluginDir() {
         try {
-            return Path.of(RustSearchPlugin.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParent();
+            return Path.of(AcceleratedSearchPlugin.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParent();
         } catch (URISyntaxException e) {
-            throw new IllegalStateException("lucene-rust: cannot locate the plugin directory", e);
+            throw new IllegalStateException("accelerated-search: cannot locate the plugin directory", e);
         }
     }
 
-    /** The {@code rust_*} tokenizers ({@link RustAnalysis#TOKENIZERS}): Rust on the index and query side alike. */
+    /** The {@code rust_*} tokenizers ({@link AcceleratedAnalysis#TOKENIZERS}): Rust on the index and query side alike. */
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> getTokenizers() {
         if (stockMl) {
-            return RustAnalysis.tokenizers();
+            return AcceleratedAnalysis.tokenizers();
         }
-        Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> tokenizers = new java.util.HashMap<>(RustAnalysis.tokenizers());
+        Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> tokenizers = new java.util.HashMap<>(AcceleratedAnalysis.tokenizers());
         tokenizers.putAll(HfAnalysis.tokenizers());
         return tokenizers;
     }
@@ -720,9 +720,9 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> getAnalyzers() {
         if (stockMl) {
-            return RustAnalysis.analyzers();
+            return AcceleratedAnalysis.analyzers();
         }
-        Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> analyzers = new java.util.HashMap<>(RustAnalysis.analyzers());
+        Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> analyzers = new java.util.HashMap<>(AcceleratedAnalysis.analyzers());
         analyzers.putAll(HfAnalysis.analyzers());
         return analyzers;
     }
@@ -742,39 +742,39 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public Optional<QueryPhaseSearcher> getQueryPhaseSearcher() {
-        return Optional.of(new RustQueryPhaseSearcher(readers, stats));
+        return Optional.of(new AcceleratedQueryPhaseSearcher(readers, stats));
     }
 
     @Override
     public List<Setting<?>> getSettings() {
-        List<Setting<?>> settings = new ArrayList<>(RustEncryptedDirectoryFactory.settings());
+        List<Setting<?>> settings = new ArrayList<>(AcceleratedEncryptedDirectoryFactory.settings());
         settings.addAll(List.of(
-            RustQueryPhaseSearcher.ENABLED,
+            AcceleratedQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
             HIGHLIGHT_ENABLED,
             org.lucenerust.opensearch.highlight.ExtendedHighlighting.ENABLED,
             ExtendedScripts.ENABLED,
             NODE_FETCH_WRAPPER,
-            RustQueryPhaseSearcher.NATIVE_SHAPES,
-            RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
-            RustQueryPhaseSearcher.AGG_SEGMENT_CACHE,
+            AcceleratedQueryPhaseSearcher.NATIVE_SHAPES,
+            AcceleratedQueryPhaseSearcher.NATIVE_APPROXIMATE,
+            AcceleratedQueryPhaseSearcher.AGG_SEGMENT_CACHE,
             NODE_AGG_SEGMENT_CACHE_SIZE,
-            RustEngineSupport.ENGINE_ENABLED,
-            RustEngineSupport.ENGINE_DEFAULT,
-            RustEngineSupport.FAULT_INJECTION,
-            RustEngineSupport.REALTIME_SEARCH,
-            RustEngineSupport.REALTIME_MAX_STALENESS,
-            RustEngineSupport.ADAPTIVE_DOC_VALUES,
-            RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT,
-            RustEngineSupport.ZSTD_TERMS,
-            RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
-            RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,
-            RustEngineSupport.STORE_MODE,
-            RustEngineSupport.PARTITION_FIELD,
-            RustEngineSupport.IVF_PARTITION_CLUSTERS,
-            RustEngineSupport.KNN_TARGET_RECALL,
-            RustEngineSupport.KNN_RECALL_SAMPLE_RATE,
-            RustEngineSupport.KNN_RECALL_CHECK_BUDGET,
+            AcceleratedEngineSupport.ENGINE_ENABLED,
+            AcceleratedEngineSupport.ENGINE_DEFAULT,
+            AcceleratedEngineSupport.FAULT_INJECTION,
+            AcceleratedEngineSupport.REALTIME_SEARCH,
+            AcceleratedEngineSupport.REALTIME_MAX_STALENESS,
+            AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES,
+            AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT,
+            AcceleratedEngineSupport.ZSTD_TERMS,
+            AcceleratedEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
+            AcceleratedEngineSupport.PAGED_ZSTD_STORED_FIELDS,
+            AcceleratedEngineSupport.STORE_MODE,
+            AcceleratedEngineSupport.PARTITION_FIELD,
+            AcceleratedEngineSupport.IVF_PARTITION_CLUSTERS,
+            AcceleratedEngineSupport.KNN_TARGET_RECALL,
+            AcceleratedEngineSupport.KNN_RECALL_SAMPLE_RATE,
+            AcceleratedEngineSupport.KNN_RECALL_CHECK_BUDGET,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
@@ -813,8 +813,8 @@ public class RustSearchPlugin extends Plugin implements
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
         mappers.put(
-            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.CONTENT_TYPE,
-            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.PARSER
+            org.lucenerust.opensearch.substring.AcceleratedWildcardFieldMapper.CONTENT_TYPE,
+            org.lucenerust.opensearch.substring.AcceleratedWildcardFieldMapper.PARSER
         );
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
@@ -974,7 +974,7 @@ public class RustSearchPlugin extends Plugin implements
             mlClient = new MLCommonsClientAccessor(() -> {
                 if (stockMl) {
                     throw new IllegalStateException(
-                        "neural search runs models through the lucene-rust plugin's ml-commons, which stands down when opensearch-ml is installed; remove opensearch-ml to use model inference"
+                        "neural search runs models through the accelerated-search plugin's ml-commons, which stands down when opensearch-ml is installed; remove opensearch-ml to use model inference"
                     );
                 }
                 return MlCommons.get();
@@ -999,9 +999,9 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
-        RustEngineSupport.setAdaptiveDocValuesDefault(clusterService.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT));
+        AcceleratedEngineSupport.setAdaptiveDocValuesDefault(clusterService.getClusterSettings().get(AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT));
         clusterService.getClusterSettings()
-            .addSettingsUpdateConsumer(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT, RustEngineSupport::setAdaptiveDocValuesDefault);
+            .addSettingsUpdateConsumer(AcceleratedEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT, AcceleratedEngineSupport::setAdaptiveDocValuesDefault);
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(
                 NativeMemory.OFF_HEAP_LIMIT,

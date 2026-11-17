@@ -223,7 +223,7 @@ fn expand_bitset_matches_the_scalar_specification() {
 /// group count around the two- and four-group steps and the 16-bit
 /// flush, on random tables and on all-0xFF ones, the largest sums a
 /// flush can hold. The AVX-512 kernel is checked directly where the CPU
-/// has it, whatever `LUCENE_RUST_SIMD` says.
+/// has it, whatever `ACCELERATED_SIMD` says.
 #[test]
 fn lut16_accumulate32_matches_the_scalar_specification() {
     #[cfg(target_arch = "x86_64")]

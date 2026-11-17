@@ -7,7 +7,7 @@
 //! which one to run. Both are resolved on first use and cached: the check
 //! is a load after that, never a CPUID or an environment read per call.
 //!
-//! `LUCENE_RUST_SIMD` caps what is used, read once with the detection:
+//! `ACCELERATED_SIMD` caps what is used, read once with the detection:
 //! `avx2` (or `neon`, or `scalar`) keeps every run-time choice on the
 //! baseline kernels, and `avx512` (the default) allows AVX-512 where the CPU
 //! has it. It cannot raise the level above what the CPU supports, and it
@@ -40,7 +40,7 @@ struct Features {
 fn features() -> Features {
     static FEATURES: OnceLock<Features> = OnceLock::new();
     *FEATURES.get_or_init(|| {
-        let cap = std::env::var("LUCENE_RUST_SIMD").ok();
+        let cap = std::env::var("ACCELERATED_SIMD").ok();
         resolve(detect(), cap.as_deref())
     })
 }
@@ -81,7 +81,7 @@ fn detect() -> Features {
     }
 }
 
-/// `detected`, lowered to the `LUCENE_RUST_SIMD` cap when one is set.
+/// `detected`, lowered to the `ACCELERATED_SIMD` cap when one is set.
 /// `avx2`, `neon` and `scalar` all mean the build's baseline (no run-time
 /// choice tests for anything below AVX-512), whichever architecture this
 /// is. An unknown value leaves the detection as it is, with a warning.
@@ -92,7 +92,7 @@ fn resolve(detected: Features, cap: Option<&str>) -> Features {
         Some("avx2") => Level::Avx2,
         None | Some("avx512") => return detected,
         Some(other) => {
-            eprintln!("LUCENE_RUST_SIMD={other:?} is not avx512, avx2, neon or scalar; ignored");
+            eprintln!("ACCELERATED_SIMD={other:?} is not avx512, avx2, neon or scalar; ignored");
             return detected;
         }
     };

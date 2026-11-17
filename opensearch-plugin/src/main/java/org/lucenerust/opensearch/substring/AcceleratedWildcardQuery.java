@@ -29,7 +29,7 @@ import org.apache.lucene.util.BytesRef;
  * <p>{@link #kind} and {@link #pattern} are what the native side runs ({@code SubstringQuery}); a
  * query that has none of them ({@link #nativePattern} false) runs on Lucene only.
  */
-public final class RustWildcardQuery extends Query {
+public final class AcceleratedWildcardQuery extends Query {
     /** How {@link #pattern} reads: {@code SubstringKind} in {@code extended_query.rs}. */
     public enum Kind {
         WILDCARD,
@@ -47,7 +47,7 @@ public final class RustWildcardQuery extends Query {
     private final long flags;
     private final Predicate<String> matcher;
 
-    RustWildcardQuery(
+    AcceleratedWildcardQuery(
         String field,
         Kind kind,
         String pattern,
@@ -142,18 +142,18 @@ public final class RustWildcardQuery extends Query {
 
     @Override
     public String toString(String f) {
-        return "RustWildcardQuery(" + field + ":" + kind.name().toLowerCase(java.util.Locale.ROOT) + " \"" + pattern + "\"" + (caseInsensitive ? ", case_insensitive" : "") + ")";
+        return "AcceleratedWildcardQuery(" + field + ":" + kind.name().toLowerCase(java.util.Locale.ROOT) + " \"" + pattern + "\"" + (caseInsensitive ? ", case_insensitive" : "") + ")";
     }
 
     @Override
     public boolean equals(Object o) {
         return sameClassAs(o)
-            && field.equals(((RustWildcardQuery) o).field)
-            && kind == ((RustWildcardQuery) o).kind
-            && pattern.equals(((RustWildcardQuery) o).pattern)
-            && caseInsensitive == ((RustWildcardQuery) o).caseInsensitive
-            && nativePattern == ((RustWildcardQuery) o).nativePattern
-            && flags == ((RustWildcardQuery) o).flags;
+            && field.equals(((AcceleratedWildcardQuery) o).field)
+            && kind == ((AcceleratedWildcardQuery) o).kind
+            && pattern.equals(((AcceleratedWildcardQuery) o).pattern)
+            && caseInsensitive == ((AcceleratedWildcardQuery) o).caseInsensitive
+            && nativePattern == ((AcceleratedWildcardQuery) o).nativePattern
+            && flags == ((AcceleratedWildcardQuery) o).flags;
     }
 
     @Override

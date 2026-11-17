@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lucene-engine knn_vector indexes moved between stock k-NN and the lucene-rust plugin, both ways.
+"""lucene-engine knn_vector indexes moved between stock k-NN and the accelerated-search plugin, both ways.
 
 Stock k-NN's lucene engine writes Lucene's own vector formats, and so does the
 plugin; each must read what the other writes. Every lucene-engine mapping of
@@ -270,7 +270,7 @@ def fallbacks_since(before):
 
 def main():
     keep = "--keep" in sys.argv
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip

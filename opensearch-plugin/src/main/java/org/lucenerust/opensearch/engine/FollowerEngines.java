@@ -23,7 +23,7 @@ public final class FollowerEngines {
     private FollowerEngines() {}
 
     /** A follower on the accelerated engine. */
-    public static final class Accelerated extends RustEngine {
+    public static final class Accelerated extends AcceleratedEngine {
         public Accelerated(EngineConfig config) {
             super(config);
         }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run OpenSearch 3.9.0 (stock, or with the lucene-rust plugin) as plain processes, no Docker:
+# Run OpenSearch 3.9.0 (stock, or with the accelerated-search plugin) as plain processes, no Docker:
 # for hosts without a container runtime (cloud sandboxes, CI boxes) and for A/B runs that need a
 # quiet machine. Source it, then call the functions.
 #
@@ -48,8 +48,8 @@ native_setup() {
   local p; for p in "$NODE_HOME"/plugin/plugins/*; do
     case " ${KEEP_PLUGINS:-opensearch-custom-codecs} " in *" $(basename "$p") "*) ;; *) rm -rf "$p" ;; esac
   done
-  "$NODE_HOME/plugin/bin/opensearch-plugin" install --batch "file://$(ls "$REPO"/opensearch-plugin/build/distributions/lucene-rust-0.1.0.zip)"
-  echo "--enable-native-access=ALL-UNNAMED" > "$NODE_HOME/plugin/config/jvm.options.d/lucene-rust.options"
+  "$NODE_HOME/plugin/bin/opensearch-plugin" install --batch "file://$(ls "$REPO"/opensearch-plugin/build/distributions/accelerated-search-0.1.0.zip)"
+  echo "--enable-native-access=ALL-UNNAMED" > "$NODE_HOME/plugin/config/jvm.options.d/accelerated-search.options"
 }
 
 # native_start stock|plugin DATA_DIR [LIB.so]  (a library replaces the installed one: A/B of builds)
@@ -57,7 +57,7 @@ native_start() {
   local kind=$1 data=$2 so=${3:-}
   native_stop
   local home=$NODE_HOME/$kind; mkdir -p "$data"
-  [ -n "$so" ] && cp "$so" "$home/plugins/lucene-rust/native/linux-x86_64/liblucene_ffi.so"
+  [ -n "$so" ] && cp "$so" "$home/plugins/accelerated-search/native/linux-x86_64/liblucene_ffi.so"
   # OpenSearch refuses to run as root: drop to a bench user (created on first use)
   local drop=""
   if [ "$(id -u)" = 0 ]; then

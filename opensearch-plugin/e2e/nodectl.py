@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run OpenSearch nodes (stock, or with the lucene-rust plugin) as plain processes: no Docker.
+"""Run OpenSearch nodes (stock, or with the accelerated-search plugin) as plain processes: no Docker.
 
 One small process manager for every end-to-end script, bench and CI job that starts a node:
 run, kill, start, restart, stop, rm, exec, memory stats and logs on tarball distributions, each
@@ -133,7 +133,7 @@ def pristine(version=VERSION):
 
 
 def latest_zip():
-    zips = sorted(glob.glob(os.path.join(REPO, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip")),
+    zips = sorted(glob.glob(os.path.join(REPO, "opensearch-plugin", "build", "distributions", "accelerated-search-*.zip")),
                   key=os.path.getmtime)
     if not zips:
         sys.exit("nodectl: no plugin zip; run `gradle -p opensearch-plugin bundlePlugin` first")
@@ -191,7 +191,7 @@ def dist(variant, version=None, keep=None, zips=None, store_key=None, jvm_option
     opts = ["--enable-native-access=ALL-UNNAMED"] if zips else []
     opts += jvm_options or []
     if opts:
-        with open(os.path.join(d, "config", "jvm.options.d", "lucene-rust.options"), "w") as f:
+        with open(os.path.join(d, "config", "jvm.options.d", "accelerated-search.options"), "w") as f:
             f.write("\n".join(opts) + "\n")
     if store_key:
         ks = os.path.join(d, "bin", "opensearch-keystore")
@@ -216,9 +216,9 @@ def with_lib(variant_dir, lib):
     for entry in os.listdir(variant_dir):
         s, t = os.path.join(variant_dir, entry), os.path.join(tmp, entry)
         _sh(["cp", "-a" if entry in ("bin", "config", "plugins") else "-al", s, t])
-    found = glob.glob(os.path.join(tmp, "plugins", "lucene-rust", "native", "*", "liblucene_ffi.so"))
+    found = glob.glob(os.path.join(tmp, "plugins", "accelerated-search", "native", "*", "liblucene_ffi.so"))
     if not found:
-        sys.exit(f"nodectl: {variant_dir} has no lucene-rust plugin to take a library")
+        sys.exit(f"nodectl: {variant_dir} has no accelerated-search plugin to take a library")
     for f in found:
         os.remove(f)
         shutil.copy(lib, f)

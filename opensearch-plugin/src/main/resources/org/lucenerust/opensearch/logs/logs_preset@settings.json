@@ -1,7 +1,7 @@
 {
   "version": 1,
   "_meta": {
-    "managed_by": "lucene-rust",
+    "managed_by": "accelerated-search",
     "description": "Index settings for log indices: accelerated engine, newest first, zstd stored fields and term blocks, adaptive doc values. Opt in by naming this template in an index template's composed_of."
   },
   "template": {

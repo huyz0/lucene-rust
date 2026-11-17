@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ColBERT retrieval through the lucene-rust plugin on a BEIR dataset: quality and latency.
+"""ColBERT retrieval through the accelerated-search plugin on a BEIR dataset: quality and latency.
 
 Indexes the corpus (its text, and its ColBERT token vectors in a `multi_vector`
 field with `pooled`) into one shard the Rust engine writes, then runs every

@@ -302,7 +302,7 @@ public final class NativeSelfTest {
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, c.replicas())
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, c.type())
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED, c.remote())
-                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime())
+                .put(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.REALTIME_SEARCH.getKey(), c.realtime())
                 .build();
             org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("rt")
                 .settings(settings)
@@ -352,43 +352,43 @@ public final class NativeSelfTest {
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1)
                 .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, "SEGMENT")
-                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime());
+                .put(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.REALTIME_SEARCH.getKey(), c.realtime());
             if (c.engine() != null) {
-                b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+                b.put(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
             }
             if (c.follows()) {
                 b.put(follower, "leader-cluster:docs");
             }
             org.opensearch.common.settings.Settings settings = b.build();
-            check(org.lucenerust.opensearch.engine.RustEngineSupport.openSearchEngine(settings) != c.rust(), "ccr follower: engine offered: " + c);
-            check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == c.rust(), "ccr follower: served by Rust: " + c);
+            check(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.openSearchEngine(settings) != c.rust(), "ccr follower: engine offered: " + c);
+            check(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.servedByRust(settings) == c.rust(), "ccr follower: served by Rust: " + c);
             org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("f")
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == (c.realtime() && c.rust()), "ccr follower: realtime primary routing: " + c);
-            check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == false, "ccr follower: not delegated: " + c);
+            check(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.servesFollower(settings) == false, "ccr follower: not delegated: " + c);
         }
         // With plugins.replication.follower.engine: delegate, replication leaves followers to this plugin.
-        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(
-            org.opensearch.common.settings.Settings.builder().put(org.lucenerust.opensearch.engine.RustEngineSupport.CCR_FOLLOWER_ENGINE, "delegate").build()
+        org.lucenerust.opensearch.engine.AcceleratedEngineSupport.readFollowerEngine(
+            org.opensearch.common.settings.Settings.builder().put(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.CCR_FOLLOWER_ENGINE, "delegate").build()
         );
         try {
             for (Case c : cases) {
                 org.opensearch.common.settings.Settings.Builder b = org.opensearch.common.settings.Settings.builder()
                     .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT);
                 if (c.engine() != null) {
-                    b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+                    b.put(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
                 }
                 if (c.follows()) {
                     b.put(follower, "leader-cluster:docs");
                 }
                 org.opensearch.common.settings.Settings settings = b.build();
                 boolean rust = c.engine() != Boolean.FALSE;
-                check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == rust, "ccr follower delegated: served: " + c);
-                check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == c.follows(), "ccr follower delegated: engine: " + c);
+                check(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.servedByRust(settings) == rust, "ccr follower delegated: served: " + c);
+                check(org.lucenerust.opensearch.engine.AcceleratedEngineSupport.servesFollower(settings) == c.follows(), "ccr follower delegated: engine: " + c);
             }
         } finally {
-            org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(org.opensearch.common.settings.Settings.EMPTY);
+            org.lucenerust.opensearch.engine.AcceleratedEngineSupport.readFollowerEngine(org.opensearch.common.settings.Settings.EMPTY);
         }
     }
 
@@ -839,7 +839,7 @@ public final class NativeSelfTest {
             compareMinScore(where, searcher, acquired.handle(), rewritten, enc.blob());
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
-            Term shortcut = RustQueryPhaseSearcher.shortcutTerm(reader, rewritten);
+            Term shortcut = AcceleratedQueryPhaseSearcher.shortcutTerm(reader, rewritten);
             if (shortcut != null) {
                 // The term shortcut's one call: the document frequency, and the hits a search with
                 // the same limit finds.
@@ -1012,7 +1012,7 @@ public final class NativeSelfTest {
                             long[] out = new long[1];
                             int trc = NativeSearch.countTerminates(handle, blob, spec.toByteArray(), out);
                             check(trc == NativeBridge.OK, what + ": countTerminates status " + trc);
-                            boolean replay = RustQueryPhaseSearcher.replayCountTerminated(slices, leaves, iterate, perSegment, n);
+                            boolean replay = AcceleratedQueryPhaseSearcher.replayCountTerminated(slices, leaves, iterate, perSegment, n);
                             check(replay == (out[0] != 0), what + ": replayed terminated_early " + replay + " at n " + n + ", native " + out[0]);
                         }
                     }
@@ -1378,14 +1378,14 @@ public final class NativeSelfTest {
 
     /**
      * terminate_after as the plugin runs it natively -- a search Lucene collects document by
-     * document (the score among the keys, or track_scores; a query RustQueryPhaseSearcher
+     * document (the score among the keys, or track_scores; a query AcceleratedQueryPhaseSearcher
      * .rangeCollected passes) -- against Lucene's sequential search behind OpenSearch's
      * terminating collector: hits, the total, whether it stopped early, the tracked max score.
      */
     @SuppressWarnings("deprecation")
     private static void compareTerminateAfter(String where, IndexSearcher searcher, long handle, Query query, byte[] blob, Random r)
         throws Exception {
-        if (RustQueryPhaseSearcher.rangeCollected(query)) {
+        if (AcceleratedQueryPhaseSearcher.rangeCollected(query)) {
             return;
         }
         int[] ns = { 1, 2, 3, 7, 20, 100, 1000 };
@@ -1620,7 +1620,7 @@ public final class NativeSelfTest {
      * previous native reader, and a forced merge at the end.
      */
     private static void nrtReaders(Random r) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest");
         NativeReaders readers = new NativeReaders();
         List<String> fields = List.of("body", "tag");
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
@@ -1666,7 +1666,7 @@ public final class NativeSelfTest {
      * terms, the calls with no document, and the hand-over to the segment's iterator for a scan.
      */
     private static void pointDocValues(Random r) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-dv");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-dv");
         NativeReaders readers = new NativeReaders();
         SearchStats stats = new SearchStats();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
@@ -1804,7 +1804,7 @@ public final class NativeSelfTest {
      * every visit recorded and compared call for call.
      */
     private static void storedFields(Random r) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-stored");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-stored");
         NativeReaders readers = new NativeReaders();
         SearchStats stats = new SearchStats();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
@@ -2017,7 +2017,7 @@ public final class NativeSelfTest {
      * segment holds none of them.
      */
     private static void pointSetsMatchingNothing(Random r) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-pointsets");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-pointsets");
         NativeReaders readers = new NativeReaders();
         IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, cfg)) {
@@ -2056,7 +2056,7 @@ public final class NativeSelfTest {
      * must be built from the leaves the searcher actually sees, not from the writer's segment list.
      */
     private static void softDeletes(Random r) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-softdeletes");
+        Path dir = Files.createTempDirectory("accelerated-search-softdeletes");
         NativeReaders readers = new NativeReaders();
         String soft = "__soft_deletes";
         IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer()).setSoftDeletesField(soft)
@@ -2113,7 +2113,7 @@ public final class NativeSelfTest {
             SortEncoder.encode(new Sort(openSearchGeoSort(sr, false)), new FieldDoc(1, 0f, new Object[] { 12.5 })).blob() != null,
             "OpenSearch's _geo_distance takes search_after"
         );
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-geo");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-geo");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;

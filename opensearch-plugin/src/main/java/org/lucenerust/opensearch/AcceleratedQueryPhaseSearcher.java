@@ -82,8 +82,8 @@ import java.util.function.ToLongFunction;
  * <p>A native failure is logged, counted, and the query is re-run on Lucene: it never fails a
  * search that Lucene could answer.
  */
-public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
-    private static final Logger logger = LogManager.getLogger(RustQueryPhaseSearcher.class);
+public final class AcceleratedQueryPhaseSearcher implements QueryPhaseSearcher {
+    private static final Logger logger = LogManager.getLogger(AcceleratedQueryPhaseSearcher.class);
 
     /** Per-index switch, dynamic: {@code PUT idx/_settings {"index.search.accelerated": false}}. */
     public static final Setting<Boolean> ENABLED = Setting.boolSetting(
@@ -148,7 +148,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     private final NativeReaders readers;
     private final SearchStats stats;
 
-    public RustQueryPhaseSearcher(NativeReaders readers, SearchStats stats) {
+    public AcceleratedQueryPhaseSearcher(NativeReaders readers, SearchStats stats) {
         this.readers = readers;
         this.stats = stats;
     }
@@ -413,7 +413,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
-                logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                logger.debug("accelerated-search: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
                 reason = FallbackReason.REALTIME_VIEW.key();
             } else {
                 p.searchedHandle = whole[0];
@@ -519,7 +519,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             try {
                 NativeProfile.recordQuery(ctx, searcher, query, report, weights, javaClock[0], phases.topScores, false);
             } catch (RuntimeException e) {
-                logger.warn("lucene-rust: laying the native profile into the response failed", e);
+                logger.warn("accelerated-search: laying the native profile into the response failed", e);
             }
         }
         layRescores(ctx, searcher, similarities, handle, weights);
@@ -575,7 +575,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeProfile.Report merged = NativeProfile.hybridReport(hybrid, subs, reports, clocks);
                 NativeProfile.recordQuery(ctx, searcher, hybrid, merged, weights, 0, true, false);
             } catch (RuntimeException e) {
-                logger.warn("lucene-rust: laying the native hybrid profile into the response failed", e);
+                logger.warn("accelerated-search: laying the native hybrid profile into the response failed", e);
             }
         }
         layRescores(ctx, searcher, similarities, handle, weights);
@@ -603,7 +603,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeProfile.recordQuery(ctx, searcher, filter, filtered, weights, filterClock[0], true, true);
             }
         } catch (RuntimeException e) {
-            logger.warn("lucene-rust: laying the native post_filter profile into the response failed", e);
+            logger.warn("accelerated-search: laying the native post_filter profile into the response failed", e);
         }
         return NativeProfile.rootCount(ctx);
     }
@@ -630,7 +630,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                             NativeProfile.recordQuery(ctx, searcher, rescoring, rescored, weights, rescoreClock[0], true, true);
                         }
                     } catch (RuntimeException e) {
-                        logger.warn("lucene-rust: laying the native rescore profile into the response failed", e);
+                        logger.warn("accelerated-search: laying the native rescore profile into the response failed", e);
                     }
                 }
             }
@@ -656,7 +656,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
         if (acquired.fallbackReason() != null) {
             // No native reader of the commit: nothing reads the buffers, natively or not.
-            logger.debug("lucene-rust: the buffers cannot be read without a native reader ({})", acquired.fallbackReason());
+            logger.debug("accelerated-search: the buffers cannot be read without a native reader ({})", acquired.fallbackReason());
             return false;
         }
         boolean read;
@@ -665,7 +665,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } catch (IOException | RuntimeException e) {
             // Not the index's own files that could not be read: the search fails, the shard stays
             // (OpenSearch fails a shard whose search reports a corrupt index anywhere in its causes).
-            logger.warn("lucene-rust: the buffered documents cannot be read by Lucene", e);
+            logger.warn("accelerated-search: the buffered documents cannot be read by Lucene", e);
             throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + e);
         }
         if (read == false) {
@@ -788,7 +788,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             rc = NativeSearch.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, collapseBlob, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
-                logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
+                logger.debug("accelerated-search: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, collapseField, NativeHybrid.terminates(ctx));
@@ -855,7 +855,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             out[0] = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
@@ -868,7 +868,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             NativeAggregations.checkBuckets(ctx, rc);
             NativeMemory.check(rc);
             stats.nativeError();
-            logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return FallbackReason.NATIVE_ERROR.key();
         }
         try {
@@ -877,7 +877,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return FallbackReason.AGGREGATIONS.key();
         } catch (ReflectiveOperationException | RuntimeException e) {
             stats.nativeError();
-            logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
+            logger.warn("accelerated-search: building native aggregation results failed, re-running on Lucene", e);
             return FallbackReason.NATIVE_ERROR.key();
         }
         NativeAggregations.consumeBuckets(ctx, out[0]);
@@ -1003,7 +1003,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (scriptFailed()) {
                 throw scriptFailure(ctx.searcher().getIndexReader(), true);
             }
-            logger.warn("lucene-rust: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());
             return false;
         }
         if (counts[3] == 0) {
@@ -1423,7 +1423,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
@@ -1445,7 +1445,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 NativeAggregations.checkBuckets(ctx, rc);
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             try {
@@ -1456,7 +1456,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return FallbackReason.AGGREGATIONS.key();
             } catch (ReflectiveOperationException | RuntimeException e) {
                 stats.nativeError();
-                logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
+                logger.warn("accelerated-search: building native aggregation results failed, re-running on Lucene", e);
                 return FallbackReason.NATIVE_ERROR.key();
             }
             NativeAggregations.consumeBuckets(ctx, aggResult);
@@ -1525,7 +1525,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             shortcut = Math.toIntExact(counts[3]);
@@ -1537,7 +1537,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
         }
@@ -1696,7 +1696,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             stats.nativeError();
-            logger.warn("lucene-rust: native count replay failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native count replay failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return null;
         }
         return out[0] != 0;
@@ -1824,7 +1824,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
-                logger.warn("lucene-rust: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return FallbackReason.NATIVE_ERROR.key();
             }
             r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
@@ -1852,7 +1852,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return FallbackReason.COLLAPSE_REFUSED.key();
             }
             stats.nativeError();
-            logger.warn("lucene-rust: native collapsed search failed ({}), re-running on Lucene: {}", rc, message);
+            logger.warn("accelerated-search: native collapsed search failed ({}), re-running on Lucene: {}", rc, message);
             return FallbackReason.NATIVE_ERROR.key();
         }
         TopDocsAndMaxScore td;
@@ -1860,7 +1860,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             td = NativeCollapse.decode(ctx, out[0], numDocs);
         } catch (RuntimeException e) {
             stats.nativeError();
-            logger.warn("lucene-rust: decoding native collapsed hits failed, re-running on Lucene", e);
+            logger.warn("accelerated-search: decoding native collapsed hits failed, re-running on Lucene", e);
             return FallbackReason.NATIVE_ERROR.key();
         }
         ctx.queryResult().topDocs(td, ctx.sort() == null ? new DocValueFormat[] { DocValueFormat.RAW } : ctx.sort().formats);
@@ -1897,7 +1897,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             stats.nativeError();
-            logger.warn("lucene-rust: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return FallbackReason.NATIVE_ERROR.key();
         }
         int n = (int) counts[0];

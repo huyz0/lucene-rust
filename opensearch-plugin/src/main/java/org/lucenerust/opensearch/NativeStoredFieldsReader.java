@@ -270,7 +270,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 if (rc != NativeBridge.OK) {
                     // As for stored fields: the segment's own iterator answers instead.
                     shared.stats.nativeError();
-                    logger.warn("lucene-rust: native doc values failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                    logger.warn("accelerated-search: native doc values failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
                     return null;
                 }
                 shared.stats.nativeDocValues();
@@ -428,7 +428,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             int rc = NativeSearch.prefetchDocuments(h, ord, docs);
             if (rc != NativeBridge.OK) {
                 // Only a hint: the reads that follow fetch what they need and report their own errors.
-                logger.debug("lucene-rust: native stored-fields prefetch failed ({}): {}", rc, NativeBridge.lastError());
+                logger.debug("accelerated-search: native stored-fields prefetch failed ({}): {}", rc, NativeBridge.lastError());
             }
         }
 
@@ -466,7 +466,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 shared.stats.nativeError();
-                logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                logger.warn("accelerated-search: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
                 return false;
             }
             shared.stats.nativeFetch(sequential);
@@ -513,7 +513,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 return;
             }
             shared.stats.nativeError();
-            logger.warn("lucene-rust: native stored value failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native stored value failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
             lucene.document(docID, new StoredFieldVisitor() {
                 private int at;
 
@@ -561,7 +561,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 return;
             }
             shared.stats.nativeError();
-            logger.warn("lucene-rust: native derived _source failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+            logger.warn("accelerated-search: native derived _source failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
             lucene.document(docID, new StoredFieldVisitor() {
                 private boolean done;
 

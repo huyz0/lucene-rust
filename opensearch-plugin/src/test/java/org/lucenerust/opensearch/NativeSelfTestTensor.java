@@ -132,7 +132,7 @@ final class NativeSelfTestTensor {
         String pooledHex = HexFormat.of().formatHex(pooled.array());
         check.accept(pooledHex.equals(GOLDEN_POOLED), "multi_vector pooled mean is lucene-tensor's: " + pooledHex);
         check.accept(MultiVectorEncoding.pooledMean(new float[][] { { 1f, -2f }, { -1f, 2f } }) == null, "a zero mean pools to nothing");
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-tensor");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-tensor");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;

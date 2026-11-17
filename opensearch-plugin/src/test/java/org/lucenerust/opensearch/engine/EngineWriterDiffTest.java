@@ -77,7 +77,7 @@ import java.util.stream.Stream;
 
 /**
  * The writer's differential test: the same documents, operation for operation, through Lucene's
- * {@link IndexWriter} and through {@link RustIndexWriter}, then every live document compared field
+ * {@link IndexWriter} and through {@link AcceleratedIndexWriter}, then every live document compared field
  * by field through Lucene's own readers -- stored values, postings with frequencies, positions and
  * offsets, norms, all five doc-values types, points -- and the Rust index through Lucene's {@link
  * CheckIndex}.
@@ -148,7 +148,7 @@ public final class EngineWriterDiffTest {
                 org.opensearch.core.xcontent.XContentParser p = org.opensearch.common.xcontent.json.JsonXContent.jsonXContent
                     .createParser(org.opensearch.core.xcontent.NamedXContentRegistry.EMPTY, null, json)
             ) {
-                return RustEngineSupport.unsupportedField(p.map());
+                return AcceleratedEngineSupport.unsupportedField(p.map());
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
             }
@@ -406,7 +406,7 @@ public final class EngineWriterDiffTest {
             if (sort != null) {
                 cfg.setIndexSort(sort).setParentField(parent);
             }
-            RustIndexWriter rust = RustIndexWriter.open(
+            AcceleratedIndexWriter rust = AcceleratedIndexWriter.open(
                 rustDir,
                 rustPath,
                 16,
@@ -887,7 +887,7 @@ public final class EngineWriterDiffTest {
             try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
                 empty.commit();
             }
-            RustIndexWriter w = RustIndexWriter.open(
+            AcceleratedIndexWriter w = AcceleratedIndexWriter.open(
                 dir,
                 root,
                 16,
@@ -947,8 +947,8 @@ public final class EngineWriterDiffTest {
      * attribute, documents without a value share the default partition, and a forced merge leaves one
      * segment per partition that Lucene reads.
      */
-    private static RustIndexWriter openPlain(FSDirectory dir, Path root) throws IOException {
-        return RustIndexWriter.open(
+    private static AcceleratedIndexWriter openPlain(FSDirectory dir, Path root) throws IOException {
+        return AcceleratedIndexWriter.open(
             dir,
             root,
             16,
@@ -987,7 +987,7 @@ public final class EngineWriterDiffTest {
             try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
                 empty.commit();
             }
-            RustIndexWriter w = openPlain(dir, root);
+            AcceleratedIndexWriter w = openPlain(dir, root);
             w.setAdaptiveDocValuesAuto();
             w.setLiveCommitData(Map.<String, String>of().entrySet());
             check(w.adaptiveDocValuesChoice() == null, "no choice before any document");
@@ -1009,7 +1009,7 @@ public final class EngineWriterDiffTest {
             check(Boolean.TRUE.equals(w.adaptiveDocValuesChoice()), "a timestamp in order makes the index adaptive");
             w.close();
             check("true".equals(org.apache.lucene.index.SegmentInfos.readLatestCommit(dir).getUserData().get("adaptive_doc_values")), "the choice is in the commit");
-            RustIndexWriter reopened = openPlain(dir, root);
+            AcceleratedIndexWriter reopened = openPlain(dir, root);
             reopened.setAdaptiveDocValuesAuto();
             check(Boolean.TRUE.equals(reopened.adaptiveDocValuesChoice()), "a reopened writer keeps the choice");
             reopened.close();
@@ -1039,7 +1039,7 @@ public final class EngineWriterDiffTest {
             try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
                 empty.commit();
             }
-            RustIndexWriter w = RustIndexWriter.open(
+            AcceleratedIndexWriter w = AcceleratedIndexWriter.open(
                 dir,
                 root,
                 16,
@@ -1126,7 +1126,7 @@ public final class EngineWriterDiffTest {
         }
     }
 
-    private static boolean refused(RustIndexWriter w, ParseContext.Document d, String message) {
+    private static boolean refused(AcceleratedIndexWriter w, ParseContext.Document d, String message) {
         try {
             w.addDocument(d, null);
             return false;

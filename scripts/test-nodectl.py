@@ -43,8 +43,8 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
 # the plugin tool: `install --batch file://ZIP` creates the plugin directory with a native library in it
 write(f"{FAKE}/bin/opensearch-plugin", """#!/bin/bash
 home=$(cd "$(dirname "$0")/.." && pwd)
-mkdir -p "$home/plugins/lucene-rust/native/linux-x86_64"
-echo original > "$home/plugins/lucene-rust/native/linux-x86_64/liblucene_ffi.so"
+mkdir -p "$home/plugins/accelerated-search/native/linux-x86_64"
+echo original > "$home/plugins/accelerated-search/native/linux-x86_64/liblucene_ffi.so"
 """)
 write(f"{FAKE}/bin/opensearch-keystore", """#!/bin/bash
 home=$(cd "$(dirname "$0")/.." && pwd)
@@ -57,7 +57,7 @@ for p in ("opensearch-knn", "opensearch-custom-codecs", "opensearch-neural-searc
     write(f"{FAKE}/plugins/{p}/plugin.jar", "x", 0o644)
 tgz = os.path.join(work, "fake.tar.gz")
 subprocess.run(["tar", "czf", tgz, "-C", os.path.dirname(FAKE), "--transform", "s|^fake|opensearch-test|", "fake"], check=True)
-zipf = os.path.join(work, "lucene-rust-test.zip")
+zipf = os.path.join(work, "accelerated-search-test.zip")
 write(zipf, "zip", 0o644)
 libf = os.path.join(work, "new-lib.so")
 write(libf, "replacement", 0o644)
@@ -93,8 +93,8 @@ try:
     mn = nodectl.dist("stock-min")
     check(os.listdir(f"{mn}/plugins") == [], "stock-min has no bundled plugin")
     plugin = nodectl.dist("plugin", zips=[zipf])
-    check(sorted(os.listdir(f"{plugin}/plugins")) == ["lucene-rust", "opensearch-custom-codecs"], "plugin keeps custom-codecs and installs the zip")
-    check(open(f"{plugin}/config/jvm.options.d/lucene-rust.options").read().strip() == "--enable-native-access=ALL-UNNAMED", "native access option written")
+    check(sorted(os.listdir(f"{plugin}/plugins")) == ["accelerated-search", "opensearch-custom-codecs"], "plugin keeps custom-codecs and installs the zip")
+    check(open(f"{plugin}/config/jvm.options.d/accelerated-search.options").read().strip() == "--enable-native-access=ALL-UNNAMED", "native access option written")
     check(os.path.isfile(f"{plugin}/config/key.txt"), "encrypted-store test key added to the keystore")
     check(os.stat(f"{plugin}/lib/a.jar").st_ino == os.stat(f"{nodectl.pristine()}/lib/a.jar").st_ino, "lib is hard-linked, not copied")
     marker = os.path.join(plugin, "marker")
@@ -133,9 +133,9 @@ try:
     data = os.path.join(work, "data2")
     nodectl.run("n2", "plugin", 19201, data=data, transport=19301, lib=libf, zips=[zipf], timeout=60)
     check("transport.port=19301" in args_of("n2"), "transport port")
-    so = f"{nodectl.home('n2')}/plugins/lucene-rust/native/linux-x86_64/liblucene_ffi.so"
+    so = f"{nodectl.home('n2')}/plugins/accelerated-search/native/linux-x86_64/liblucene_ffi.so"
     check(open(so).read() == "replacement", "a library replaces the zip's")
-    check(open(f"{plugin}/plugins/lucene-rust/native/linux-x86_64/liblucene_ffi.so").read().strip() == "original", "the variant itself is untouched by a library swap")
+    check(open(f"{plugin}/plugins/accelerated-search/native/linux-x86_64/liblucene_ffi.so").read().strip() == "original", "the variant itself is untouched by a library swap")
     nodectl.rm("n2")
     check(os.path.isdir(data), "rm keeps an external data directory")
 finally:

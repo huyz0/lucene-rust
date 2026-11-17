@@ -64,7 +64,7 @@ public final class KeyHandles {
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
             int rc = NativeStore.storeSetKeyUpcall(stub);
             if (rc != NativeBridge.OK) {
-                throw new IllegalStateException("lucene-rust: registering the key upcall failed: " + NativeBridge.lastError());
+                throw new IllegalStateException("accelerated-search: registering the key upcall failed: " + NativeBridge.lastError());
             }
             installed = true;
         } catch (ReflectiveOperationException e) {

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "_meta": {
-    "managed_by": "lucene-rust",
+    "managed_by": "accelerated-search",
     "description": "Mappings for log indices: the timestamp with a skip index beside its points, the small fields as doc values only (numbers with a skip index), message as text without norms, trace and span ids as hex_id. Opt in by naming this template in an index template's composed_of."
   },
   "template": {

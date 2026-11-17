@@ -16,7 +16,7 @@ import java.util.List;
  * One {@code rescore} entry run natively: OpenSearch's {@link QueryRescorer} (Lucene's {@code
  * QueryRescorer} with OpenSearch's {@code QueryRescoreMode} combination), the rescore query scored
  * by {@code rescore_hits} in {@code crates/lucene-engine/src/reader_search.rs}. RescoreProcessor's loop
- * runs in {@code RustQueryPhaseSearcher.rescore}.
+ * runs in {@code AcceleratedQueryPhaseSearcher.rescore}.
  */
 record NativeRescore(
     byte[] blob,
@@ -61,7 +61,7 @@ record NativeRescore(
             // approximation (for the search's own size) matches only the documents it visits
             // first: the rescore then scales the rest by query_weight alone, which the exact native
             // query does not reproduce.
-            if (RustQueryPhaseSearcher.approximated(query)) {
+            if (AcceleratedQueryPhaseSearcher.approximated(query)) {
                 return FallbackReason.RESCORE_APPROXIMATE.key();
             }
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());

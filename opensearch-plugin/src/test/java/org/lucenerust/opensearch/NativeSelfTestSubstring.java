@@ -33,9 +33,9 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.automaton.RegExp;
 import org.lucenerust.opensearch.engine.SubstringTestIndex;
-import org.lucenerust.opensearch.substring.RustWildcardFieldMapper;
-import org.lucenerust.opensearch.substring.RustWildcardFieldMapper.RustWildcardFieldType;
-import org.lucenerust.opensearch.substring.RustWildcardQuery;
+import org.lucenerust.opensearch.substring.AcceleratedWildcardFieldMapper;
+import org.lucenerust.opensearch.substring.AcceleratedWildcardFieldMapper.AcceleratedWildcardFieldType;
+import org.lucenerust.opensearch.substring.AcceleratedWildcardQuery;
 
 /**
  * The {@code compact_wildcard} shapes in {@link NativeSelfTest}: an index the Rust engine's writer wrote
@@ -77,7 +77,7 @@ final class NativeSelfTestSubstring {
     }
 
     @SuppressWarnings("deprecation")
-    static List<Query> queries(RustWildcardFieldType ft) {
+    static List<Query> queries(AcceleratedWildcardFieldType ft) {
         MultiTermQuery.RewriteMethod m = MultiTermQuery.CONSTANT_SCORE_REWRITE;
         List<Query> q = new ArrayList<>();
         for (boolean ci : new boolean[] { false, true }) {
@@ -112,7 +112,7 @@ final class NativeSelfTestSubstring {
 
     /** Whether a document with {@code value} matches {@code q}, by the field type's own tests. */
     static boolean expected(Query q, String value) {
-        if (q instanceof RustWildcardQuery w) {
+        if (q instanceof AcceleratedWildcardQuery w) {
             return value != null && w.matches(value);
         }
         if (q instanceof FieldExistsQuery) {
@@ -150,10 +150,10 @@ final class NativeSelfTestSubstring {
 
     static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
         List<String> values = values(r, 2600);
-        RustWildcardFieldType ft = new RustWildcardFieldType("msg");
+        AcceleratedWildcardFieldType ft = new AcceleratedWildcardFieldType("msg");
         List<Query> queries = queries(ft);
         for (String which : new String[] { "rust", "lucene" }) {
-            Path dir = Files.createTempDirectory("lucene-rust-selftest-substring-" + which);
+            Path dir = Files.createTempDirectory("accelerated-search-selftest-substring-" + which);
             try {
                 if (which.equals("rust")) {
                     SubstringTestIndex.write(dir, "msg", values, 700, 2);
@@ -163,7 +163,7 @@ final class NativeSelfTestSubstring {
                             Document doc = new Document();
                             doc.add(new StringField("id", Integer.toString(i), Field.Store.YES));
                             if (values.get(i) != null) {
-                                doc.add(RustWildcardFieldMapper.valueField("msg", values.get(i)));
+                                doc.add(AcceleratedWildcardFieldMapper.valueField("msg", values.get(i)));
                             }
                             w.addDocument(doc);
                             if ((i + 1) % 700 == 0) {

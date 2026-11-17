@@ -130,7 +130,7 @@ final class NativeSelfTestExtended {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, Compare compare) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-extended");
+        Path dir = Files.createTempDirectory("accelerated-search-selftest-extended");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;

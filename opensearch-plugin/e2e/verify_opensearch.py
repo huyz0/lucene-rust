@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of the lucene-rust plugin inside a real OpenSearch node.
+"""End-to-end verification of the accelerated-search plugin inside a real OpenSearch node.
 
 Driven by scripts/verify-opensearch.sh, which builds the plugin, bakes it into
 the pinned OpenSearch image and starts a node. Standard library only.

@@ -207,7 +207,7 @@ it at the entry level as a plain `(Vec<u8>, Vec<u32>)` pair would have been
 instead of 24), which is why the run moved up to the term.
 
 **Measured** — alternating min-of-N A/B between two binaries, 50 000
-documents, four `LUCENE_RUST_INDEX_OPTIONS` arms. Two independent windows are
+documents, four `ACCELERATED_INDEX_OPTIONS` arms. Two independent windows are
 given because that is the honest way to report a machine that drifts: the
 second was run after the Tier-2 review's fixes, in a much quieter window
 (`freqs` at 19.1 µs/doc, matching c3's own baseline for this shape).

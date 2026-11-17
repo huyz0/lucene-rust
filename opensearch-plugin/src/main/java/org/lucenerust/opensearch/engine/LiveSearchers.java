@@ -33,14 +33,14 @@ import java.util.function.Function;
  */
 final class LiveSearchers {
     private static final Logger LOGGER = LogManager.getLogger(LiveSearchers.class);
-    private final RustIndexWriter writer;
+    private final AcceleratedIndexWriter writer;
     /** The reader with the view, once the first searcher opened it; null when there is none. */
     private OpenSearchDirectoryReader live;
     private boolean opened;
     /** Where the view is closed, off the search's thread; null closes it there. */
     private final Executor closer;
 
-    private LiveSearchers(RustIndexWriter writer, Executor closer) {
+    private LiveSearchers(AcceleratedIndexWriter writer, Executor closer) {
         this.writer = writer;
         this.closer = closer;
     }
@@ -56,7 +56,7 @@ final class LiveSearchers {
         BiFunction<Function<Engine.Searcher, Engine.Searcher>, Engine.SearcherScope, Engine.SearcherSupplier> base,
         Executor closer
     ) throws EngineException {
-        if (scope != Engine.SearcherScope.EXTERNAL || !(writer instanceof RustIndexWriter w) || w.liveSearch() == false) {
+        if (scope != Engine.SearcherScope.EXTERNAL || !(writer instanceof AcceleratedIndexWriter w) || w.liveSearch() == false) {
             return base.apply(wrapper, scope);
         }
         LiveSearchers live = new LiveSearchers(w, closer);
@@ -122,10 +122,10 @@ final class LiveSearchers {
     }
 
     private OpenSearchDirectoryReader open(OpenSearchDirectoryReader reader) {
-        long version = RustReaderManager.version(reader);
+        long version = AcceleratedReaderManager.version(reader);
         // A search on this segment list asks: the buffers older lists lacked can go.
         writer.releaseLive(version);
-        RustIndexWriter.LiveViewHandle handle = writer.openLiveView(version);
+        AcceleratedIndexWriter.LiveViewHandle handle = writer.openLiveView(version);
         if (handle == null) {
             return null;
         }
@@ -170,7 +170,7 @@ final class LiveSearchers {
                     try {
                         decRef(reader);
                     } catch (Throwable t) {
-                        LOGGER.warn("lucene-rust: closing a realtime search's view failed", t);
+                        LOGGER.warn("accelerated-search: closing a realtime search's view failed", t);
                     }
                 });
                 return;
@@ -182,7 +182,7 @@ final class LiveSearchers {
             decRef(reader);
         } catch (RuntimeException e) {
             // The search goes on: the reader it reads is another.
-            LOGGER.warn("lucene-rust: closing a realtime search's view failed", e);
+            LOGGER.warn("accelerated-search: closing a realtime search's view failed", e);
         }
     }
 
@@ -215,7 +215,7 @@ final class LiveSearchers {
                         task.run();
                     } catch (Throwable t) {
                         // Logged, never thrown on the pool's thread: an error there halts the node.
-                        LOGGER.warn("lucene-rust: closing a realtime search's view failed", t);
+                        LOGGER.warn("accelerated-search: closing a realtime search's view failed", t);
                     }
                 });
                 return;

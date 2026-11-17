@@ -17,7 +17,7 @@ import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.store.FSDirectory;
 import org.lucenerust.opensearch.NativeBridge;
 import org.lucenerust.opensearch.NativeWriter;
-import org.lucenerust.opensearch.substring.RustWildcardFieldMapper;
+import org.lucenerust.opensearch.substring.AcceleratedWildcardFieldMapper;
 import org.opensearch.index.mapper.ParseContext;
 
 /** An index of {@code compact_wildcard} values written by the Rust engine's writer, for the self test. */
@@ -34,12 +34,12 @@ public final class SubstringTestIndex {
             try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
                 empty.commit();
             }
-            RustIndexWriter w = open(dir, root);
+            AcceleratedIndexWriter w = open(dir, root);
             for (int i = 0; i < values.size(); i++) {
                 ParseContext.Document d = new ParseContext.Document();
                 d.add(new StringField("id", Integer.toString(i), Field.Store.YES));
                 if (values.get(i) != null) {
-                    d.add(RustWildcardFieldMapper.valueField(field, values.get(i)));
+                    d.add(AcceleratedWildcardFieldMapper.valueField(field, values.get(i)));
                 }
                 w.addDocument(d, null);
                 if ((i + 1) % perCommit == 0) {
@@ -48,15 +48,15 @@ public final class SubstringTestIndex {
             }
             w.commit();
             w.close();
-            RustIndexWriter merger = open(dir, root);
+            AcceleratedIndexWriter merger = open(dir, root);
             merger.forceMerge(mergeTo, true);
             merger.commit();
             merger.close();
         }
     }
 
-    private static RustIndexWriter open(FSDirectory dir, Path root) throws IOException {
-        RustIndexWriter w = RustIndexWriter.open(
+    private static AcceleratedIndexWriter open(FSDirectory dir, Path root) throws IOException {
+        AcceleratedIndexWriter w = AcceleratedIndexWriter.open(
             dir,
             root,
             16,
