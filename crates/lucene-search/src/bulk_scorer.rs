@@ -73,13 +73,12 @@ impl WindowBits {
         self.0[i >> 6] |= 1u64 << (i & 63);
     }
 
+    /// The words a window of `len` documents covers.
     #[inline]
-    fn get(&self, i: usize) -> bool {
-        let i = i & (INNER_WINDOW_SIZE as usize - 1);
-        self.0[i >> 6] & (1u64 << (i & 63)) != 0
+    fn words(&self, len: usize) -> &[u64] {
+        &self.0[..len.div_ceil(64).min(WINDOW_WORDS)]
     }
 
-    /// The words a window of `len` documents covers.
     #[inline]
     fn words_mut(&mut self, len: usize) -> &mut [u64] {
         let n = len.div_ceil(64).min(WINDOW_WORDS);
@@ -310,6 +309,47 @@ pub(crate) trait MaxScoreLeg: BulkLeg {
     /// `DisiWrapper.maxWindowScore`.
     fn window_max(&self) -> f32;
     fn set_window_max(&mut self, score: f32);
+    /// [`BulkLeg::next_docs_and_scores`] over only the documents whose bit
+    /// is set in `mask` (bit `i` is document `base + i`), dropped before they
+    /// are scored (`nextDocsAndScores(upTo, acceptDocs, buffer)` with the
+    /// filter's window as `acceptDocs`). An empty buffer still means the leg
+    /// has no more documents below `up_to`.
+    fn next_docs_and_scores_masked(
+        &mut self,
+        up_to: i32,
+        mask: &[u64],
+        base: i32,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        loop {
+            self.next_docs_and_scores(up_to, None, out)?;
+            if out.docs.is_empty() {
+                return Ok(());
+            }
+            let mut n = 0;
+            for i in 0..out.docs.len() {
+                let (d, s) = (out.docs[i], out.scores[i]);
+                out.docs[n] = d;
+                out.scores[n] = s;
+                n += usize::from(mask_bit(mask, base, d));
+            }
+            out.docs.truncate(n);
+            out.scores.truncate(n);
+            if n > 0 {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Bit `doc - base` of `mask`.
+#[inline]
+fn mask_bit(mask: &[u64], base: i32, doc: i32) -> bool {
+    // ARITH: the callers' documents lie in `base..base + INNER_WINDOW_SIZE`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let i = (doc - base) as usize;
+    mask.get(i >> 6)
+        .is_some_and(|w| w & (1u64 << (i & 63)) != 0)
 }
 
 impl MaxScoreLeg for TermLeg<'_> {
@@ -332,6 +372,15 @@ impl MaxScoreLeg for TermLeg<'_> {
     #[inline]
     fn set_window_max(&mut self, score: f32) {
         self.max_window_score = score;
+    }
+    fn next_docs_and_scores_masked(
+        &mut self,
+        up_to: i32,
+        mask: &[u64],
+        base: i32,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        self.next_docs_and_scores_where(up_to, None, |d| Ok(mask_bit(mask, base, d)), out)
     }
 }
 
@@ -2243,8 +2292,7 @@ impl MaxScore {
         self
     }
 
-    /// The constructor's filter heuristic: a filter without two phases, on
-    /// a segment of at least one inner window, is read a window at a time
+    /// The constructor's filter heuristic: a filter on a segment of at least one inner window, is read a window at a time
     /// into a bit set when the sparsest clause is no sparser than it, or
     /// when more than four clauses together are no sparser -- the candidate
     /// stream is then dense enough that bulk gating beats an `advance` per
@@ -2253,11 +2301,10 @@ impl MaxScore {
         mut self,
         legs: &[L],
         filter_cost: i64,
-        filter_two_phase: bool,
         max_doc: Option<i32>,
     ) -> Self {
         let big_enough = max_doc.is_some_and(|m| m >= INNER_WINDOW_SIZE);
-        if !filter_two_phase && big_enough && !legs.is_empty() {
+        if big_enough && !legs.is_empty() {
             let min_cost = legs.iter().map(MaxScoreLeg::leg_cost).min().unwrap_or(0);
             let cost = legs
                 .iter()
@@ -2324,6 +2371,22 @@ impl MaxScore {
         }
         let mut outer_min = min;
         'outer: while outer_min < max {
+            if let Some(f) = filter.as_deref_mut() {
+                // The filter is a required clause, so nothing matches before
+                // its next document: move it first, and keep the impacts
+                // behind the window bounds from decoding a stretch it cannot
+                // match.
+                if f.doc_id() < outer_min {
+                    f.advance(outer_min)?;
+                }
+                let filter_doc = f.doc_id();
+                if filter_doc > outer_min {
+                    outer_min = filter_doc;
+                    if outer_min >= max {
+                        break;
+                    }
+                }
+            }
             let mut outer_max = ms
                 .compute_outer_window_max(legs, filter_cost, outer_min)?
                 .min(max);
@@ -2488,11 +2551,16 @@ impl MaxScore {
             if doc < inner_min {
                 doc = filter.advance(inner_min)?;
             }
-            // `DocIdSetIterator.intoBitSet`'s default loop.
+            // `DocIdSetIterator.intoBitSet`'s default loop, or
+            // `TwoPhaseIterator.intoBitSet`'s: only the approximation's
+            // documents that match.
+            let two_phase = filter.two_phase();
             while doc < inner_max {
-                // FBS: `inner_min <= doc < inner_max <= inner_min + INNER_WINDOW_SIZE`,
-                // the bit set's length.
-                bits.set((doc - inner_min) as usize);
+                if !two_phase || filter.matches()? {
+                    // FBS: `inner_min <= doc < inner_max <= inner_min + INNER_WINDOW_SIZE`,
+                    // the bit set's length.
+                    bits.set((doc - inner_min) as usize);
+                }
                 doc = filter.next_doc()?;
             }
         }
@@ -2506,24 +2574,43 @@ impl MaxScore {
                 }
             }
         }
+        // Dropping documents before they are scored pays when the filter is
+        // sparse in this window; for a dense one the per-document test costs
+        // more than the scores it saves, so the window is checked after.
+        let sparse = bits
+            .words(len)
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum::<usize>()
+            .saturating_mul(8)
+            < len;
         loop {
             let (top, top_doc) = self.top();
             if top_doc >= inner_max {
                 break;
             }
             loop {
-                legs[top].next_docs_and_scores(inner_max, None, &mut self.single)?;
+                if sparse {
+                    legs[top].next_docs_and_scores_masked(
+                        inner_max,
+                        bits.words(len),
+                        inner_min,
+                        &mut self.single,
+                    )?;
+                } else {
+                    legs[top].next_docs_and_scores(inner_max, None, &mut self.single)?;
+                }
                 if self.single.docs.is_empty() {
                     break;
                 }
                 for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
                     let i = (doc - inner_min) as usize;
-                    // FBS: `next_docs_and_scores(inner_max, ..)` only returns docs in
-                    // `inner_min..inner_max`, at most `INNER_WINDOW_SIZE` apart, and
-                    // both bit sets are that long.
-                    if !bits.get(i) {
+                    if !sparse && !mask_bit(bits.words(len), inner_min, doc) {
                         continue;
                     }
+                    // FBS: `next_docs_and_scores_masked(inner_max, ..)` only returns docs
+                    // in `inner_min..inner_max`, at most `INNER_WINDOW_SIZE` apart, and
+                    // both bit sets are that long.
                     self.window_matches.set(i);
                     self.window_scores[i & (INNER_WINDOW_SIZE as usize - 1)] += score as f64;
                 }
