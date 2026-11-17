@@ -128,7 +128,7 @@ SCROLLS = [("scroll 25 pages x 1000", 25, 1000, None), ("scroll 25 pages x 1000,
 
 def pstats():
     try:
-        return bn.req("GET", "/_plugins/lucene_rust/stats")
+        return bn.req("GET", "/_plugins/accelerated/stats")
     except Exception:
         return None
 

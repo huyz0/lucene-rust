@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 /**
  * How much traffic ran native, and why the rest did not, so that every fallback is observable.
- * Served by {@code GET /_plugins/lucene_rust/stats}.
+ * Served by {@code GET /_plugins/accelerated/stats}.
  */
 public final class SearchStats {
     private final LongAdder nativeQueries = new LongAdder();

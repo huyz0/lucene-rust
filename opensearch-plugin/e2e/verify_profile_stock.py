@@ -167,9 +167,9 @@ def hybrid_row(plugin):
     plugin("PUT", f"/{INDEX}/_settings", {"index.search.accelerated": False})
     java = plugin("POST", f"/{INDEX}/_search", body)
     plugin("PUT", f"/{INDEX}/_settings", {"index.search.accelerated": True})
-    before = plugin("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"]
+    before = plugin("GET", "/_plugins/accelerated/stats")["accelerated_queries"]
     native = plugin("POST", f"/{INDEX}/_search", body)
-    ran = plugin("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] - before
+    ran = plugin("GET", "/_plugins/accelerated/stats")["accelerated_queries"] - before
     check(ran == 1, "hybrid profile ran natively")
     check([h["_id"] for h in java["hits"]["hits"]] == [h["_id"] for h in native["hits"]["hits"]], "hybrid: hits")
     sa = structure(java["profile"], "hybrid (java)", True)
@@ -182,7 +182,7 @@ def main():
     plugin, stock = requester(PLUGIN), requester(STOCK)
     load(plugin)
     load(stock)
-    before = plugin("GET", "/_plugins/lucene_rust/stats")
+    before = plugin("GET", "/_plugins/accelerated/stats")
     for name, body in ROWS.items():
         body = dict(body, profile=True)
         a = stock("POST", f"/{INDEX}/_search", body)
@@ -196,7 +196,7 @@ def main():
         check(sa["fetch"] == sb["fetch"], f"{name}: fetch\n  stock : {sa['fetch']}\n  plugin: {sb['fetch']}")
         print(("ok   " if not any(f.startswith(name) for f in FAILURES) else "FAIL ") + name)
     hybrid_row(plugin)
-    after = plugin("GET", "/_plugins/lucene_rust/stats")
+    after = plugin("GET", "/_plugins/accelerated/stats")
     native = after["accelerated_queries"] - before["accelerated_queries"]
     check(native >= len(ROWS) - 2, f"profiled rows ran natively: {native} of {len(ROWS)}; fallbacks {after['fallbacks']}")
     if FAILURES:

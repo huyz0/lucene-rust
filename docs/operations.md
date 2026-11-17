@@ -68,17 +68,17 @@ written), `method.engine` picks the k-NN engine. `extended` needs
 | `index.search.accelerated_shapes` | index, dynamic | `fast` | `all` also runs shapes measured slower on the accelerated path; every shape measures faster today, so the two agree |
 | `index.search.approximation.exact` | index, dynamic | `true` | a `match_all` or `range` that OpenSearch would answer with its approximation (sorted by the range's field, `track_total_hits` not `true`) runs natively and returns the exact top hits, 4-5x faster. They can differ from OpenSearch's only in which documents of the last hit's value are kept when that value is tied across a BKD leaf: they are the hits OpenSearch returns with `track_total_hits: true` (see [benchmarks/newest-n.md](benchmarks/newest-n.md)). `false` keeps OpenSearch's approximate answer |
 | `index.search.aggregation_segment_cache.enabled` | index, dynamic | `false` | keep each committed segment's collected aggregation part in the node's aggregation segment cache, so a dashboard repeated after a refresh collects only the new segments. Same results; see [the benchmark](benchmarks/agg-segment-cache.md) |
-| `indices.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
+| `indices.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/accelerated/stats` |
 | `indices.fetch.accelerated_reader` | node | `true` | read stored fields natively. The reader wrapper is installed unless the security plugin is present (it needs the index's one wrapper slot); then the engine reads stored bytes natively beneath the security plugin's own wrapper, so its field- and document-level security still applies |
 | `index.engine.accelerated` | index, final | the node default | `true`: the index's shards are written by the accelerated engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
 | `indices.engine.accelerated.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin (on OpenSearch 3.x or 2.x), and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the accelerated one would refuse it. `false` keeps OpenSearch's engine for every index that does not ask |
 | `index.codec.stored_fields.recompress_on_merge` | index | `non_force` | accelerated engine, `index.codec: default`: merges write stored fields with a high-compression LZ4 match finder. Same LZ4 format, so OpenSearch's engine and stock Lucene read it; merged stored fields 9-28% smaller and fetches up to 30% faster, for about 1.4 CPU-s more per million log events indexed (see [benchmarks/settings-defaults.md](benchmarks/settings-defaults.md)). `false` writes stock's fast LZ4 Values: `non_force` (default; every merge except an explicitly forced one, force merge and `_upgrade`, which copy chunks like stock), `on` (every merge; a force merge of 1M documents then takes 19.6 s instead of 5.9 s, 3.6x, for 434 instead of 479 MiB), `off`; `true` and `false` are accepted as `on` and `off`. With a 1 s refresh the force-merged index is 452 MiB (`non_force`) against 441 MiB (`on`), the force merge 8.1 s against 12.2 s. |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for accelerated-engine indices. Used for rolling back and for mixed clusters |
 | `breaker.indexing_buffers.limit` | node | 3 × `indices.memory.index_buffer_size` + `indices.store.page_cache.size` | circuit breaker for the accelerated writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
-| `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
+| `-Daccelerated.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
 
 `index.testing.fault_injection` exists for tests only. Do not set
-it: with it on, a document carrying a `__lucene_rust_panic` field makes the
+it: with it on, a document carrying a `__accelerated_panic` field makes the
 writer panic.
 
 ### Language data packs
@@ -130,7 +130,7 @@ beyond `-Xmx` for it:
   (the JDK reads the cgroup limit) leaves after the heap and the page cache
   budget, at least 256 MB; `0` turns it off. Past it, native searches fail
   with a 429 until memory is freed; indexing goes on under its own breaker.
-  `GET /_plugins/lucene_rust/stats` reports it under `off_heap_memory`: bytes
+  `GET /_plugins/accelerated/stats` reports it under `off_heap_memory`: bytes
   held and the most held, the requests each bound stopped, the query caches'
   bytes and evictions, and the largest request seen.
 - **Indexing**, per Rust-engine shard: the buffered documents until the next
@@ -169,7 +169,7 @@ a size (for example `200mb`) to keep the same flush size.
 ### Stats
 
 ```
-GET /_plugins/lucene_rust/stats
+GET /_plugins/accelerated/stats
 ```
 
 This is per node. Its counters are totals since the node started:

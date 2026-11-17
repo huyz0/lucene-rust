@@ -43,7 +43,7 @@ public final class MlNodes {
 
     /** Deploy, undeploy and profile, on the deploy pool. */
     public static final class Action extends ActionType<Response> {
-        public static final String NAME = "cluster:admin/opensearch/mlinternal/lucene_rust/nodes";
+        public static final String NAME = "cluster:admin/opensearch/mlinternal/accelerated/nodes";
         public static final Action INSTANCE = new Action();
 
         private Action() {
@@ -53,7 +53,7 @@ public final class MlNodes {
 
     /** Predictions forwarded to a node that holds the model, on the predict pool. */
     public static final class PredictAction extends ActionType<Response> {
-        public static final String NAME = "cluster:admin/opensearch/mlinternal/lucene_rust/predict";
+        public static final String NAME = "cluster:admin/opensearch/mlinternal/accelerated/predict";
         public static final PredictAction INSTANCE = new PredictAction();
 
         private PredictAction() {
@@ -63,7 +63,7 @@ public final class MlNodes {
 
     /** Predictions of a remote model forwarded to a node that holds it, on the remote predict pool. */
     public static final class RemotePredictAction extends ActionType<Response> {
-        public static final String NAME = "cluster:admin/opensearch/mlinternal/lucene_rust/predict_remote";
+        public static final String NAME = "cluster:admin/opensearch/mlinternal/accelerated/predict_remote";
         public static final RemotePredictAction INSTANCE = new RemotePredictAction();
 
         private RemotePredictAction() {

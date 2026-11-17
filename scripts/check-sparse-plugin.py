@@ -133,7 +133,7 @@ def main():
             if ours != stock or os_engine != stock:
                 failures.append(f"{index}: segment sizes differ")
 
-        before = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        before = req(OURS[1], "GET", "/_plugins/accelerated/stats")
         exact_params = [{"top_n": 1000, "k": 10, "heap_factor": 1e30},
                         {"top_n": 1000, "k": 50, "heap_factor": 1e30, "filter": {"term": {"tag": "even"}}},
                         {"top_n": 1000, "k": 3, "heap_factor": 1e30, "filter": {"term": {"tag": "odd"}}}]
@@ -179,7 +179,7 @@ def main():
         if answers[0] != answers[1]:
             failures.append(f"neural stats: ours {answers[0]}, stock {answers[1]}")
         print(f"neural stats: {answers[0]}")
-        after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        after = req(OURS[1], "GET", "/_plugins/accelerated/stats")
         ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}

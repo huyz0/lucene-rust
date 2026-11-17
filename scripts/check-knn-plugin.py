@@ -686,7 +686,7 @@ def recall_target_check(failures):
         key = f"{uuid}/0/emb"
 
         def tuner():
-            return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("knn_recall", {}).get(key)
+            return req(OURS[1], "GET", "/_plugins/accelerated/stats").get("knn_recall", {}).get(key)
 
         targets = [vector(rng, False) for _ in range(40)]
         found = 0
@@ -986,7 +986,7 @@ def phases_check(failures):
         return vectors, out
 
     def stats():
-        st = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        st = req(OURS[1], "GET", "/_plugins/accelerated/stats")
         return st["knn_hits"]["reused"], st["accelerated_sources_without_vectors"]
 
     reused0, unspliced0 = stats()
@@ -1114,7 +1114,7 @@ def json_close(a, b, tol=1e-6):
 
 
 def fallback_counts():
-    return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("fallbacks", {})
+    return req(OURS[1], "GET", "/_plugins/accelerated/stats").get("fallbacks", {})
 
 
 def fell_back(before):
@@ -1289,7 +1289,7 @@ def main():
     try:
         wait(OURS[1])
         wait(STOCK[1])
-        before = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        before = req(OURS[1], "GET", "/_plugins/accelerated/stats")
         checked = 0
         for group, specs in (("exact", EXACT), ("quantized", QUANTIZED)):
             for index, spec in specs.items():
@@ -1452,7 +1452,7 @@ def main():
             failures.append(f"the same mapping again was refused: {json.dumps(r)[:300]}")
         req(OURS[1], "DELETE", "/no-engine")
 
-        after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        after = req(OURS[1], "GET", "/_plugins/accelerated/stats")
         ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}

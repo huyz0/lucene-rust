@@ -445,7 +445,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /** The fault-injection trigger: a document carrying this field, on an index that allows it. */
-    static final String PANIC_FIELD = "__lucene_rust_panic";
+    static final String PANIC_FIELD = "__accelerated_panic";
 
     private void maybeInjectFault(Iterable<? extends IndexableField> doc) throws IOException {
         if (faultInjection) {

@@ -156,7 +156,7 @@ def main():
         docs.append(d)
     deleted = {f"d{i}" for i in range(3, DOCS, 37)}
     try:
-        before = must("GET", "/_plugins/lucene_rust/stats")
+        before = must("GET", "/_plugins/accelerated/stats")
         for index, engine in (("rust", True), ("lucene", False)):
             settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
             if engine:
@@ -275,7 +275,7 @@ def main():
         if not np.array_equal(np.asarray(src["mv_int8"], dtype=np.float32), d["tokens"]):
             failures.append("_source does not keep the vectors as sent")
 
-        after = must("GET", "/_plugins/lucene_rust/stats")
+        after = must("GET", "/_plugins/accelerated/stats")
         ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}

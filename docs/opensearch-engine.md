@@ -39,10 +39,10 @@ The writer side works like this:
 | `index.engine.accelerated` | index, final | `true` serves the index's primaries and document-replication replicas with the accelerated engine. If the index is configured in a way the accelerated writer refuses (below), creating the index fails with the reason. |
 | `indices.engine.accelerated.default` | node | On by default; `false` opts the node out. Sets the default of the index setting above, so every index without its own setting (system indices included) uses the accelerated engine **where it can**. An index that only inherits this default is served by OpenSearch's engine instead if it needs something the accelerated writer refuses: a refused index configuration, or a creation mapping with a field whose documents it refuses. |
 | `indices.engine.accelerated.node_enabled` | node | `false` makes the plugin build OpenSearch's own engine for accelerated-engine indices on this node, for a mixed cluster during a rollout or rollback. Rust-written segments are ordinary Lucene 10.5 segments, so either engine takes over a shard from the other. |
-| `index.testing.fault_injection` | index, final | Test only: a document with a `__lucene_rust_panic` field makes the writer panic. |
+| `index.testing.fault_injection` | index, final | Test only: a document with a `__accelerated_panic` field makes the writer panic. |
 | `index.segment_partition.field` | index, final | Names a field whose value is each document's partition, like a partitioned table's partition key: see [Partitions](#partitions). Empty (the default) partitions nothing. |
 
-`GET /_plugins/lucene_rust/stats` counts the engines built, as
+`GET /_plugins/accelerated/stats` counts the engines built, as
 `engines.accelerated`, `engines.standard` and `engines.nrt_replica`.
 
 ## Partitions
@@ -182,7 +182,7 @@ an OpenSearch version without it fails the node, not a shard at failover.
 Every writable engine a shard runs is built through that factory: the first
 one, one after a reset, and one on a replica's promotion. A `RustEngine` built
 any other way refuses to start as a segment-replication primary, and says
-why. `_plugins/lucene_rust/stats` counts the wrapped engines as
+why. `_plugins/accelerated/stats` counts the wrapped engines as
 `engines.accelerated_indexer`.
 
 **Without the hook.** The upstream fix is an overridable
