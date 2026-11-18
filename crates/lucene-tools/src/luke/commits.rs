@@ -156,7 +156,7 @@ impl<'d> Commits<'d> {
                 .open(&format!("{}.si", sci.segment_name))
                 .map_err(|_| segment_error(generation))?
                 .to_vec();
-            let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)
+            let si = segment_info::parse_for_commit(&bytes, &sci)
                 .map_err(|_| segment_error(generation))?;
             let v = si.version;
             details.push(SegmentDetails {

@@ -150,10 +150,9 @@ mod tests {
             .segments
             .iter()
             .map(|s| {
-                let si = crate::segment_info::parse_for_codec(
+                let si = crate::segment_info::parse_for_commit(
                     &dir.open(&format!("{}.si", s.segment_name)).unwrap(),
-                    &s.segment_id,
-                    &s.codec_name,
+                    s,
                 )
                 .unwrap();
                 i64::from(si.doc_count) - i64::from(s.del_count)

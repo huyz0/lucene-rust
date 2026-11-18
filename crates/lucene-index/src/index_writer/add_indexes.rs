@@ -210,10 +210,9 @@ impl IndexWriter<'_> {
         for (source, src) in sources.iter().enumerate() {
             let infos = segment_infos::read_latest(*src)?;
             for (segment, sci) in infos.segments.into_iter().enumerate() {
-                let si = segment_info::parse_for_codec(
+                let si = segment_info::parse_for_commit(
                     &src.open(&format!("{}.si", sci.segment_name))?,
-                    &sci.segment_id,
-                    &sci.codec_name,
+                    &sci,
                 )?;
                 self.check_addable(*src, &sci, &si, &mut incoming_fields)?;
                 total = total.saturating_add(i64::from(si.doc_count));
@@ -278,10 +277,9 @@ impl IndexWriter<'_> {
     fn live_doc_total(&self) -> Result<i64> {
         let mut total = 0i64;
         for sci in self.live_infos().segments {
-            let si = segment_info::parse_for_codec(
+            let si = segment_info::parse_for_commit(
                 &self.dir.open(&format!("{}.si", sci.segment_name))?,
-                &sci.segment_id,
-                &sci.codec_name,
+                &sci,
             )?;
             total = total.saturating_add(i64::from(si.doc_count));
         }

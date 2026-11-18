@@ -131,7 +131,7 @@ fn segment_info_files(dir: &dyn Directory, sci: &SegmentCommitInfo) -> Result<Ve
     let files = if sci.codec_name == "SimpleText" {
         segment_info::parse_simpletext(&bytes, &sci.segment_name, &sci.segment_id)?.files
     } else {
-        segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?.files
+        segment_info::parse_for_commit(&bytes, sci)?.files
     };
     Ok(IndexFileDeleter::with_self_listing(
         &sci.segment_name,
