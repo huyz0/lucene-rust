@@ -222,16 +222,23 @@ pub struct IvfWriter {
     meta: Vec<u8>,
 }
 
+/// Spare bytes a buffer sized for a field keeps for the file's footer.
+const FOOTER_SLACK: usize = 64;
+
 /// A field's vectors: unit-normalized for `Cosine`.
-fn prepared_vectors(field: &FieldVectors<'_>) -> Vec<f32> {
-    let mut out = field.vectors.to_vec();
-    if field.similarity == Similarity::Cosine {
-        out.par_chunks_mut(field.dimension).for_each(|v| {
-            // A zero vector has no direction and stays zero.
-            let _ = lucene_util::vector_util::l2normalize(v, false);
-        });
+///
+/// Borrowed as given for every other similarity: a copy of the whole input
+/// would double what a merge of a large field holds.
+fn prepared_vectors<'a>(field: &FieldVectors<'a>) -> std::borrow::Cow<'a, [f32]> {
+    if field.similarity != Similarity::Cosine {
+        return std::borrow::Cow::Borrowed(field.vectors);
     }
-    out
+    let mut out = field.vectors.to_vec();
+    out.par_chunks_mut(field.dimension).for_each(|v| {
+        // A zero vector has no direction and stays zero.
+        let _ = lucene_util::vector_util::l2normalize(v, false);
+    });
+    std::borrow::Cow::Owned(out)
 }
 
 /// The lengths of the runs of `docs` (ascending) to cluster on their own:
@@ -778,11 +785,21 @@ impl IvfWriter {
             }
         };
         let postings_offset = self.postings.len();
+        self.postings
+            .reserve_exact(postings.len().saturating_add(FOOTER_SLACK));
         self.postings.extend_from_slice(&postings);
         drop(postings);
 
         align_vectors(&mut self.vectors);
         let vectors_offset = self.vectors.len();
+        // Sized once: growing a buffer of this field's vectors by doubling
+        // holds up to twice their bytes, plus the old copy while it moves.
+        // The slack covers the footer, which would otherwise double it.
+        self.vectors.reserve_exact(
+            n.saturating_mul(vector_bytes)
+                .saturating_add(n.saturating_mul(8))
+                .saturating_add(FOOTER_SLACK),
+        );
         for &i in &order {
             let i = i as usize;
             if encoding == VectorEncoding::F32 {
