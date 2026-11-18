@@ -852,7 +852,7 @@ public final class NativeWriter {
 
     /**
      * Registers the merge upcall that hears every merge of writers opened afterwards, before and after
-     * it runs; those writers' merge schedulers no longer stall indexing threads.
+     * it runs; those writers' merge schedulers do not stall indexing threads.
      */
     public static int setMergeUpcall(MemorySegment upcall) {
         try {

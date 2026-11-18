@@ -667,13 +667,13 @@ final class RemoteModels {
         Map<String, Object> input = switch (algorithm) {
             case "REMOTE" -> Map.of("parameters", body.get("parameters") instanceof Map<?, ?> p ? p : Map.of());
             case "TEXT_SIMILARITY" -> {
-                Map.Entry<String, List<String>> s = MlCommons.similarityInput(body);
+                Map.Entry<String, List<String>> s = MlInputs.similarityInput(body);
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("query_text", s.getKey());
                 m.put("text_docs", s.getValue());
                 yield m;
             }
-            default -> Map.of("text_docs", MlCommons.textDocs(body));
+            default -> Map.of("text_docs", MlInputs.textDocs(body));
         };
         Map<String, Object> split = call(handle, Map.of("op", "split", "action", action, "input", input));
         List<Object> parts = (List<Object>) split.get("inputs");
