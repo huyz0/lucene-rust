@@ -101,8 +101,12 @@ fn key_ords_match_a_map(dense: Option<usize>) {
         };
         let next = want.len() as u32;
         let w = *want.entry((owning, key)).or_insert(next);
+        // A hint: asking early for any key, present or not, changes nothing.
+        ords.prefetch(owning, key ^ 1);
         assert_eq!(ords.ord(&mut keys, owning, key), w);
     }
+    assert!(ords.slots.len() >= KeyOrds::PREFETCH_SLOTS);
+    KeyOrds::default().prefetch(0, 7);
     assert_eq!(keys.len(), want.len());
     for (&k, &o) in &want {
         assert_eq!(keys[o as usize], k);
