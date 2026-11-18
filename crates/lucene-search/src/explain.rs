@@ -3,7 +3,7 @@
 //! counterpart: a per-doc, human-readable breakdown of exactly how a
 //! [`crate::Clause`]'s score for one document was computed.
 //!
-//! **This task does not change any scoring behavior.** Every arm below
+//! **Explaining does not change any scoring behavior.** Every arm below
 //! recomputes a score using the *exact same* functions and arguments the
 //! already-verified `search_*_scored` functions in `lib.rs` already call
 //! ([`crate::similarity::idf`], [`crate::similarity::tf_norm`],

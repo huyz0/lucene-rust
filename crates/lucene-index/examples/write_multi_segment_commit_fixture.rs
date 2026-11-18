@@ -3,12 +3,9 @@
 //! described together by a single `segments_N` commit -- to the directory
 //! given as the first CLI argument.
 //!
-//! This is the next slice after `write_segment_infos_fixture.rs`'s
-//! single-segment commit: it proves the multi-segment shape of a real
-//! `IndexWriter.commit()` (several `DocumentsWriterPerThread.flush()` calls
-//! folded into one commit) without needing real RAM-triggered flushing,
-//! merging, or concurrent buffering -- see `lucene_index::segment_writer`'s
-//! module docs for exactly what is and isn't in scope here.
+//! It shows the multi-segment shape of a real `IndexWriter.commit()` (several
+//! `DocumentsWriterPerThread.flush()` calls folded into one commit), after
+//! `write_segment_infos_fixture.rs`'s single-segment commit.
 //!
 //! `fixtures/src/VerifySegmentInfos.java` (unchanged, already
 //! segment-count-agnostic: it only reads `manifest.properties` and calls

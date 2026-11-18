@@ -1,9 +1,6 @@
-//! `TermQuery`-equivalent (`org.apache.lucene.search.TermQuery`), pared down
-//! to this slice's scope: a field name plus a single exact term, no scoring
-//! metadata attached (`TermQuery` in real Lucene also carries an optional
-//! `TermStates` for cross-segment stats reuse — not needed for a
-//! single-segment, no-relevance-scoring first cut, see `lib.rs`'s module
-//! doc for the full design rationale).
+//! `TermQuery`-equivalent (`org.apache.lucene.search.TermQuery`): a field name plus a single exact term. Cross-segment statistics are
+//! gathered separately (`global_stats`), where Lucene's `TermQuery` carries
+//! them as `TermStates`.
 
 /// A single exact-term lookup against one field, e.g. `TermQuery::new("body",
 /// "cat")` — the Rust analogue of `new TermQuery(new Term("body", "cat"))`.

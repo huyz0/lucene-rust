@@ -776,7 +776,7 @@ impl PostingsFlags {
 
 /// An opened `.doc` file (header/footer validated once), ready for
 /// per-term seeks. Mirrors `Lucene104PostingsReader`'s `docIn`, minus
-/// everything this slice doesn't support (positions, skip data, impacts).
+/// everything this reader does not read (positions, skip data, impacts).
 pub struct DocInput<'a> {
     buf: &'a [u8],
     format: PostingsFormat,
@@ -944,9 +944,7 @@ impl<'a> DocInput<'a> {
                 | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
                 | IndexOptions::DocsAndCustomFreqs
         ) {
-            return Err(Error::Unsupported(
-                "IndexOptions::None is not supported in this slice",
-            ));
+            return Err(Error::Unsupported("IndexOptions::None is not supported"));
         }
         let index_has_freq = index_options != IndexOptions::Docs;
         let index_has_pos = index_options.subsumes_positions();
@@ -1267,9 +1265,7 @@ impl<'a> DocInput<'a> {
                 | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
                 | IndexOptions::DocsAndCustomFreqs
         ) {
-            return Err(Error::Unsupported(
-                "IndexOptions::None is not supported in this slice",
-            ));
+            return Err(Error::Unsupported("IndexOptions::None is not supported"));
         }
         let trailing = matches!(
             self.format,
