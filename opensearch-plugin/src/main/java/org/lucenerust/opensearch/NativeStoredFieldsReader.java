@@ -667,8 +667,34 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         if (blob.byteSize() > Integer.MAX_VALUE) {
             throw new IOException("a native document of " + blob.byteSize() + " bytes");
         }
+        int n = (int) blob.byteSize();
+        ReplayScratch scratch = REPLAY_SCRATCH.get();
+        if (n <= SCRATCH_BYTES && scratch.busy == false) {
+            // A small document is copied into the thread's buffer and read from the heap: reading it in place
+            // took a direct buffer per document and, for each binary value, a view of it and a few more objects.
+            scratch.busy = true;
+            try {
+                if (scratch.bytes.length < n) {
+                    scratch.bytes = new byte[Math.min(SCRATCH_BYTES, Math.max(n, scratch.bytes.length * 2))];
+                }
+                MemorySegment.copy(blob, ValueLayout.JAVA_BYTE, 0, scratch.bytes, 0, n);
+                replay(infos, ByteBuffer.wrap(scratch.bytes, 0, n), visitor, source, values);
+            } finally {
+                scratch.busy = false;
+            }
+            return;
+        }
         replay(infos, blob.asByteBuffer(), visitor, source, values);
     }
+
+    /** A thread's copy of the document being replayed, while it is. */
+    private static final class ReplayScratch {
+        byte[] bytes = new byte[4096];
+        /** A replay inside the visitor's callbacks reads in place, the buffer being in use. */
+        boolean busy;
+    }
+
+    private static final ThreadLocal<ReplayScratch> REPLAY_SCRATCH = ThreadLocal.withInitial(ReplayScratch::new);
 
     private static void replay(FieldInfos infos, ByteBuffer b, StoredFieldVisitor visitor, SourceLoader source, ValueLoader values)
         throws IOException {

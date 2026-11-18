@@ -295,6 +295,8 @@ final class DocumentEncoder {
         final FieldSchema schema = new FieldSchema(null);
         int number;
         final List<IndexableField> instances = new ArrayList<>(1);
+        /** The workspace document that last took this state. */
+        long document = -1;
         Inverted inverted;
         /** Set when Rust analyzes every instance; then {@link #texts} holds them, in order. */
         NativeField nativeField;
@@ -331,10 +333,15 @@ final class DocumentEncoder {
         /** The document's fields by name, and in the order each name first appears. */
         final Map<String, PerField> fields = new HashMap<>();
         final List<PerField> order = new ArrayList<>();
-        final List<PerField> perFields = new ArrayList<>();
-        final List<long[]> numericDv = new ArrayList<>();
-        final List<Object[]> binaryDv = new ArrayList<>();
-        final List<Object[]> points = new ArrayList<>();
+        /** The current document's number, so a {@link PerField} kept from an earlier one is told from one taken by this. */
+        long document;
+        /** Per kind, the entries written into the operation after the inverted fields, already in wire form. */
+        final Blob numericDv = new Blob(64);
+        final Blob binaryDv = new Blob(64);
+        final Blob points = new Blob(64);
+        int numericDvCount;
+        int binaryDvCount;
+        int pointCount;
         /** The operation's buffer, emptied per operation. */
         Blob blob;
         /** The last stream an untokenized field gave, reused for the next one (as Lucene's IndexingChain does). */
@@ -344,15 +351,27 @@ final class DocumentEncoder {
         PerField perField(String name) {
             PerField pf = fields.get(name);
             if (pf == null) {
-                if (order.size() == perFields.size()) {
-                    perFields.add(new PerField());
+                if (fields.size() >= MAX_KNOWN_FIELDS) {
+                    // Dynamic mappings can make field names without end: forget the ones the thread kept.
+                    fields.clear();
+                    for (int i = 0; i < order.size(); i++) {
+                        fields.put(order.get(i).schema.name, order.get(i));
+                    }
                 }
-                pf = perFields.get(order.size());
-                pf.reset(name);
+                pf = new PerField();
                 fields.put(name, pf);
+            }
+            if (pf.document != document) {
+                pf.document = document;
+                pf.reset(name);
                 order.add(pf);
             }
             return pf;
+        }
+
+        /** The state of field {@code name} the current document has taken. */
+        PerField taken(String name) {
+            return fields.get(name);
         }
 
         Inverted inverted(String name, IndexOptions options) {
@@ -370,16 +389,24 @@ final class DocumentEncoder {
                 pool.get(i).terms.clear(true);
             }
             used = 0;
-            for (PerField pf : order) {
-                pf.clear();
+            for (int i = 0; i < order.size(); i++) {
+                order.get(i).clear();
             }
-            fields.clear();
             order.clear();
-            numericDv.clear();
-            binaryDv.clear();
-            points.clear();
+            numericDv.reset(0).trim(KEEP_STAGED);
+            binaryDv.reset(0).trim(KEEP_STAGED);
+            points.reset(0).trim(KEEP_STAGED);
+            numericDvCount = 0;
+            binaryDvCount = 0;
+            pointCount = 0;
         }
     }
+
+    /** Field names a thread's {@link Workspace} remembers. */
+    private static final int MAX_KNOWN_FIELDS = 4096;
+
+    /** The most a {@link Workspace}'s staging buffers keep between documents. */
+    private static final int KEEP_STAGED = 1 << 20;
 
     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(Workspace::new);
 
@@ -396,7 +423,7 @@ final class DocumentEncoder {
     private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
         // Pass 1: the document's schema per field name, checked against (or registered as) the
         // shard's -- IndexingChain.processDocument's first loop.
-        Map<String, PerField> fields = ws.fields;
+        ws.document++;
         for (IndexableField field : doc) {
             if (droppedSeqNoPoint(field)) {
                 continue;
@@ -405,7 +432,8 @@ final class DocumentEncoder {
             pf.schema.absorb(field.fieldType());
             pf.instances.add(field);
         }
-        for (PerField pf : ws.order) {
+        for (int o = 0; o < ws.order.size(); o++) {
+            PerField pf = ws.order.get(o);
             if (pf.schema.name.equals(softDeletesField)) {
                 pf.schema.softDeletes = true;
             }
@@ -438,15 +466,12 @@ final class DocumentEncoder {
         // Pass 2, in document order: stored values, inversion, doc values, points.
         int storedAt = b.reserveI32();
         int stored = 0;
-        List<long[]> numericDv = ws.numericDv;
-        List<Object[]> binaryDv = ws.binaryDv;
-        List<Object[]> points = ws.points;
         List<IndexableField> vectors = null;
         for (IndexableField field : doc) {
             if (droppedSeqNoPoint(field)) {
                 continue;
             }
-            PerField pf = fields.get(field.name());
+            PerField pf = ws.taken(field.name());
             IndexableFieldType type = field.fieldType();
             if (type.vectorDimension() != 0) {
                 if (vectors == null) {
@@ -481,32 +506,39 @@ final class DocumentEncoder {
                         if (n == null) {
                             throw new IllegalArgumentException("field=\"" + pf.schema.name + "\": null value not allowed");
                         }
-                        numericDv.add(new long[] { pf.number, n.longValue() });
+                        ws.numericDv.i32(pf.number).u8(0).i64(n.longValue());
+                        ws.numericDvCount++;
                     }
-                    default -> binaryDv.add(new Object[] { pf.number, BytesRef.deepCopyOf(field.binaryValue()) });
+                    default -> {
+                        ws.binaryDv.i32(pf.number).u8(1).bytes(field.binaryValue());
+                        ws.binaryDvCount++;
+                    }
                 }
             }
             if (type.pointDimensionCount() != 0) {
-                points.add(new Object[] { pf.number, BytesRef.deepCopyOf(field.binaryValue()) });
+                ws.points.i32(pf.number).bytes(field.binaryValue());
+                ws.pointCount++;
             }
         }
         b.patchI32(storedAt, stored);
 
         int invertedCount = 0;
-        for (PerField pf : ws.order) {
+        for (int o = 0; o < ws.order.size(); o++) {
+            PerField pf = ws.order.get(o);
             if (pf.inverted != null || pf.nativeField != null) {
                 invertedCount++;
             }
         }
         b.i32(invertedCount);
-        for (PerField pf : ws.order) {
+        for (int o = 0; o < ws.order.size(); o++) {
+            PerField pf = ws.order.get(o);
             if (pf.nativeField != null) {
                 // writer_blob.rs's analyzed_field: Rust analyzes and inverts these values.
                 int norm = pf.schema.omitNorms ? 0 : pf.nativeField.discountOverlaps() ? 1 : 2;
                 b.i32(pf.number).u8(2).i32(pf.nativeField.id()).u8(pf.nativeOptions.ordinal()).u8(norm).string(pf.schema.name);
                 b.i32(pf.texts.size());
-                for (String text : pf.texts) {
-                    b.string(text);
+                for (int t = 0; t < pf.texts.size(); t++) {
+                    b.string(pf.texts.get(t));
                 }
                 b.analyzesNatively = true;
                 ANALYZED_NATIVELY.addAndGet(pf.texts.size());
@@ -518,17 +550,8 @@ final class DocumentEncoder {
             }
         }
 
-        b.i32(numericDv.size() + binaryDv.size());
-        for (long[] v : numericDv) {
-            b.i32((int) v[0]).u8(0).i64(v[1]);
-        }
-        for (Object[] v : binaryDv) {
-            b.i32((Integer) v[0]).u8(1).bytes((BytesRef) v[1]);
-        }
-        b.i32(points.size());
-        for (Object[] v : points) {
-            b.i32((Integer) v[0]).bytes((BytesRef) v[1]);
-        }
+        b.i32(ws.numericDvCount + ws.binaryDvCount).append(ws.numericDv).append(ws.binaryDv);
+        b.i32(ws.pointCount).append(ws.points);
         return vectors;
     }
 
@@ -716,13 +739,49 @@ final class DocumentEncoder {
          */
         Payloads[] payloads = new Payloads[8];
 
+        /**
+         * {@code DirectBytesStartArray} drops its array whenever the hash is cleared, so every field of every
+         * document allocated one again; this keeps it (the entries are written before they are read).
+         */
+        private static final class KeptStarts extends BytesRefHash.BytesStartArray {
+            private int[] starts;
+            private final org.apache.lucene.util.Counter used = org.apache.lucene.util.Counter.newCounter();
+
+            @Override
+            public int[] init() {
+                if (starts == null) {
+                    starts = new int[org.apache.lucene.util.ArrayUtil.oversize(BytesRefHash.DEFAULT_CAPACITY, Integer.BYTES)];
+                    used.addAndGet(starts.length * Integer.BYTES);
+                }
+                return starts;
+            }
+
+            @Override
+            public int[] grow() {
+                int before = starts.length;
+                starts = org.apache.lucene.util.ArrayUtil.grow(starts, before + 1);
+                used.addAndGet((long) (starts.length - before) * Integer.BYTES);
+                return starts;
+            }
+
+            @Override
+            public int[] clear() {
+                return starts;
+            }
+
+            @Override
+            public org.apache.lucene.util.Counter bytesUsed() {
+                return used;
+            }
+        }
+
         /** One term's payloads in this document. */
         private static final class Payloads {
             final List<BytesRef> list = new ArrayList<>();
         }
 
         Inverted(RecyclingByteBlockAllocator blocks) {
-            terms = new BytesRefHash(new org.apache.lucene.util.ByteBlockPool(blocks));
+            terms = new BytesRefHash(new org.apache.lucene.util.ByteBlockPool(blocks), BytesRefHash.DEFAULT_CAPACITY, new KeptStarts());
         }
 
         /** A fresh state for field {@code name}; {@link #terms} is already empty. */
