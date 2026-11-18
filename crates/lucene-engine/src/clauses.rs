@@ -448,7 +448,9 @@ pub fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
                     ExtendedQuery::FunctionScore(f) => stack.push(&f.in_query),
                     ExtendedQuery::Covering(c) => stack.extend(c.queries.iter()),
                     ExtendedQuery::Span(s) => {
-                        if let Some(field) = s.field() {
+                        // the weight's field: a top-level field-masking query scores
+                        // with its masked query's field, not the one it reports
+                        if let Some(field) = lucene_search::spans::weight_query(s).field() {
                             if !out.contains(&field) {
                                 out.push(field);
                             }
@@ -476,3 +478,7 @@ pub fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "clauses_tests.rs"]
+mod tests;

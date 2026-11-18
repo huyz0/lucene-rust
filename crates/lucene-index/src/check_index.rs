@@ -807,7 +807,7 @@ fn open_si(dir: &dyn Directory, commit: &SegmentCommitInfo) -> Result<SegmentInf
 /// `codec.segmentInfoFormat().read(directory, segName, segmentID, ...)`.
 fn read_si(dir: &dyn Directory, commit: &SegmentCommitInfo) -> segment_info::Result<SegmentInfo> {
     let bytes = dir.open(&format!("{}.si", commit.segment_name))?;
-    segment_info::parse_for_codec(&bytes, &commit.segment_id, &commit.codec_name)
+    segment_info::parse_for_commit(&bytes, commit)
 }
 
 /// The `.si` failures `SegmentInfos.readCommit` wraps in a

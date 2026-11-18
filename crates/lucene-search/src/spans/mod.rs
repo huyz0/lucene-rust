@@ -1892,7 +1892,7 @@ pub(crate) fn all_terms(q: &SpanNode, out: &mut Vec<(String, Vec<u8>)>) {
 
 /// The query a span query's weight is created from: Java's `createWeight`
 /// hands a `FieldMaskingSpanQuery`'s to the masked query.
-pub(crate) fn weight_query(q: &SpanNode) -> &SpanNode {
+pub fn weight_query(q: &SpanNode) -> &SpanNode {
     match q {
         SpanNode::FieldMasking { inner, .. } => weight_query(inner),
         other => other,
