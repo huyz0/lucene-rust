@@ -90,6 +90,11 @@ pub const META_EXTENSION: &str = "ivm";
 pub const POSTINGS_EXTENSION: &str = "ivp";
 /// The vectors file's extension.
 pub const VECTORS_EXTENSION: &str = "ivv";
+/// Each field's rerank vectors in `.ivv` start on a page of this many bytes:
+/// a rerank reads single vectors at scattered offsets, and a vector whose
+/// size divides a page then touches one page, not two, when memory is short.
+/// Readers take the start from the metadata, so any multiple of four reads.
+pub const VECTORS_ALIGNMENT: usize = 4096;
 /// The first format version.
 pub const VERSION_START: i32 = 0;
 /// Cluster codes in the quantizer's block layout (`Quantizer::write_block`)

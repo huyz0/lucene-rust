@@ -189,6 +189,13 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   boundaries opens its files with `Directory::open_aligned`; their pages
   are then the block size times a power of two (`lucene_store::alignment`,
   base 4 KiB).
+- A vector file inside a compound segment is paged as it would be on its own:
+  the compound writer starts `.vec`, `.vex`, `.veq`, `.ivp`, `.ivv` and `.dhn`
+  members on a page, and the search reader asks the directory for each as a
+  member (`Directory::open_member`), so it gets the page size, pinning and
+  budget of its extension. Without that a `.cfs` was one file with 64 KiB
+  pages (3.6x the device reads of loose files at a budget below the vectors'
+  size) and, under `vectors_only`, was not paged at all.
 - Metadata, the terms index, norms, the stored-fields and points indexes and
   live docs are read whole at open, outside the budget, as on an object
   store. So are the HNSW graph (`.vex`), quantized vectors (`.veq`) and IVF

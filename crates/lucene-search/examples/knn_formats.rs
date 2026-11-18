@@ -20,6 +20,9 @@
 //!                 the demand pager) holding at most N MiB of them
 //!                 resident, and print page faults a query; needs
 //!                 userfaultfd
+//!   --paged-all   with --paged-mb, page every file (the default
+//!                 `PagedFsConfig`) instead of only the vector files
+//!   --compound    write every segment, flushed or merged, as a compound file
 //!   --mmap        search through `MmapDirectory` (read advice applies;
 //!                 `READ_ADVICE` sets `lucene_store::read_advice`) instead
 //!                 of files read whole
@@ -138,6 +141,8 @@ fn main() {
     let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
     let merge = args.iter().any(|a| a == "--merge");
     let mmap = args.iter().any(|a| a == "--mmap");
+    let compound = args.iter().any(|a| a == "--compound");
+    let paged_all = args.iter().any(|a| a == "--paged-all");
     let paged_mb: Option<u64> = opt("--paged-mb").map(|s| s.parse().unwrap());
     if let Ok(spec) = std::env::var("READ_ADVICE") {
         lucene_store::read_advice::set(&spec).unwrap();
@@ -209,6 +214,12 @@ fn main() {
             w.set_knn_vectors_format_for_field("v", format(name));
             w.set_ram_buffer_size_mb(4096.0).unwrap();
             w.set_merge_policy(None);
+            if compound {
+                w.set_use_compound_file(true);
+                let mut settings = lucene_index::merge_policy::CompoundFileSettings::default();
+                settings.set_no_cfs_ratio(1.0).unwrap();
+                w.set_merge_compound_file_settings(Some(settings));
+            }
             let w = ConcurrentIndexWriter::new(w, 1).unwrap();
             let per = n.div_ceil(segments);
             for start in (0..n).step_by(per) {
@@ -249,7 +260,11 @@ fn main() {
         let paged = paged_mb.map(|mb| {
             let d = lucene_store::PagedFsDirectory::with_config(
                 &path,
-                lucene_store::PagedFsConfig::vectors_only(),
+                if paged_all {
+                    lucene_store::PagedFsConfig::default()
+                } else {
+                    lucene_store::PagedFsConfig::vectors_only()
+                },
             );
             assert!(d.is_paged(), "userfaultfd is unavailable");
             lucene_store::paged_input::Pager::global()

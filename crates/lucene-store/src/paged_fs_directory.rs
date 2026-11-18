@@ -227,10 +227,25 @@ impl PagedFsDirectory {
 
     #[cfg(target_os = "linux")]
     fn open_paged(&self, name: &str, alignment: Option<usize>) -> Result<Option<Input>> {
+        self.open_paged_view(name, name, None, alignment)
+    }
+
+    /// [`Self::open_paged`] for the file `name`, or for `view` of it, a
+    /// member `(offset, len)` of a compound file read as a file called
+    /// `policy_name`: its page size, residency and whether it is paged at
+    /// all follow that name's kind.
+    #[cfg(target_os = "linux")]
+    fn open_paged_view(
+        &self,
+        name: &str,
+        policy_name: &str,
+        view: Option<(u64, u64)>,
+        alignment: Option<usize>,
+    ) -> Result<Option<Input>> {
         use crate::paged_input::{PageFiller, Pager};
         use std::sync::Arc;
 
-        if self.is_mapped(name) {
+        if self.is_mapped(policy_name) {
             return Ok(None);
         }
         let Some(pager) = Pager::global() else {
@@ -239,6 +254,10 @@ impl PagedFsDirectory {
         self.inner.ensure_can_read(name)?;
         let path = self.root.join(name);
         let mut file = local::LocalFile::open(&path, self.config.direct_io)?;
+        if let Some((base, len)) = view {
+            file.view(base, len)?;
+        }
+        let name = policy_name;
         let budget = pager.budget();
         let mut page = self.config.page_size_for(name, file.len(), budget);
         if let Some(hint) = alignment {
@@ -371,6 +390,31 @@ impl Directory for PagedFsDirectory {
         self.inner.open_aligned(name, alignment)
     }
 
+    /// A vector file in a compound file is read through the pager as it
+    /// would be on its own, with the page size, residency and budget its
+    /// extension gets ([`PagedFsConfig::page_size_for`]); a `.cfs` is
+    /// otherwise one file, read with the page size of a `.cfs`, whatever it
+    /// holds, and under [`PagedFsConfig::vectors_only`] not paged at all.
+    /// Members that start off a page, and every other member, are slices
+    /// of the archive.
+    fn open_member(
+        &self,
+        container: &str,
+        offset: u64,
+        len: u64,
+        member: &str,
+    ) -> Result<Option<Input>> {
+        #[cfg(target_os = "linux")]
+        if VECTOR_EXTENSIONS.contains(&extension(member))
+            && len > 0
+            && offset.checked_rem(crate::alignment::ALIGN_BASE as u64) == Some(0)
+        {
+            return self.open_paged_view(container, member, Some((offset, len)), None);
+        }
+        let _ = (container, offset, len, member);
+        Ok(None)
+    }
+
     fn file_length(&self, name: &str) -> Result<u64> {
         self.inner.file_length(name)
     }
@@ -487,6 +531,8 @@ mod shared {
         path: std::path::PathBuf,
         dev: u64,
         ino: u64,
+        /// The member's start in its compound file, zero for a file.
+        base: u64,
         len: u64,
         ctime: (i64, i64),
         page: usize,
@@ -507,7 +553,8 @@ mod shared {
                 path: path.to_path_buf(),
                 dev: meta.dev(),
                 ino: meta.ino(),
-                len: meta.len(),
+                base: file.base(),
+                len: file.len(),
                 ctime: (meta.ctime(), meta.ctime_nsec()),
                 page,
                 decoded,
@@ -654,6 +701,9 @@ mod local {
     /// One open local file, read page by page.
     pub(super) struct LocalFile {
         file: Arc<std::fs::File>,
+        /// Where the file's bytes start in `file`: zero, or the start of a
+        /// member of a compound file ([`Self::view`]).
+        base: u64,
         len: u64,
         page: usize,
         direct: bool,
@@ -745,6 +795,7 @@ mod local {
             let len = file.metadata()?.len();
             Ok(LocalFile {
                 file: Arc::new(file),
+                base: 0,
                 len,
                 page: ALIGN,
                 direct,
@@ -876,6 +927,28 @@ mod local {
             Ok(self.file.metadata()?)
         }
 
+        /// Narrows the file to `len` bytes from `base`: a member of a
+        /// compound file read as a file of its own. `base` is a multiple of
+        /// [`ALIGN`], so the member's pages keep the file's direct-read
+        /// alignment.
+        pub(super) fn view(&mut self, base: u64, len: u64) -> Result<()> {
+            let end = base.checked_add(len);
+            if base.checked_rem(ALIGN as u64) != Some(0) || end.is_none_or(|e| e > self.len) {
+                return Err(Error::Corrupted(format!(
+                    "member of {len} bytes at {base} is not inside a {}-byte file",
+                    self.len
+                )));
+            }
+            self.base = base;
+            self.len = len;
+            Ok(())
+        }
+
+        /// Where the file's bytes start in the file on disk.
+        pub(super) fn base(&self) -> u64 {
+            self.base
+        }
+
         /// Sets the bytes per page the pager fills.
         pub(super) fn set_page(&mut self, page: usize) {
             self.page = page;
@@ -908,7 +981,7 @@ mod local {
                 // O_DIRECT reads aligned blocks: read the ones around the
                 // range (a decoded file's pages start after its header).
                 let skip = offset.checked_rem(ALIGN as u64).unwrap_or(0) as usize;
-                let start = offset.saturating_sub(skip as u64);
+                let start = offset.saturating_sub(skip as u64).saturating_add(self.base);
                 let end = skip.saturating_add(want);
                 let aligned = end.div_ceil(ALIGN).saturating_mul(ALIGN);
                 let read = with_scratch(aligned, |buf| {
@@ -956,7 +1029,7 @@ mod local {
             } else {
                 &self.file
             };
-            let n = read_full(plain, buf, offset)?;
+            let n = read_full(plain, buf, offset.saturating_add(self.base))?;
             if n < want {
                 return Err(Error::Corrupted(format!(
                     "short read: {n} of {want} bytes at {offset}"
@@ -967,7 +1040,7 @@ mod local {
             unsafe {
                 libc::posix_fadvise(
                     plain.as_raw_fd(),
-                    i64::try_from(offset).unwrap_or(i64::MAX),
+                    i64::try_from(offset.saturating_add(self.base)).unwrap_or(i64::MAX),
                     i64::try_from(want).unwrap_or(i64::MAX),
                     libc::POSIX_FADV_DONTNEED,
                 );
@@ -1020,6 +1093,7 @@ mod local {
         fn handle(&self) -> LocalFile {
             LocalFile {
                 file: Arc::clone(&self.file),
+                base: self.base,
                 len: self.len,
                 page: self.page,
                 direct: self.direct,
