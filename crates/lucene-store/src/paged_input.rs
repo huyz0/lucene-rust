@@ -134,6 +134,9 @@ fn undecodable_message(e: &Error) -> Option<String> {
     }
 }
 
+/// Runs of faults a file tracks for read-ahead at once.
+const STREAM_SLOTS: usize = 8;
+
 const UFFD_API: u64 = 0xAA;
 const UFFD_USER_MODE_ONLY: libc::c_int = 1;
 const UFFDIO_API: libc::c_ulong = 0xC018_AA3F;
@@ -356,8 +359,13 @@ struct File {
     /// The most pages a fault reads at once when faults run in sequence
     /// (1: no read-ahead).
     readahead_max: usize,
-    /// The page the last fault was on, and the read-ahead window it used.
-    last_fault: AtomicU64,
+    /// The runs of faults the file is read in, one slot per run: each packs
+    /// where the run's read-ahead window ended and its size in pages (see
+    /// `fill_ahead`). Several readers scanning one file at different places
+    /// keep a run each.
+    streams: [AtomicU64; STREAM_SLOTS],
+    /// Which slot a fault that continues no run takes over next.
+    next_stream: AtomicUsize,
     /// When eviction last released each page, on the pager's eviction
     /// clock (0: never).
     evicted_at: Vec<AtomicU32>,
@@ -1072,7 +1080,8 @@ impl Pager {
             live: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             referenced: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             readahead_max: readahead_max.max(1),
-            last_fault: AtomicU64::new(u64::MAX),
+            streams: std::array::from_fn(|_| AtomicU64::new(u64::MAX)),
+            next_stream: AtomicUsize::new(0),
             evicted_at: (0..pages).map(|_| AtomicU32::new(0)).collect(),
             inflight: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             live_count: AtomicUsize::new(0),
@@ -1451,14 +1460,22 @@ impl Pager {
     /// window are read in one read; returns whether `index` was filled.
     /// `false` leaves `index` to the single-page path, which retries.
     fn fill_ahead(&self, file: &Arc<File>, index: usize) -> bool {
-        // `last_fault` packs the previous window's next page (high 40 bits)
-        // and its size in pages (low 24 bits).
-        let prev = file.last_fault.load(Ordering::Relaxed);
-        let (next, size) = ((prev >> 24) as usize, (prev & 0xFF_FFFF) as usize);
-        let window = if prev != u64::MAX && next == index {
-            size.saturating_mul(2).clamp(2, file.readahead_max)
-        } else {
-            1
+        // A slot packs the previous window's next page (high 40 bits) and
+        // its size in pages (low 24 bits); a fault continues the run whose
+        // window ended right before it.
+        let found = file.streams.iter().enumerate().find_map(|(slot, s)| {
+            let prev = s.load(Ordering::Relaxed);
+            ((prev != u64::MAX) && ((prev >> 24) as usize == index)).then_some((slot, prev))
+        });
+        let (slot, window) = match found {
+            Some((slot, prev)) => {
+                let size = (prev & 0xFF_FFFF) as usize;
+                (slot, size.saturating_mul(2).clamp(2, file.readahead_max))
+            }
+            None => (
+                file.next_stream.fetch_add(1, Ordering::Relaxed) % STREAM_SLOTS,
+                1,
+            ),
         };
         let end = index.saturating_add(window).min(file.pages);
         let mut pages: Vec<u64> = vec![index as u64];
@@ -1468,7 +1485,7 @@ impl Pager {
                 .map(|p| p as u64),
         );
         let packed = ((end as u64) << 24) | (end.saturating_sub(index) as u64 & 0xFF_FFFF);
-        file.last_fault.store(packed, Ordering::Relaxed);
+        file.streams[slot].store(packed, Ordering::Relaxed);
         if pages.len() == 1 && window == 1 {
             return false;
         }
