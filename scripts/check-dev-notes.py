@@ -31,6 +31,7 @@ PATTERNS = [
     re.compile(r"`[cb]\d{1,2}-[a-z][a-z0-9-]+`"),
     re.compile(r"\b(?:sweep|batch) [a-z]\d{1,2}\b"),
     re.compile(r"\bledger (?:row|item)\b|\bTier-2 review\b"),
+    re.compile(r"\b(?:this|future) slice\b|\bScope of this slice\b"),
 ]
 # Sweep batch names (`c25`, `b11`), outside code spans so `{@code b8}` fields
 # and `c1=0` style labels pass.

@@ -744,7 +744,7 @@ fn read_postings_rejects_index_options_none() {
 
 #[test]
 fn read_postings_block_size_minus_one_docs() {
-    // docFreq == BLOCK_SIZE - 1 (255): the largest docFreq this slice's
+    // docFreq == BLOCK_SIZE - 1 (255): the largest docFreq the
     // group-varint (non-PFOR) path supports -- one below the boundary
     // where `read_postings` rejects with Unsupported.
     let id = [7u8; ID_LENGTH];

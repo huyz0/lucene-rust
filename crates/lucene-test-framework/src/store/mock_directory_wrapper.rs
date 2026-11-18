@@ -513,7 +513,7 @@ fn unknown_segment_info(
 ) -> lucene_index::segment_info::Result<lucene_index::segment_info::SegmentInfo> {
     use lucene_index::segment_info::{self, LuceneVersion, SegmentInfo};
     if commit.codec_name != "SimpleText" {
-        return segment_info::parse_for_codec(input, &commit.segment_id, &commit.codec_name);
+        return segment_info::parse_for_commit(input, commit);
     }
     let si = segment_info::parse_simpletext(input, &commit.segment_name, &commit.segment_id)?;
     // The commit records three version components, with no prerelease value.

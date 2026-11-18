@@ -73,6 +73,8 @@ python3 scripts/check-java-size.py
 
 echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree)"
 python3 scripts/check-java-refs.py
+echo "gate: check-settings-docs (every setting of ours is documented)"
+python3 scripts/check-settings-docs.py
 echo "gate: check-fallbacks (no new Lucene fallback reason)"
 python3 scripts/check-fallbacks.py
 

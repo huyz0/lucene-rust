@@ -643,6 +643,16 @@ public final class NativeAggregations {
         return 0;
     }
 
+    /**
+     * Whether a Lucene field of the type's own name holds the values a values source reads from it.
+     * A constant_keyword gives every document its constant and a flat_object path lives inside one
+     * shared field, so "no doc value in the field" cannot be read from the field's existence.
+     */
+    static boolean hasOwnDocValues(MappedFieldType type) {
+        String name = type.typeName();
+        return type.hasDocValues() && name.equals("constant_keyword") == false && name.equals("flat_object") == false;
+    }
+
     /** How the field's stored longs become the doubles its aggregators read, or -1. */
     static byte valueKind(MappedFieldType type) {
         if (type instanceof NumberFieldMapper.NumberFieldType n) {

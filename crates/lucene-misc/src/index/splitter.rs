@@ -53,10 +53,9 @@ impl<'d> IndexSplitter<'d> {
 
     /// `SegmentCommitInfo.files()`.
     fn files(&self, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
-        let si = segment_info::parse_for_codec(
+        let si = segment_info::parse_for_commit(
             &self.dir.open(&format!("{}.si", sci.segment_name))?,
-            &sci.segment_id,
-            &sci.codec_name,
+            sci,
         )
         .map_err(index_error)?;
         Ok(sci.files(&si.files))
@@ -119,10 +118,9 @@ impl<'d> IndexSplitter<'d> {
     fn min_version(&self, segments: &[SegmentCommitInfo]) -> Result<Option<LuceneVersion>> {
         let mut min: Option<LuceneVersion> = None;
         for sci in segments {
-            let si = segment_info::parse_for_codec(
+            let si = segment_info::parse_for_commit(
                 &self.dir.open(&format!("{}.si", sci.segment_name))?,
-                &sci.segment_id,
-                &sci.codec_name,
+                sci,
             )
             .map_err(index_error)?;
             let v = LuceneVersion {
