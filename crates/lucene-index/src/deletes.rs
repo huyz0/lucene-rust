@@ -43,11 +43,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// same convention `lucene_util::base36`/`live_docs.rs`'s own index-header
 /// suffix already use in this port -- reusing `to_base36` here instead of
 /// plain decimal formatting keeps this new filename convention consistent
-/// with the rest of the port rather than inventing a diverging one. Nothing
-/// in this port established this filename shape before this module --
-/// `SegmentCommitInfo.del_gen` was tracked purely as metadata (see
-/// `segment_infos.rs`/`segment_info.rs`, both of which read/write `del_gen`
-/// as an integer with no filename derived from it).
+/// with the rest of the port rather than inventing a diverging one. `segment_infos.rs`/
+/// `segment_info.rs` read and write `del_gen` as a plain integer, with no
+/// filename derived from it.
 pub fn liv_file_name(segment_name: &str, del_gen: i64) -> String {
     if del_gen == 0 {
         // `IndexFileNames.fileNameFromGeneration`'s generation-0 branch:

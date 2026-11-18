@@ -1859,8 +1859,7 @@ impl FlatVectorsWriter {
 
         // Copy in merged-ordinal order, coalescing every run of consecutive
         // ordinals from one source into a single `memcpy` -- with no index
-        // sort and no deletions that is one copy per source, exactly as
-        // before this became order-driven.
+        // sort and no deletions that is one copy per source,
         let mut docs: Vec<i32> = Vec::with_capacity(plan.len());
         let mut i = 0usize;
         while i < plan.len() {

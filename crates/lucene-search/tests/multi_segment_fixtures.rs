@@ -5,8 +5,7 @@
 //! fixture yet (`fixtures/data/` has no multi-segment `IndexWriter` session for
 //! a scored query -- `segments_index`'s `_0.si`/`_1.si` fixture is
 //! `segment_infos.rs`'s own commit-file fixture, unrelated to term dictionaries/
-//! postings). Building one is real work (a new `Gen*.java` generator) that this
-//! task's brief explicitly allows deferring in favor of the documented
+//! postings). Building one is real work (a new `Gen*.java` generator), so this test takes the
 //! next-best alternative: **combine two already-differentially-verified
 //! single-segment fixtures' real recorded scores as if they were two segments
 //! of one index**, and confirm the merge produces the same globally-sorted
@@ -23,8 +22,7 @@
 //! BM25 output (`scoring_fixtures.rs`'s own cross-checks establish that); this
 //! test's job is purely to prove the *merge* step (doc-base translation +
 //! global re-ranking + truncation) is correct, which is exactly the
-//! "looks locally correct, wrong globally" bug class this task's brief warns
-//! about. The expected merged order is computed independently in this test by
+//! "looks locally correct, wrong globally" bug class. The expected merged order is computed independently in this test by
 //! hand-concatenating each segment's own real top-n hits (translated by
 //! `doc_base`) and sorting by the same score-desc/doc-id-asc rule real
 //! Lucene's `HitQueue` uses -- not by calling the code under test a second

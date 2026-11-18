@@ -2,8 +2,8 @@
 //! in `lucene-search` (`PForUtil.skip`).
 //!
 //! The A/B is in one build rather than across two: the same term's postings
-//! are resolved twice, once with `Freqs` (what these paths asked for before)
-//! and once with `DocsOnly` (what they ask for now). The difference is exactly
+//! are resolved twice, once with `Freqs` (what these paths asked for before the change)
+//! and once with `DocsOnly` (what they ask for). The difference is exactly
 //! the frequency-block decode that the constant-score / `Occur::FILTER` /
 //! `TermInSetQuery` / wildcard-family paths were paying for and discarding.
 //!
