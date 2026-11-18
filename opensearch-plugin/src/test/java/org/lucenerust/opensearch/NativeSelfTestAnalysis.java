@@ -419,13 +419,15 @@ final class NativeSelfTestAnalysis {
                 .addTokenFilter("capitalization", "keep", "the,of", "keepIgnoreCase", "true", "okPrefix", "mc,mac", "onlyFirstWord", "false", "minWordLength", "2", "maxWordCount", "9", "maxTokenLength", "20")
                 .build()
         );
-        m.put(
+        if (org.apache.lucene.util.Version.LATEST.minor >= 6) { // 10.6 types a compound's subwords "subword"
+            m.put(
             "dictionary compound words",
             b().withTokenizer("whitespace")
                 .addTokenFilter("lowercase")
                 .addTokenFilter("dictionaryCompoundWord", "dictionary", "compound.txt", "minWordSize", "5", "minSubwordSize", "2", "maxSubwordSize", "10", "onlyLongestMatchIgnoreSubwords", "false")
                 .build()
         );
+        }
         m.put(
             "pattern capture group",
             b().withTokenizer("whitespace").addTokenFilter("patternCaptureGroup", "pattern", "(\\w)(\\w)", "preserve_original", "false").build()

@@ -17,6 +17,11 @@ gradle -p opensearch-plugin bundlePlugin   # build/distributions/accelerated-sea
 gradle -p opensearch-plugin test           # the JUnit tests, NativeSelfTest (native path against Lucene) among them
 ```
 
+The tests are JUnit 4 (`junit:junit:4.13.2`, the version OpenSearch's test framework uses). Gradle
+fetches it and the kuromoji/nori jars from Maven Central; behind a caching proxy that sometimes answers a
+transient 404 for a jar that exists, Gradle then caches the miss. Re-run with `--refresh-dependencies`
+(repeat once or twice if it recurs).
+
 The plugin compiles against the jars of the distribution it installs into,
 extracted from the `opensearchproject/opensearch:3.9.0` image — a plugin must
 match its node exactly, and the build then needs no Maven repository.
