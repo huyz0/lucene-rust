@@ -271,44 +271,68 @@ public final class DerivedSource {
             if (vectors.isEmpty()) {
                 return operation;
             }
-            Map<String, Function<Object, Object>> inject = new HashMap<>();
-            Map<String, Function<Object, Object>> mask = new HashMap<>();
-            for (Map.Entry<String, List<Object>> e : vectors.entrySet()) {
-                Iterator<Object> it = e.getValue().iterator();
-                inject.put(e.getKey(), o -> o == null || it.hasNext() == false ? o : it.next());
-                mask.put(e.getKey(), o -> o == null ? null : MASK);
-            }
             boolean recovery = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.RECOVERY_SOURCE_NAME) != null;
             BytesReference original = operation.parsedDoc().source();
-            Tuple<? extends MediaType, Map<String, Object>> source = XContentHelper.convertToMap(
-                original,
-                true,
-                operation.parsedDoc().getMediaType()
-            );
-            MediaType type = source.v1();
+            MediaType type = operation.parsedDoc().getMediaType();
+            boolean json = type == XContentType.JSON;
+            // Parsed at most once, and only when a source is not rewritten token by token.
+            Map<String, Object> sourceMap = null;
             if (recovery == false) {
-                // A copy: source.v2() stays the request's, for the mask below.
-                operation.parsedDoc()
-                    .setSource(
-                        write(type, XContentMapValues.transform(inject, false).apply(source.v2())),
-                        XContentType.valueOf(type.subtype().toUpperCase(Locale.ROOT))
-                    );
+                BytesReference rewritten = json ? DerivedSourceRewrite.rewrite(original, vectors.keySet(), true, injector(vectors)) : null;
+                if (rewritten == null) {
+                    sourceMap = XContentHelper.convertToMap(original, true, type).v2();
+                    Map<String, Function<Object, Object>> inject = new HashMap<>();
+                    for (Map.Entry<String, List<Object>> e : vectors.entrySet()) {
+                        Iterator<Object> it = e.getValue().iterator();
+                        inject.put(e.getKey(), o -> o == null || it.hasNext() == false ? o : it.next());
+                    }
+                    // A copy: sourceMap stays the request's, for the mask below.
+                    rewritten = write(type, XContentMapValues.transform(inject, false).apply(sourceMap), original.length() + 64);
+                }
+                operation.parsedDoc().setSource(rewritten, XContentType.valueOf(type.subtype().toUpperCase(Locale.ROOT)));
             }
             IndexableField stored = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.NAME);
             if (stored instanceof StoredField f && f.storedValue() != null && (realtime == false || type == XContentType.JSON)) {
                 // The stored _source may be filtered (_source includes/excludes): mask what is
                 // stored, never the whole request source.
                 BytesRef bytes = f.binaryValue();
-                Map<String, Object> storedMap = bytes.bytesEquals(original.toBytesRef())
-                    ? source.v2()
-                    : XContentHelper.convertToMap(new BytesArray(bytes), true, type).v2();
-                f.setBytesValue(write(type, XContentMapValues.transform(mask, true).apply(storedMap)).toBytesRef());
+                BytesReference masked = json
+                    ? DerivedSourceRewrite.rewrite(new BytesArray(bytes), vectors.keySet(), false, path -> MASK)
+                    : null;
+                if (masked == null) {
+                    Map<String, Function<Object, Object>> mask = new HashMap<>();
+                    for (String key : vectors.keySet()) {
+                        mask.put(key, o -> o == null ? null : MASK);
+                    }
+                    Map<String, Object> storedMap;
+                    if (bytes.bytesEquals(original.toBytesRef())) {
+                        if (sourceMap == null) {
+                            sourceMap = XContentHelper.convertToMap(original, true, type).v2();
+                        }
+                        storedMap = sourceMap;
+                    } else {
+                        storedMap = XContentHelper.convertToMap(new BytesArray(bytes), true, type).v2();
+                    }
+                    masked = write(type, XContentMapValues.transform(mask, true).apply(storedMap), bytes.length + 64);
+                }
+                f.setBytesValue(masked.toBytesRef());
             }
             return operation;
         }
 
-        private static BytesReference write(MediaType type, Map<String, Object> map) {
-            try (BytesStreamOutput out = new BytesStreamOutput()) {
+        /** Each field's next vector, in document order, for {@link DerivedSourceRewrite}. */
+        private static DerivedSourceRewrite.Replacement injector(Map<String, List<Object>> vectors) {
+            Map<String, Iterator<Object>> next = new HashMap<>();
+            vectors.forEach((k, v) -> next.put(k, v.iterator()));
+            return path -> {
+                Iterator<Object> it = next.get(path);
+                return it != null && it.hasNext() ? it.next() : null;
+            };
+        }
+
+        /** {@code map} as {@code type}; {@code expected} bytes are reserved, where a default stream takes a 16 KiB page. */
+        private static BytesReference write(MediaType type, Map<String, Object> map, int expected) {
+            try (BytesStreamOutput out = new BytesStreamOutput(expected)) {
                 XContentBuilder b = MediaTypeRegistry.contentBuilder(type, out).map(map);
                 b.close();
                 return out.bytes();
