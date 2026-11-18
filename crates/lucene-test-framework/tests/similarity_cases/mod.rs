@@ -163,7 +163,7 @@ pub const CASES: [(&str, GetSimilarity); 22] = [
 ];
 
 /// The subclasses Lucene 10.6 (`branch_10_6`) adds, kept apart from
-/// [`CASES`]: the 10.5.2 fixtures hold one row per entry there.
+/// [`CASES`]: the fixtures' base rows hold one per entry there.
 pub const LUCENE_10_6_CASES: [(&str, GetSimilarity); 1] = [
     // `TestStableTflSimilarity.getSimilarity` (#16243): k1, then c.
     ("StableTfl", |r| {

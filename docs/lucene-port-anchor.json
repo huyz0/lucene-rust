@@ -1,19 +1,12 @@
 {
   "schema": 1,
   "base": {
-    "release": "10.5.2",
-    "tag": "releases/lucene/10.5.2",
-    "commit": "145d89cd30c38d25e39a0a2232cf00eee208b9cf",
-    "previous_minor": "10.5.0",
-    "date": "2026-09-21",
-    "meaning": "Fixtures, jars (LUCENE_VERSION in scripts/lib-lucene-jars.sh), Version::LATEST and docs/parity.md are pinned here; every 10.5.0-10.5.2 fix is in. Index formats: reads and writes 10.5 (default) and 10.6 (.dvp, doc-values VERSION 3, SegmentInfos 10.6); the sandbox Faiss codec (lucene-faiss, opt-in) targets Lucene main (11.0), whose format may change."
-  },
-  "partial": {
     "release": "10.6.0",
     "tag": "releases/lucene/10.6.0",
     "commit": "4ae946e5a9b99d1e22c23865c99e561b8dcc9d71",
+    "previous_minor": "10.5.2",
     "date": "2026-10-26",
-    "meaning": "Output-neutral 10.6.0 changes were ported on 2026-10-30 (port PRs #56, #57, #58, #60); triage in /mnt/project-files/plan/lucene-10.6-triage.md covered all 202 commits of 10.5.2..10.6.0. Output-changing items were deliberately left until the pin is bumped; the 10.6 index formats are read and written (PRs #493, #495)."
+    "meaning": "Fixtures, jars (LUCENE_VERSION in scripts/lib-lucene-jars.sh), Version::LATEST and docs/parity.md are pinned here (2026-11-17, 326 fixture diffs triaged and matched on the Rust side). Index formats: reads and writes 10.5 (default) and 10.6 (.dvp, doc-values VERSION 3, SegmentInfos 10.6); the sandbox Faiss codec (lucene-faiss, opt-in) targets Lucene main (11.0), whose format may change."
   },
   "opensearch": {
     "pinned_release": "3.9.0",
@@ -47,6 +40,7 @@
     16647,
     16667,
     16714,
+    16715,
     16717,
     16718,
     16720,
@@ -69,7 +63,6 @@
     "16316": "no analogue: the accumulator buffer is not allocated per scorer",
     "16582": "deliberately not applied: the port does not rewrite doc-values range queries from global skipper stats (see doc_values_queries.rs)",
     "16424": "tied to the same skipper-stat rewrite; not applied",
-    "16715": "no gain: ReqExcl here already skips by doc-id runs and builds no exclusion bit set",
     "16370": "no analogue: the dense conjunction bulk scorer takes term legs only, no two-phase clauses",
     "16146": "no analogue: no cached-filter conjunction batching in this port",
     "16721": "needs BreakIterator isBoundary/following/last, which the installed JVM and ICU Thai breakers do not provide; no OpenSearch surface",
@@ -85,5 +78,5 @@
     "16706": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)",
     "16710": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)"
   },
-  "notes": "ported_prs lists upstream PR numbers from 10.5.2..10.6.0 that the port has taken; skipped_prs have a measured reason. scripts/lucene-upstream-diff.py reads both and also treats a PR number mentioned anywhere in the repo as 'referenced'. Update this file in the same PR that ports or rejects a change; bump base when the pin moves."
+  "notes": "ported_prs lists upstream PR numbers from 10.5.2..10.6.0 that the port took by hand before the pin moved, plus the ReqExclBulkScorer window rewrite (#16715) taken with it; skipped_prs have a measured reason. scripts/lucene-upstream-diff.py reads both and also treats a PR number mentioned anywhere in the repo as 'referenced'. Update this file in the same PR that ports or rejects a change; bump base when the pin moves."
 }

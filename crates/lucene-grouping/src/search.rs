@@ -10,7 +10,7 @@ use super::collectors::{
     AllGroupHeadsCollector, AllGroupsCollector, FirstPassGroupingCollector, TopGroupsCollector,
 };
 use super::sort::Sort;
-use super::{search_manager, GroupSelector, TopGroups};
+use super::{search_manager, GroupSelector, ScoreMergeMode, TopGroups};
 use lucene_search::collector::{ScoreMode, ScoringCollector};
 use lucene_search::collectors::{CachingCollector, NoOpCollector};
 use lucene_search::index_searcher::IndexSearcher;
@@ -321,7 +321,17 @@ impl<F> GroupingSearch<F> {
             }
             _ => search_segments(searcher, query, &mut second)?,
         }
-        let mut top_groups = second.top_groups(self.group_docs_offset);
+        // `TopGroupsCollectorManager.reduce`: the one collector's groups,
+        // merged like a single shard's (`ScoreMergeMode.None`), which
+        // slices off the offset and derives the max scores as the merge does.
+        let mut top_groups = TopGroups::merge(
+            &[second.top_groups(0)],
+            &self.group_sort,
+            &self.sort_within_group,
+            self.group_docs_offset,
+            self.group_docs_limit,
+            ScoreMergeMode::None,
+        )?;
         if self.all_groups {
             top_groups.total_group_count =
                 Some(i32::try_from(matching_groups.len()).unwrap_or(i32::MAX));
@@ -363,15 +373,11 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for FirstRound<'a, S> {
 
     fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         self.first.set_next_reader(ord, leaf)?;
-        // Java's three collectors share one selector, which the first pass
-        // hands the scorer; these have their own, handed it here.
         if let Some(c) = self.all.as_mut() {
             c.set_next_reader(ord, leaf)?;
-            c.selector_mut().set_scorer()?;
         }
         if let Some(c) = self.heads.as_mut() {
             c.set_next_reader(ord, leaf)?;
-            c.selector_mut().set_scorer()?;
         }
         Ok(())
     }

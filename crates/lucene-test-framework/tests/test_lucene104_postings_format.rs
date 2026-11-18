@@ -135,7 +135,9 @@ fn check_integrity_reads_all_bytes() {
 #[test]
 fn inverted_write_sees_flushes_and_merges() {
     let mut merges = 0;
-    for seed in SEEDS {
+    // Whether a seed's writer merges depends on its drawn configuration, so a
+    // few more seeds keep the check from resting on two draws.
+    for seed in SEEDS.into_iter().chain(1..=6) {
         let mut t = LuceneTestCase::with_config("testInvertedWrite", seed, false, 1);
         let stats = lucene_test_framework::index::inverted_write::inverted_write(&mut t, 100, true);
         assert!(stats.flushes > 0, "{stats:?}");

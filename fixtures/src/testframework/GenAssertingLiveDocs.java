@@ -145,7 +145,7 @@ public class GenAssertingLiveDocs {
     try {
       bits.applyMask(mask, offset);
       throw new AssertionError("out-of-range mask accepted");
-    } catch (AssertionError expected) {
+    } catch (AssertionError | IllegalArgumentException expected) {
       if (expected.getMessage() != null && expected.getMessage().equals("out-of-range mask accepted")) throw expected;
     }
     emit("mask", name, offset, before, "assert", bits(mask));

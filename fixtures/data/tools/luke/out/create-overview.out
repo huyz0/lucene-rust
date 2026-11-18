@@ -5,7 +5,7 @@ deletions: false
 deleted documents: 0
 optimized: true
 version: 4
-format: Lucene 8.6 or later
+format: Lucene 10.6 or later
 commit: segments_1 (generation=1, segs=1)
 user data: {}
 field names: [from, newsgroup, newsgroup_sort, subject, messageId, date_raw, organization, lines_range, lines_sort, lines_raw, body]

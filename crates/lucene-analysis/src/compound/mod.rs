@@ -52,6 +52,10 @@ impl Default for CompoundSizes {
     }
 }
 
+/// `CompoundWordTokenFilterBase.TOKEN_TYPE_SUBWORD`: the type of every
+/// subword token.
+pub const TOKEN_TYPE_SUBWORD: &str = "subword";
+
 /// `CompoundToken`: a subword, as its range of the decomposed term's UTF-16
 /// units (Java copies it out; the term stays in `buf` until every subword
 /// is emitted), and the whole token's offsets.
@@ -297,6 +301,7 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
             a.set_term_utf16(&self.buf[token.txt]);
             a.set_offset(token.start_offset, token.end_offset)?;
             a.set_position_increment(0)?;
+            a.set_token_type(TOKEN_TYPE_SUBWORD);
             return Ok(true);
         }
         self.current.clear();

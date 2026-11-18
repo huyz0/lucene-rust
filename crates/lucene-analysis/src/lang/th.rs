@@ -22,13 +22,10 @@
 //! Java's message. `ThaiAnalyzer`'s stop set and `normalize` chain need no
 //! dictionary and always work.
 //!
-//! Lucene 10.6 (branch_10_6, not in the pinned 10.5.2 jars) adds Thai
-//! components that need no dictionary, ported here as standalone pieces:
+//! Lucene 10.6 added Thai components that need no dictionary:
 //! [`ThaiNormalizer`] and [`ThaiNormalizationFilter`], [`ThaiCharFilter`]
-//! (#16717) and [`ThaiRepeatFilter`] (#16720). 10.6 also puts them in
-//! `ThaiAnalyzer`'s chain and replaces its stop set (#16717, #16718); those
-//! change the analyzer's output and wait for the 10.6.0 release, so
-//! [`ThaiAnalyzer`] stays 10.5.2's.
+//! (#16717) and [`ThaiRepeatFilter`] (#16720). [`ThaiAnalyzer`] runs them
+//! as 10.6 does and uses its stop set (#16717, #16718).
 
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -207,8 +204,9 @@ fn thai_tokenizer_with(slot: &RwLock<Option<NewBreaker>>) -> Result<ThaiTokenize
     }))
 }
 
-/// `ThaiAnalyzer`: `ThaiTokenizer`, `LowerCaseFilter`,
-/// `DecimalDigitFilter`, `StopFilter`. Its token streams refuse without an
+/// `ThaiAnalyzer`: `ThaiCharFilter`, `ThaiTokenizer`, `LowerCaseFilter`,
+/// `DecimalDigitFilter`, `ThaiNormalizationFilter`, `ThaiRepeatFilter`,
+/// `StopFilter`. Its token streams refuse without an
 /// installed word iterator (see the module docs); `normalize` always works.
 #[derive(Debug, Clone)]
 pub struct ThaiAnalyzer {
@@ -242,6 +240,7 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         _field: &str,
     ) -> Result<crate::analyzer::TokenStreamComponents, AnalysisError> {
         let result = DecimalDigitFilter::new(LowerCaseFilter::new(thai_tokenizer()?));
+        let result = ThaiRepeatFilter::new(ThaiNormalizationFilter::new(result));
         Ok(crate::analyzer::TokenStreamComponents::new(
             crate::StopFilter::new(result, Arc::clone(&self.stopwords)),
         ))
@@ -252,7 +251,21 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         _field: &str,
         input: Box<dyn crate::token_stream::TokenStream>,
     ) -> Box<dyn crate::token_stream::TokenStream> {
-        Box::new(DecimalDigitFilter::new(LowerCaseFilter::new(input)))
+        Box::new(ThaiNormalizationFilter::new(DecimalDigitFilter::new(
+            LowerCaseFilter::new(input),
+        )))
+    }
+
+    fn init_reader(&self, _field: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+        Box::new(ThaiCharFilter::new(reader))
+    }
+
+    fn init_reader_for_normalization(
+        &self,
+        _field: &str,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
+        Box::new(ThaiCharFilter::new(reader))
     }
 }
 

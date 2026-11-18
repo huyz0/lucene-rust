@@ -8,8 +8,8 @@ reader	fail:float:float,f	ok;io:delegate failure	float:float
 reader	fail:integrity,integrity	ok;io:delegate failure	integrity
 reader	merge,mf,mb,msf,msb,mm,mc,finish,mfinish,mfinish,close	ok;ok;ok;assert;assert;assert;assert;assert;ok;assert;ok	merge,float:float,iterator,docID,size,dimension,byte:byte,iterator,docID,size,dimension,finishMerge,close,close
 reader	merge,merge2,mfinish,close,finish2,close	ok;ok;ok;assert;ok;ok	merge,merge,finishMerge,close,close,finishMerge,close,close
-reader	merge,close	ok;ok	merge,close,close
-reader	merge,fail:finishMerge,mfinish,ok,mfinish,close	ok;ok;io:delegate failure;ok;assert;ok	merge,finishMerge,close,close
+reader	merge,close	ok;assert	merge,close,close
+reader	merge,fail:finishMerge,mfinish,ok,mfinish,close	ok;ok;io:delegate failure;ok;assert;assert	merge,finishMerge,close,close
 reader	merge,merge2,mfinish,fail:finishMerge,finish2,ok,close	ok;ok;ok;ok;io:delegate failure;ok;assert	merge,merge,finishMerge,finishMerge,close,close
 reader	fail:merge,merge,close	ok;io:delegate failure;ok	merge,close,close
 reader	fail:close,close	ok;io:delegate failure	close

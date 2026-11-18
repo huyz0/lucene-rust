@@ -384,7 +384,7 @@ impl<R: KnnVectorsReader> KnnVectorsReader for AssertingKnnVectorsReader<'_, R> 
         self.delegate.close()?;
         self.delegate.close()?;
         let finished = self.counts.finished.load(Ordering::SeqCst);
-        assert!(finished <= 0 || self.counts.acquired.load(Ordering::SeqCst) == finished);
+        assert!(self.counts.acquired.load(Ordering::SeqCst) == finished);
         Ok(())
     }
 }

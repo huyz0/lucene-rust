@@ -10,6 +10,8 @@
 // `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+mod support;
+
 use lucene_codecs::{doc_values as ndv, field_infos};
 
 fn dir() -> String {
@@ -93,8 +95,9 @@ fn parses_real_varying_bpv_numeric_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (version, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
-    assert_eq!(version, 2);
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
+    assert_eq!(version, 3);
     let data_version = ndv::check_data_header_footer(&data_buf, &id, &suffix).unwrap();
     assert_eq!(data_version, version);
 
@@ -183,7 +186,9 @@ fn windows_of_varying_bpv_values_are_lucenes_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
     let data_buf =
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &dv_suffix(&manifest), &fis).unwrap();
+    let (version, mut parsed) =
+        ndv::parse_meta(&meta_buf, &id, &dv_suffix(&manifest), &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &dv_suffix(&manifest));
     let max_doc: i32 = manifest.get("max_doc").parse().unwrap();
     for (field, dense) in [("varying_bpv", true), ("sparse_varying_bpv", false)] {
         let entry = parsed
@@ -233,8 +238,8 @@ fn windows_of_varying_bpv_values_are_lucenes_values() {
 }
 
 /// The write side: handed the fixture's two columns, the segment id and the
-/// per-field suffix, this port's writer produces Lucene's `.dvm` and `.dvd`
-/// byte for byte -- `writeValues`' `doBlocks` split included (both fields
+/// per-field suffix, this port's writer produces Lucene 10.6's `.dvm`, `.dvd` and
+/// `.dvp` byte for byte -- `writeValues`' `doBlocks` split included (both fields
 /// take it; see the reader tests above).
 #[test]
 fn varying_bpv_columns_are_written_byte_identical_to_lucene() {
@@ -257,16 +262,19 @@ fn varying_bpv_columns_are_written_byte_identical_to_lucene() {
         .enumerate()
         .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
         .collect();
-    let (meta, data, _) = ndv::write_dense_fields(
+    let files = ndv::write_fields_with_format_files(
         &[
             ndv::DenseField::Numeric(field_number(&manifest, "varying_bpv"), &dense),
             ndv::DenseField::SparseNumeric(field_number(&manifest, "sparse_varying_bpv"), &sparse),
         ],
+        &[],
         max_doc,
         &id,
         &dv_suffix(&manifest),
+        ndv::Lucene90DocValuesFormat::default().with_disi_file(true),
     )
     .unwrap();
+    let (meta, data) = (files.dvm, files.dvd);
     let want_meta =
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
     let want_data =
@@ -274,4 +282,12 @@ fn varying_bpv_columns_are_written_byte_identical_to_lucene() {
     assert_eq!(meta, want_meta, ".dvm");
     assert_eq!(data.len(), want_data.len(), ".dvd length");
     assert!(data == want_data, ".dvd bytes differ");
+    let suffix = dv_suffix(&manifest);
+    let want_dvp = std::fs::read(format!(
+        "{}{}_{suffix}.dvp",
+        dir(),
+        manifest.get("segment_name")
+    ))
+    .unwrap();
+    assert!(files.dvp.unwrap() == want_dvp, ".dvp bytes differ");
 }

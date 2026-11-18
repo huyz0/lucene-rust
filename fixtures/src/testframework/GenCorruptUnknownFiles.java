@@ -150,7 +150,7 @@ public class GenCorruptUnknownFiles {
     sum = integer(sum, offsets.soft(), 1, ByteOrder.BIG_ENDIAN);
     cross("cross_sum_above_max", all, Map.of("segments_3", sum), "failure");
     cross("cross_sum_at_max", all, Map.of("segments_3", integer(commit, offsets.soft(), 1, ByteOrder.BIG_ENDIAN)), "ok");
-    byte[] minimum = commit.clone(); minimum[offsets.minimum() + 1] = 6;
+    byte[] minimum = commit.clone(); minimum[offsets.minimum() + 1] = 7;
     cross("cross_minimum_above_segment", all, Map.of("segments_3", checked(minimum)), "failure");
 
     byte[] si = all.get("_0.si"); int version = body(si).getPosition();
