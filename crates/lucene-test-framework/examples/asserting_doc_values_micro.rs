@@ -212,7 +212,7 @@ fn batch(
                     add(&mut consumer, field, source).unwrap();
                 }
                 consumer.close().unwrap();
-                for ext in ["dvm", "dvd", "dvs"] {
+                for ext in ["dvm", "dvd", "dvs", "dvp"] {
                     digest.bytes(&consumer.delegate().output().unwrap()[ext]);
                 }
             }
@@ -252,7 +252,7 @@ fn main() {
     let root = "fixtures/testframework/data/asserting_doc_values";
     let fields =
         field_infos::parse(&std::fs::read(format!("{root}.fnm")).unwrap(), &ID, "").unwrap();
-    let files: Files = ["dvm", "dvd", "dvs"]
+    let files: Files = ["dvm", "dvd", "dvs", "dvp"]
         .into_iter()
         .map(|ext| {
             (

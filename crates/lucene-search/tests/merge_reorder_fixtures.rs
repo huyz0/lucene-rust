@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use lucene_codecs::index_format::IndexFormat;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
     Document, Field, IntPoint, NumericDocValuesField, SortedDocValuesField,
@@ -160,10 +161,11 @@ fn write_docs(
 ) {
     let version = LuceneVersion {
         major: 10,
-        minor: 5,
+        minor: 6,
         bugfix: 0,
     };
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version).unwrap();
+    w.set_index_format(IndexFormat::Lucene106);
     w.set_max_full_flush_merge_wait_millis(0);
     let mut tmp = TieredMergePolicy::default();
     tmp.compound_file_settings_mut()
@@ -278,7 +280,7 @@ fn a_reordering_merge_writes_javas_segment() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 18);
+    assert_eq!(compared, 19);
     for result in lucene_index::check_index::check_directory(&dir).unwrap() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }

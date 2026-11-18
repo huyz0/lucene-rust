@@ -495,6 +495,9 @@ pub struct RandomIndexWriterConfig {
     pub event_listener: bool,
     /// `setMaxFullFlushMergeWaitMillis`, the last of its two draws.
     pub max_full_flush_merge_wait_millis: i64,
+    /// `setMaxDocValuesOverlays`, drawn from `0..=4` (Lucene 10.6). The
+    /// writer here keeps no overlays, so applying a configuration ignores it.
+    pub max_doc_values_overlays: i32,
     /// `setCommitOnClose` (Java's default, `true`).
     pub commit_on_close: bool,
 }
@@ -550,6 +553,7 @@ pub fn new_index_writer_config(
     } else {
         d.at_least(200)
     };
+    let max_doc_values_overlays = d.next_int(0, 4);
     RandomIndexWriterConfig {
         analyzer,
         merge_scheduler,
@@ -562,6 +566,7 @@ pub fn new_index_writer_config(
         check_pending_flush_update,
         event_listener,
         max_full_flush_merge_wait_millis: i64::from(max_full_flush_merge_wait_millis),
+        max_doc_values_overlays,
         commit_on_close: true,
     }
 }

@@ -572,7 +572,7 @@ public class GenGrouping {
         "gs",
         spec,
         () -> {
-          GroupingSearch g = new GroupingSearch(sel.make.get());
+          GroupingSearch g = new GroupingSearch(sel.make);
           g.setGroupSort(gs.sort);
           g.setSortWithinGroup(ws.sort);
           g.setGroupDocsOffset(gdo);

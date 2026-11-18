@@ -354,7 +354,6 @@ where
             ));
         }
     }
-    // A range selector these two never hand a scorer has no values.
     match search_manager(searcher, &q, &AllGroupsCollectorManager::new(factory)) {
         Ok(all) => b.push_str(&format!(" #all={}", sorted_vals(&all))),
         Err(_) => b.push_str(" #all=ERR"),

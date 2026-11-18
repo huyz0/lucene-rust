@@ -312,7 +312,7 @@ fn native_consumer_lifecycle_shape_and_field_errors() {
     producer.close().unwrap();
     error(producer.check_integrity(), "closed");
     error(producer.get_numeric(f), "closed");
-    for extension in ["dvm", "dvd", "dvs"] {
+    for extension in ["dvm", "dvd", "dvs", "dvp"] {
         let mut damaged = output.clone();
         damaged.remove(extension);
         error(

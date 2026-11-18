@@ -114,7 +114,7 @@ pub(crate) enum Bulk<'a> {
     /// TermScorer), TermScorer)` (`+a +b ?c -d`).
     ReqExclOptTerm(Box<ReqExclOptTerm<'a>>, f32),
     /// `ReqExclBulkScorer`.
-    ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
+    ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>, FixedBitSet),
     /// A dismax of terms, a window at a time. See `DisMaxBulk`.
     DisMax(Vec<TermLeg<'a>>, Box<DisMaxBulk>),
     /// A disjunction of terms whose scores nobody reads: their documents
@@ -195,7 +195,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqOptTermSum(s, _) => super::Scorer::cost(&**s),
             Bulk::FilterOptTermSum(s, _) => super::Scorer::cost(&**s),
             Bulk::ReqExclOptTerm(s, _) => super::Scorer::cost(&**s),
-            Bulk::ReqExcl(req, _) => req.cost(),
+            Bulk::ReqExcl(req, ..) => req.cost(),
             Bulk::Combined(window) => window.cost(),
             Bulk::BlockJoin(join) => join.cost(),
             Bulk::DisMaxOf(d) => sum(d.subs.iter().map(|(b, _)| b.cost())),
@@ -329,9 +329,16 @@ impl<'a> Bulk<'a> {
                 let fc: &mut dyn ScoringCollector = &mut fc;
                 inner.score(mode, live_docs, fc, min, max)
             }
-            Bulk::ReqExcl(req, excl) => {
-                req_excl_score(req, &mut **excl, mode, live_docs, collector, min, max)
-            }
+            Bulk::ReqExcl(req, excl, window) => req_excl_score(
+                req,
+                &mut **excl,
+                window,
+                mode,
+                live_docs,
+                collector,
+                min,
+                max,
+            ),
         }
     }
 }
@@ -1006,42 +1013,61 @@ fn publish<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
     Ok(())
 }
 
-/// `ReqExclBulkScorer.score`: the required bulk scorer, run only over the
-/// ranges between excluded documents -- and past a whole run of consecutive
-/// excluded documents at once (`docIDRunEnd`), which on a dense excluded
-/// term skips entire postings blocks of the required clause. A two-phase
-/// excluded clause skips its confirmed run too (Lucene 10.6, branch_10_6,
-/// #16307: `TwoPhaseIterator.docIDRunEnd`, at least one document).
+/// `ReqExclBulkScorer.score` (Lucene 10.6): windows of 4096 documents, each
+/// with the excluded clause's matches bulk-loaded and inverted into the mask
+/// (and-ed with the live documents) the required bulk scorer collects
+/// through. `window` holds the mask, indexed by document; only the current
+/// window's bits are ever set.
+#[allow(clippy::too_many_arguments)]
 fn req_excl_score<C: ScoringCollector + ?Sized>(
     req: &mut Bulk<'_>,
     excl: &mut dyn super::Scorer,
+    window: &mut FixedBitSet,
     mode: Mode,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
     min: i32,
     max: i32,
 ) -> Result<i32> {
+    const WINDOW_SIZE: i64 = 4096;
     let mut up_to = min;
-    let mut excl_doc = excl.doc_id();
+    let mut previous = (0usize, 0usize);
     while up_to < max {
-        if excl_doc < up_to {
-            excl_doc = excl.advance(up_to)?;
+        let window_min = up_to;
+        let window_max = i64::from(max).min(i64::from(window_min) + WINDOW_SIZE) as i32;
+        if excl.doc_id() < window_min {
+            excl.advance(window_min)?;
         }
-        if excl_doc == up_to {
-            if !excl.two_phase() {
-                up_to = excl.doc_id_run_end().min(max);
-            } else if excl.matches()? {
-                up_to = up_to
-                    .saturating_add(1)
-                    .max(excl.two_phase_run_end().min(max));
+        let (lo, hi) = (window_min as usize, window_max as usize);
+        window.clear_range(previous.0, previous.1.min(window.len()));
+        if window.len() < hi {
+            *window = FixedBitSet::new(hi.max(window.len().saturating_mul(2)));
+        }
+        let mut d = excl.doc_id();
+        while d < window_max {
+            if !excl.two_phase() || excl.matches()? {
+                window.set(d as usize);
             }
-            excl_doc = excl.next_doc()?;
-        } else {
-            up_to = req.score(mode, live_docs, collector, up_to, excl_doc.min(max))?;
+            d = excl.next_doc()?;
         }
+        let length = hi - lo;
+        let valid = live_docs.map_or(length, |l| length.min(l.len().saturating_sub(lo)));
+        window.flip_range(lo, lo + valid);
+        window.clear_range(lo + valid, hi);
+        if let Some(l) = live_docs {
+            let mut at = window.next_set_bit_in_range(lo, hi);
+            while let Some(i) = at {
+                if !l.get(i) {
+                    window.clear(i);
+                }
+                at = window.next_set_bit_in_range(i + 1, hi);
+            }
+        }
+        previous = (lo, hi);
+        up_to = req.score(mode, Some(&*window), collector, window_min, window_max)?;
     }
     if up_to == max {
-        up_to = req.score(mode, live_docs, collector, up_to, up_to)?;
+        up_to = req.score(mode, live_docs, collector, max, max)?;
     }
     Ok(up_to)
 }
@@ -1702,6 +1728,14 @@ pub(crate) fn bulk_boolean_own<'a>(
         if must_not.is_empty() {
             return Ok(Some(positive));
         }
+        // `booleanScorer()` declines a required side matching at most 0.3% of
+        // the documents: `ReqExclScorer` avoids bulk-loading the prohibited
+        // matches.
+        if let Some(max_doc) = ctx.max_doc {
+            if positive.cost() <= 3 * i64::from(max_doc) / 1000 {
+                return bulk_boolean_tree(ctx, q, boost, mode);
+            }
+        }
         let mut excluded: Vec<BoxScorer<'a>> = must_not
             .into_iter()
             .map(|c| c.into_scorer(Mode::NoScores))
@@ -1711,7 +1745,11 @@ pub(crate) fn bulk_boolean_own<'a>(
         } else {
             Box::new(DisjunctionScorer::new(excluded, Combine::Sum, false))
         };
-        return Ok(Some(Bulk::ReqExcl(Box::new(positive), excl)));
+        return Ok(Some(Bulk::ReqExcl(
+            Box::new(positive),
+            excl,
+            FixedBitSet::new(0),
+        )));
     }
 
     // No bulk scorer for this shape: the scorer tree, `getInternal`'s.

@@ -1,7 +1,6 @@
 //! Lucene 10.6's `org.apache.lucene.analysis.CaseFoldingFilter` (#16371),
 //! with the pieces of lucene-core it calls: `util/SimpleCaseFolding.fold`,
-//! `UnicodeUtil.foldCase` and `CharacterUtils.simpleCaseFold`. Not in the
-//! 10.5.2 jars this port is pinned to: an additive port of branch_10_6.
+//! `UnicodeUtil.foldCase` and `CharacterUtils.simpleCaseFold`.
 //!
 //! Unicode simple case folding (`CaseFolding.txt`'s `C` and `S` mappings) is
 //! the JDK's `Character.toLowerCase(int)` except at the code points listed in

@@ -35,7 +35,9 @@ fn read(path: &Path) -> String {
 /// The cases reading an index the Rust writer changed.
 const WRITTEN_BY_RUST: [&str; 5] = ["optimize-", "expunge-", "delete-", "add-", "create-"];
 
-/// `version: N` as `version: {v}`, and for the `delete` cases the commit's
+/// `version: N` as `version: {v}`, `format: ...` as `format: {f}` (the
+/// Rust writer's default index format is the one Lucene 10.5 opens, the Java
+/// fixtures' is 10.6's), and for the `delete` cases the commit's
 /// generation: `commit: segments_N (generation=N, segs=S)` as
 /// `commit: {c} segs=S)`.
 fn mask_version(id: &str, text: &str) -> String {
@@ -43,6 +45,8 @@ fn mask_version(id: &str, text: &str) -> String {
         .map(|l| {
             if l.starts_with("version: ") {
                 "version: {v}".to_string()
+            } else if l.starts_with("format: ") {
+                "format: {f}".to_string()
             } else if id.starts_with("delete-") && l.starts_with("commit: ") {
                 match l.split_once(" segs=") {
                     Some((_, segs)) => format!("commit: {{c}} segs={segs}"),
@@ -53,30 +57,6 @@ fn mask_version(id: &str, text: &str) -> String {
             }
         })
         .map(|l| format!("{l}\n"))
-        .collect()
-}
-
-/// `components`' lists without the SPI names Lucene 10.6 adds
-/// (`spi::LUCENE_10_6_*`), which Luke on the 10.5.2 jars cannot list.
-fn without_10_6(text: &str) -> String {
-    use lucene_analysis::factory::spi::{LUCENE_10_6_CHAR_FILTERS, LUCENE_10_6_TOKEN_FILTERS};
-    text.lines()
-        .map(|l| {
-            let added: &[&str] = if l.starts_with("char filters: [") {
-                &LUCENE_10_6_CHAR_FILTERS
-            } else if l.starts_with("token filters: [") {
-                &LUCENE_10_6_TOKEN_FILTERS
-            } else {
-                return format!("{l}\n");
-            };
-            let (head, list) = l.split_once('[').unwrap();
-            let names: Vec<&str> = list
-                .trim_end_matches(']')
-                .split(", ")
-                .filter(|n| !added.contains(n))
-                .collect();
-            format!("{head}[{}]\n", names.join(", "))
-        })
         .collect()
 }
 
@@ -103,9 +83,6 @@ fn every_case_prints_what_lukes_models_returned() {
             .replace(&scratch, "{tmp}")
             .replace('\\', "/");
         let mut expected = read(&data.join("out").join(format!("{id}.out")));
-        if id == "components" {
-            printed = without_10_6(&printed);
-        }
         if WRITTEN_BY_RUST.iter().any(|p| id.starts_with(p)) {
             printed = mask_version(id, &printed);
             expected = mask_version(id, &expected);

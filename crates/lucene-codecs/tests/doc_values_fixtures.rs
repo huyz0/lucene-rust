@@ -10,6 +10,8 @@
 // `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+mod support;
+
 use lucene_codecs::{doc_values as ndv, field_infos};
 
 fn dir() -> String {
@@ -90,8 +92,9 @@ fn check_field(
     field: &str,
 ) {
     let suffix = dv_suffix(manifest);
-    let (_, parsed) =
-        ndv::parse_meta(meta_buf, &id_from_hex(manifest.get("id_hex")), &suffix, fis).unwrap();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let (version, mut parsed) = ndv::parse_meta(meta_buf, &id, &suffix, fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed.numeric_entry(field_number(manifest, field)).unwrap();
 
     let expected: Vec<Option<i64>> = manifest
@@ -123,8 +126,9 @@ fn parses_real_varying_numeric_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (version, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
-    assert_eq!(version, 2);
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
+    assert_eq!(version, 3);
     let data_version = ndv::check_data_header_footer(&data_buf, &id, &suffix).unwrap();
     assert_eq!(data_version, version);
 
@@ -160,7 +164,8 @@ fn parses_real_sparse_numeric_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .numeric_entry(field_number(&manifest, "sparse"))
         .unwrap();
@@ -179,7 +184,8 @@ fn id_field_is_indexed_not_doc_values_and_is_absent_from_numeric_meta() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     assert!(parsed
         .numeric_entry(field_number(&manifest, "id"))
         .is_none());
@@ -193,8 +199,9 @@ fn check_binary_field(
     field: &str,
 ) {
     let suffix = dv_suffix(manifest);
-    let (_, parsed) =
-        ndv::parse_meta(meta_buf, &id_from_hex(manifest.get("id_hex")), &suffix, fis).unwrap();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let (version, mut parsed) = ndv::parse_meta(meta_buf, &id, &suffix, fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed.binary_entry(field_number(manifest, field)).unwrap();
 
     let expected: Vec<Option<Vec<u8>>> = manifest
@@ -231,7 +238,8 @@ fn parses_real_fixed_length_binary_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .binary_entry(field_number(&manifest, "bin_fixed"))
         .unwrap();
@@ -253,7 +261,8 @@ fn parses_real_variable_length_binary_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .binary_entry(field_number(&manifest, "bin_var"))
         .unwrap();
@@ -275,7 +284,8 @@ fn parses_real_sparse_variable_length_binary_dv_and_matches_lucene_values() {
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
 
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .binary_entry(field_number(&manifest, "bin_sparse"))
         .unwrap();

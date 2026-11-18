@@ -4245,7 +4245,12 @@ fn write_dense_fields_rejects_empty_slice() {
 #[test]
 fn no_field_close_matches_actual_java_files_and_empty_metadata() {
     let id = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    let (meta, data, skip_index) = write_no_fields(&id, "s");
+    let files = write_no_fields_files(
+        &id,
+        "s",
+        Lucene90DocValuesFormat::default().with_disi_file(true),
+    );
+    let (meta, data, skip_index) = (files.dvm, files.dvd, files.dvs);
     assert_eq!(
         meta,
         include_bytes!("../../../../fixtures/testframework/data/cranky_doc_values_empty.dvm")
@@ -4258,8 +4263,13 @@ fn no_field_close_matches_actual_java_files_and_empty_metadata() {
         skip_index,
         include_bytes!("../../../../fixtures/testframework/data/cranky_doc_values_empty.dvs")
     );
+    let dvp = files.dvp.expect("a .dvp");
+    assert_eq!(
+        dvp,
+        include_bytes!("../../../../fixtures/testframework/data/cranky_doc_values_empty.dvp")
+    );
     let (version, fields) = parse_meta(&meta, &id, "s", &FieldInfos { fields: vec![] }).unwrap();
-    assert_eq!(version, VERSION_WRITE_DEFAULT);
+    assert_eq!(version, VERSION_DISI_SEPARATE_FILE);
     assert!(fields.numeric.is_empty());
     assert!(fields.binary.is_empty());
     assert!(fields.sorted.is_empty());
@@ -4267,6 +4277,7 @@ fn no_field_close_matches_actual_java_files_and_empty_metadata() {
     assert!(fields.sorted_set.is_empty());
     assert!(fields.skippers.is_empty());
     assert_eq!(check_data_header_footer(&data, &id, "s").unwrap(), version);
+    check_disi_header_footer(&dvp, &id, "s", version).unwrap();
     assert_eq!(
         check_skip_index_header_footer(&skip_index, &id, "s").unwrap(),
         version

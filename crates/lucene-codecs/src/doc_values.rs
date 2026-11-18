@@ -4052,6 +4052,16 @@ pub fn write_no_fields(
     (meta, data.buf, skip_index)
 }
 
+/// [`write_no_fields`] as `format` writes it: the files of a consumer closed
+/// without a field, `.dvp` included for a format that writes one.
+pub fn write_no_fields_files(
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    format: Lucene90DocValuesFormat,
+) -> DocValuesFiles {
+    FieldsWriter::new(&[], 0, segment_id, segment_suffix, format).close_files()
+}
+
 /// [`write_fields_with_skip_indexes`] as `format` writes it -- its skip
 /// indexes close an interval after `format`'s `skipIndexIntervalSize`
 /// documents.
@@ -4255,10 +4265,14 @@ impl<'f> FieldsWriter<'f> {
     }
 
     /// The finished files, `.dvp` included when the format writes one.
-    pub fn finish_files(mut self) -> WriteResult<DocValuesFiles> {
+    pub fn finish_files(self) -> WriteResult<DocValuesFiles> {
         if self.written.is_empty() {
             return Err(WriteError::EmptyFieldList);
         }
+        Ok(self.close_files())
+    }
+
+    fn close_files(mut self) -> DocValuesFiles {
         self.meta.write_i32(-1); // field list terminator
         codec_util::write_footer(&mut self.meta);
         codec_util::write_footer(&mut self.data.buf);
@@ -4267,12 +4281,12 @@ impl<'f> FieldsWriter<'f> {
             codec_util::write_footer(&mut dvp);
             dvp
         });
-        Ok(DocValuesFiles {
+        DocValuesFiles {
             dvm: self.meta,
             dvd: self.data.buf,
             dvs: self.skip_index,
             dvp,
-        })
+        }
     }
 }
 

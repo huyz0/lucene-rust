@@ -97,7 +97,7 @@ fn frequent_terms_rewrite() {
     .collect();
     assert_eq!(actual, expected);
     // Popped least frequent first, ties in the heap's order: the order
-    // Java's class (`branch_10_6`, compiled against the 10.5.2 jars) prints
+    // Java's class (`branch_10_6`, compiled against the 10.6.0 jars) prints
     // over the same three segments.
     let java = [
         "term11", "term9", "term7", "term5", "term3", "term1", "term8", "term54",
