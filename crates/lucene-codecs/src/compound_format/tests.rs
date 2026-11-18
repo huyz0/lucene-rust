@@ -484,3 +484,34 @@ fn write_duplicate_sub_file_names_detected_on_read() {
         Err(Error::DuplicateEntry(name)) if name == ".fnm"
     ));
 }
+
+#[test]
+fn flat_vector_data_starts_on_a_page_and_other_members_on_64_bytes() {
+    let id = [3u8; ID_LENGTH];
+    let vectors = build_sub_file(
+        crate::vectors::DATA_CODEC,
+        1,
+        &id,
+        &vec![7u8; 2 * crate::vectors::VECTOR_DATA_ALIGNMENT],
+    );
+    let small_vectors = build_sub_file(crate::vectors::DATA_CODEC, 1, &id, &[1u8; 16]);
+    let other = build_sub_file("Other", 1, &id, &[9u8; 100]);
+    let sub_files = vec![
+        (".fnm".to_string(), other),
+        (".vec".to_string(), vectors),
+        (".vem".to_string(), small_vectors),
+    ];
+    let (cfs, cfe) = write(&id, &sub_files).unwrap();
+    let entries = parse_entries(&cfe, &id).unwrap();
+    check_data_header_footer(&cfs, &id, &entries).unwrap();
+    let vec_entry = entries.get(".vec").unwrap();
+    assert_eq!(
+        vec_entry.offset % crate::vectors::VECTOR_DATA_ALIGNMENT as i64,
+        0
+    );
+    assert_eq!(entries.get(".fnm").unwrap().offset % 64, 0);
+    for (name, bytes) in &sub_files {
+        let member = open_input(&cfs, &entries, name).unwrap();
+        assert_eq!(member.as_slice(), bytes.as_slice(), "{name}");
+    }
+}
