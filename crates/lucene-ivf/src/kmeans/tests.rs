@@ -408,3 +408,25 @@ fn reuse_needs_one_hint_per_vector() {
 fn ragged_input_panics() {
     cluster(&[1.0, 2.0, 3.0], 2, 4, &KMeansParams::default(), Metric::L2);
 }
+
+#[test]
+fn means_by_bands_match_means_by_chunks() {
+    // Many chunks, clusters and a dimension that does not divide evenly into
+    // bands: the over-budget path sums the same members into the same means.
+    let (n, dim, k) = (20_000usize, 37usize, 50usize);
+    let data = blobs(40, n / 40, dim);
+    let members: Vec<u32> = (0..n as u32).collect();
+    let labels: Vec<u32> = (0..n as u32).map(|i| (i * 7 + i / 3) % k as u32).collect();
+    let previous = vec![0.5f32; k * dim];
+    let (chunked, chunked_counts) =
+        means_within(&data, dim, &members, &labels, k, &previous, usize::MAX);
+    let (banded, banded_counts) = means_within(&data, dim, &members, &labels, k, &previous, 0);
+    assert_eq!(chunked_counts, banded_counts);
+    for (a, b) in chunked.iter().zip(&banded) {
+        assert!((a - b).abs() <= 1e-4 * a.abs().max(1.0), "{a} vs {b}");
+    }
+    // An empty cluster keeps its previous centroid on both paths.
+    let few: Vec<u32> = labels.iter().map(|&l| l % 10).collect();
+    let (_, counts) = means_within(&data, dim, &members, &few, k, &previous, 0);
+    assert!(counts[10..].iter().all(|&c| c == 0));
+}

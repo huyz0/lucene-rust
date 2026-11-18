@@ -206,34 +206,97 @@ fn means(
     k: usize,
     previous: &[f32],
 ) -> (Vec<f32>, Vec<usize>) {
+    means_within(data, dim, members, labels, k, previous, PARTIALS_BUDGET)
+}
+
+/// One `f64` accumulator per cluster and dimension for every chunk held at
+/// once: past this, with many clusters of long vectors, the chunks would
+/// hold more than the vectors themselves.
+const PARTIALS_BUDGET: usize = 64 << 20;
+
+/// [`means`] holding at most about `budget` bytes of per-chunk sums.
+// ARITH: as `means`: labels are `< k`, so every offset is inside the
+// `k * dim` buffers, and a band's `to - from` is at most the dimension.
+#[allow(clippy::arithmetic_side_effects)]
+fn means_within(
+    data: &[f32],
+    dim: usize,
+    members: &[u32],
+    labels: &[u32],
+    k: usize,
+    previous: &[f32],
+    budget: usize,
+) -> (Vec<f32>, Vec<usize>) {
     const CHUNK: usize = 4096;
-    let partials: Vec<(Vec<f64>, Vec<usize>)> = members
-        .par_chunks(CHUNK)
-        .zip(labels.par_chunks(CHUNK))
-        .map(|(ms, ls)| {
-            let mut sums = vec![0f64; k * dim];
-            let mut counts = vec![0usize; k];
-            for (&m, &l) in ms.iter().zip(ls) {
-                let l = l as usize;
-                counts[l] += 1;
-                let sum = &mut sums[l * dim..][..dim];
-                for (s, &x) in sum.iter_mut().zip(row(data, dim, m as usize)) {
-                    *s += f64::from(x);
+    let per_chunk = k
+        .saturating_mul(dim)
+        .saturating_mul(8)
+        .saturating_add(k.saturating_mul(8));
+    let (sums, counts) = if members.len().div_ceil(CHUNK).saturating_mul(per_chunk) <= budget {
+        let partials: Vec<(Vec<f64>, Vec<usize>)> = members
+            .par_chunks(CHUNK)
+            .zip(labels.par_chunks(CHUNK))
+            .map(|(ms, ls)| {
+                let mut sums = vec![0f64; k * dim];
+                let mut counts = vec![0usize; k];
+                for (&m, &l) in ms.iter().zip(ls) {
+                    let l = l as usize;
+                    counts[l] += 1;
+                    let sum = &mut sums[l * dim..][..dim];
+                    for (s, &x) in sum.iter_mut().zip(row(data, dim, m as usize)) {
+                        *s += f64::from(x);
+                    }
                 }
+                (sums, counts)
+            })
+            .collect();
+        let mut sums = vec![0f64; k * dim];
+        let mut counts = vec![0usize; k];
+        for (s, c) in partials {
+            for (a, b) in sums.iter_mut().zip(&s) {
+                *a += b;
             }
-            (sums, counts)
-        })
-        .collect();
-    let mut sums = vec![0f64; k * dim];
-    let mut counts = vec![0usize; k];
-    for (s, c) in partials {
-        for (a, b) in sums.iter_mut().zip(&s) {
-            *a += b;
+            for (a, b) in counts.iter_mut().zip(&c) {
+                *a += b;
+            }
         }
-        for (a, b) in counts.iter_mut().zip(&c) {
-            *a += b;
+        (sums, counts)
+    } else {
+        // Each task sums a band of dimensions over every member, in member
+        // order: one accumulator in all, the same sums whatever the thread
+        // count.
+        let mut counts = vec![0usize; k];
+        for &l in labels {
+            counts[l as usize] += 1;
         }
-    }
+        let bands = rayon::current_num_threads().min(dim.div_ceil(16)).max(1);
+        let width = dim.div_ceil(bands);
+        let banded: Vec<Vec<f64>> = (0..dim)
+            .step_by(width)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|from| {
+                let to = (from + width).min(dim);
+                let w = to - from;
+                let mut sums = vec![0f64; k * w];
+                for (&m, &l) in members.iter().zip(labels) {
+                    let sum = &mut sums[l as usize * w..][..w];
+                    for (s, &x) in sum.iter_mut().zip(&row(data, dim, m as usize)[from..to]) {
+                        *s += f64::from(x);
+                    }
+                }
+                sums
+            })
+            .collect();
+        let mut sums = vec![0f64; k * dim];
+        for (band, from) in banded.iter().zip((0..dim).step_by(width)) {
+            let w = band.len() / k.max(1);
+            for c in 0..k {
+                sums[c * dim + from..][..w].copy_from_slice(&band[c * w..][..w]);
+            }
+        }
+        (sums, counts)
+    };
     let mut out = previous.to_vec();
     for (c, &count) in counts.iter().enumerate() {
         if count > 0 {
@@ -1108,7 +1171,9 @@ pub(crate) fn neighbor_lists(centroids: &[f32], dim: usize, m: usize) -> Vec<Vec
                 d.truncate(take);
             }
             d.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            d.into_iter().map(|(_, o)| o).collect()
+            // A fresh list: collecting `d` itself in place would keep its
+            // buffer, sized for every centroid, for each of them.
+            d.iter().map(|&(_, o)| o).collect()
         })
         .collect()
 }
