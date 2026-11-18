@@ -17,7 +17,13 @@ import java.util.List;
  */
 public final class KnnSettings {
     /** {@code index.knn}: whether {@code knn_vector} fields are indexed for approximate search. */
-    public static final Setting<Boolean> KNN_INDEX = Setting.boolSetting("index.knn", false, Property.IndexScope, Property.Final);
+    public static final Setting<Boolean> KNN_INDEX = Setting.boolSetting(
+        "index.knn",
+        false,
+        Property.IndexScope,
+        Property.Final,
+        Property.UnmodifiableOnRestore
+    );
 
     /** {@code index.knn.algo_param.ef_search}: the HNSW search beam when neither mapping nor query sets one. */
     public static final Setting<Integer> EF_SEARCH = Setting.intSetting(
@@ -55,7 +61,8 @@ public final class KnnSettings {
         "index.knn.derived_source.enabled",
         false,
         Property.IndexScope,
-        Property.Final
+        Property.Final,
+        Property.UnmodifiableOnRestore
     );
 
     public static final Setting<Boolean> MEMORY_OPTIMIZED_SEARCH = Setting.boolSetting(
