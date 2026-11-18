@@ -100,7 +100,7 @@ final class LiveWaitFor implements Closeable {
      * Releases the waiting listeners. Under a staleness bound ({@link
      * AcceleratedIndexWriter#liveStalenessNanos}) the translog's last write location is read first, then
      * every later search is made to read a view opened after it ({@link
-     * AcceleratedIndexWriter#refreshLiveShared}), which holds the writes up to that location; when that cannot
+     * LiveSearchState#refreshShared}), which holds the writes up to that location; when that cannot
      * be done now, the listeners wait for the next look.
      */
     private void release() {
@@ -108,7 +108,7 @@ final class LiveWaitFor implements Closeable {
             if (closed == false) {
                 listeners.beforeRefresh();
                 // Not refreshed, the listeners wait for the next look.
-                if (writer.liveStalenessNanos() == 0 || writer.refreshLiveShared()) {
+                if (writer.live().stalenessNanos() == 0 || writer.live().refreshShared()) {
                     listeners.afterRefresh(true);
                 }
             }

@@ -726,7 +726,7 @@ public final class AcceleratedEngineSupport {
         long wait = indexSettings.isMergeOnFlushEnabled() ? indexSettings.getMaxFullFlushMergeWaitTime().millis() : 0;
         boolean success = false;
         try {
-            writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
+            writer.live().setStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
             if (ADAPTIVE_AUTO.equals(adaptiveMode(indexSettings.getSettings()))) {
                 writer.setAdaptiveDocValuesAuto();
             }

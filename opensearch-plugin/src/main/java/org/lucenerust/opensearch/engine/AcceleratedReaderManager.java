@@ -55,7 +55,7 @@ final class AcceleratedReaderManager extends ReferenceManager<OpenSearchDirector
      * external searches, still on the older commit, do not see.
      */
     void searchesLeft(OpenSearchDirectoryReader previous) {
-        writer.releaseLive(version(previous));
+        writer.live().release(version(previous));
     }
 
     /**
