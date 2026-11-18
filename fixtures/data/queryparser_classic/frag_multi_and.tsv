@@ -1,6 +1,6 @@
  AND /x.*/^^.5 AND ,	E	Cannot parse ' AND /x.*/^^.5 AND ,': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 +\\:+	Q		Boolean()
-TOx\\^.5aa	Q	(title:tox body:tox) (title:5aa body:5aa)	Boolean(Boolean(TermQuery(title:tox) TermQuery(body:tox)) Boolean(TermQuery(title:5aa) TermQuery(body:5aa)))
+TOx\\^.5aa	Q	+(title:tox body:tox) +(title:5aa body:5aa)	Boolean(+Boolean(TermQuery(title:tox) TermQuery(body:tox)) +Boolean(TermQuery(title:5aa) TermQuery(body:5aa)))
 fooa	Q	title:fooa body:fooa	Boolean(TermQuery(title:fooa) TermQuery(body:fooa))
 [ NOT ?) [,	E	Cannot parse '[ NOT ?) [,': Encountered " <RANGE_GOOP> "?) "" at line 1, column 6.\nWas expecting:\n    "TO" ...\n    
 TOa  \\	E	Cannot parse 'TOa  \\': Lexical error at line 1, column 7.  Encountered: <EOF> (in lexical state 2)
@@ -12,7 +12,7 @@ AND!the1é(b	E	Cannot parse 'AND!the1é(b': Encountered " <AND> "AND "" at line 
  !Bar,[?	E	Cannot parse ' !Bar,[?': Encountered "<EOF>" at line 1, column 8.\nWas expecting:\n    "TO" ...\n    
 ||\\"&&?b AND	E	Cannot parse '||\\"&&?b AND': Encountered "<EOF>" at line 1, column 12.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
  TO\\?b?b	Q	title:to\\?b?b body:to\\?b?b	Boolean(WildcardQuery(title:to\\?b?b) WildcardQuery(body:to\\?b?b))
-aBarbé+x\\^2foo	Q	(title:abarbé body:abarbé) (title:x body:x) (title:2foo body:2foo)	Boolean(Boolean(TermQuery(title:abarbé) TermQuery(body:abarbé)) Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:2foo) TermQuery(body:2foo)))
+aBarbé+x\\^2foo	Q	+(title:abarbé body:abarbé) +(title:x body:x) +(title:2foo body:2foo)	Boolean(+Boolean(TermQuery(title:abarbé) TermQuery(body:abarbé)) +Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:2foo) TermQuery(body:2foo)))
 éé	Q	title:éé body:éé	Boolean(TermQuery(title:éé) TermQuery(body:éé))
  AND {{wi-fi\\u1	E	Cannot parse ' AND {{wi-fi\\u1': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 -1/x.*/[ OR b	E	Cannot parse '-1/x.*/[ OR b': Encountered " <RANGE_GOOP> "b "" at line 1, column 12.\nWas expecting:\n    "TO" ...\n    
@@ -58,7 +58,7 @@ TOa*	Q	title:toa* body:toa*	Boolean(PrefixQuery(title:toa*) PrefixQuery(body:toa
 } AND ^.5+	E	Cannot parse '} AND ^.5+': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
 fooTO	Q	title:footo body:footo	Boolean(TermQuery(title:footo) TermQuery(body:footo))
 \\	E	Cannot parse '\\': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
-AND.\\-1+	Q	(title:and body:and) (title:1 body:1)	Boolean(Boolean(TermQuery(title:and) TermQuery(body:and)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+AND.\\-1+	Q	+(title:and body:and) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:and) TermQuery(body:and)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
 / OR  ||\\AND\\u.	E	Cannot parse '/ OR  ||\\AND\\u.': Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "/ OR  ||\\\\AND\\\\u." (in lexical state 2)
 \\"^2日本 OR ,titleé OR 	E	Cannot parse '\\"^2日本 OR ,titleé OR ': Encountered "<EOF>" at line 1, column 21.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -85,7 +85,7 @@ b	Q	title:b body:b	Boolean(TermQuery(title:b) TermQuery(body:b))
  TO  OR 	E	Cannot parse ' TO  OR ': Encountered "<EOF>" at line 1, column 8.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 ,(*:*(.^.5	E	Cannot parse ',(*:*(.^.5': Lexical error at line 1, column 9.  Encountered: '46' (46),
 ! TO \\u00x\\b]	E	Cannot parse '! TO \\u00x\\b]': Lexical error at line 1, column 14.  Encountered: <EOF> (in lexical state 2)
-1日本/x.*/ NOT a  .	Q	+((title:1 body:1) (title:日 body:日) (title:本 body:本)) +(title:/x.*/ body:/x.*/) -(title:a body:a)	Boolean(+Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) -Boolean(TermQuery(title:a) TermQuery(body:a)))
+1日本/x.*/ NOT a  .	Q	+(+(title:1 body:1) +(title:日 body:日) +(title:本 body:本)) +(title:/x.*/ body:/x.*/) -(title:a body:a)	Boolean(+Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) -Boolean(TermQuery(title:a) TermQuery(body:a)))
 1/\\u0041+?	E	Cannot parse '1/\\u0041+?': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "/\\\\u0041+?" (in lexical state 2)
 "a*?~   	E	Cannot parse '"a*?~   ': Lexical error at line 1, column 9.  Encountered: <EOF> after prefix "\\"a*?~   " (in lexical state 2)
 ||* OR -1 +\\:2.5	Q	(title:||* body:||*) -(title:1 body:1) +(title:2.5 body:2.5)	Boolean(Boolean(PrefixQuery(title:||*) PrefixQuery(body:||*)) -Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
@@ -127,7 +127,7 @@ title^2?||b	E	Cannot parse 'title^2?||b': '*' or '?' not allowed as first charac
 -1AND	Q	-(title:1and body:1and)	Boolean(-Boolean(TermQuery(title:1and) TermQuery(body:1and)))
 .TO.+	Q	title:to body:to	Boolean(TermQuery(title:to) TermQuery(body:to))
 {+\tétitle~22.5	E	Cannot parse '{+\tétitle~22.5': Encountered "<EOF>" at line 1, column 14.\nWas expecting:\n    "TO" ...\n    
-foo-1	Q	(title:foo body:foo) (title:1 body:1)	Boolean(Boolean(TermQuery(title:foo) TermQuery(body:foo)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+foo-1	Q	+(title:foo body:foo) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:foo) TermQuery(body:foo)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 wi-fi\\日本)}*	E	Cannot parse 'wi-fi\\日本)}*': Encountered " ")" ") "" at line 1, column 8.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 \\u0041bthe]foo||~AND	E	Cannot parse '\\u0041bthe]foo||~AND': Lexical error at line 1, column 11.  Encountered: '93' (93), (in lexical state 2)
 Bar?b /x.*/}~0.5\\:	E	Cannot parse 'Bar?b /x.*/}~0.5\\:': Lexical error at line 1, column 12.  Encountered: '125' (125), (in lexical state 2)
@@ -154,7 +154,7 @@ titleBar\\"/x.*/	Q	+(title:titlebar body:titlebar) +(title:/x.*/ body:/x.*/)	Boo
 :AND	E	Cannot parse ':AND': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ||wi-fi, AND \\	E	Cannot parse '||wi-fi, AND \\': Lexical error at line 1, column 15.  Encountered: <EOF> (in lexical state 2)
  NOT 日本(^.5the&&{2.5	E	Cannot parse ' NOT 日本(^.5the&&{2.5': Encountered " "^" "^ "" at line 1, column 8.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-titletitle&&é-1foofoo	Q	(title:titletitle body:titletitle) (title:é body:é) (title:1foofoo body:1foofoo)	Boolean(Boolean(TermQuery(title:titletitle) TermQuery(body:titletitle)) Boolean(TermQuery(title:é) TermQuery(body:é)) Boolean(TermQuery(title:1foofoo) TermQuery(body:1foofoo)))
+titletitle&&é-1foofoo	Q	+(title:titletitle body:titletitle) +(title:é body:é) +(title:1foofoo body:1foofoo)	Boolean(+Boolean(TermQuery(title:titletitle) TermQuery(body:titletitle)) +Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(TermQuery(title:1foofoo) TermQuery(body:1foofoo)))
 ?2.5 NOT   [:||	E	Cannot parse '?2.5 NOT   [:||': '*' or '?' not allowed as first character in WildcardQuery
 1[^!\\u00.a\\"	E	Cannot parse '1[^!\\u00.a\\"': Encountered "<EOF>" at line 1, column 12.\nWas expecting:\n    "TO" ...\n    
 &&AND	Q	title:and body:and	Boolean(TermQuery(title:and) TermQuery(body:and))
@@ -171,11 +171,11 @@ b	Q	title:b body:b	Boolean(TermQuery(title:b) TermQuery(body:b))
 , ^2,!12.5	Q	-(title:12.5 body:12.5)	Boolean(-Boolean(TermQuery(title:12.5) TermQuery(body:12.5)))
 (+?b1\t:	E	Cannot parse '(+?b1\t:': '*' or '?' not allowed as first character in WildcardQuery
 é "~0.5\\:\\	E	Cannot parse 'é "~0.5\\:\\': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "\\"~0.5\\\\:\\\\" (in lexical state 2)
-\\日本\t	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+\\日本\t	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
   wi-fi[	E	Cannot parse '  wi-fi[': Encountered "<EOF>" at line 1, column 8.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 1]\\u00:*:*?b	E	Cannot parse '1]\\u00:*:*?b': Lexical error at line 1, column 2.  Encountered: '93' (93), (in lexical state 2)
 wi-fi^2}[\\	E	Cannot parse 'wi-fi^2}[\\': Lexical error at line 1, column 8.  Encountered: '125' (125), (in lexical state 2)
-1\\\\u0041	Q	(title:1 body:1) (title:u0041 body:u0041)	Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:u0041) TermQuery(body:u0041)))
+1\\\\u0041	Q	+(title:1 body:1) +(title:u0041 body:u0041)	Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:u0041) TermQuery(body:u0041)))
 ééé  (]	E	Cannot parse 'ééé  (]': Lexical error at line 1, column 8.  Encountered: <EOF> (in lexical state 2)
 AND) NOT TOTO*	E	Cannot parse 'AND) NOT TOTO*': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \t-1? 2.5" TO 	E	Cannot parse '\t-1? 2.5" TO ': Lexical error at line 1, column 14.  Encountered: <EOF> after prefix "\\" TO " (in lexical state 2)
@@ -222,7 +222,7 @@ b{TO-1,	E	Cannot parse 'b{TO-1,': Encountered "<EOF>" at line 1, column 7.\nWas 
 x\\b\\u\\"/x.*/ NOT \\"{	E	Cannot parse 'x\\b\\u\\"/x.*/ NOT \\"{': Non-hex character in Unicode escape sequence: \\
 b?&&/x.*/ OR  OR /x.*/!	E	Cannot parse 'b?&&/x.*/ OR  OR /x.*/!': Encountered " <OR> "OR "" at line 1, column 14.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 \\:~) AND title  ^2*:*	E	Cannot parse '\\:~) AND title  ^2*:*': Encountered " ")" ") "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-the||wi-fiTO	Q	(title:the body:the) (title:wi body:wi) (title:fito body:fito)	Boolean(Boolean(TermQuery(title:the) TermQuery(body:the)) Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fito) TermQuery(body:fito)))
+the||wi-fiTO	Q	+(title:the body:the) +(title:wi body:wi) +(title:fito body:fito)	Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fito) TermQuery(body:fito)))
 AND日本\\"" {\t	E	Cannot parse 'AND日本\\"" {\t': Lexical error at line 1, column 12.  Encountered: <EOF> after prefix "\\" {\\t" (in lexical state 2)
 ?b	E	Cannot parse '?b': '*' or '?' not allowed as first character in WildcardQuery
 Bar\\u\\:	E	Cannot parse 'Bar\\u\\:': Non-hex character in Unicode escape sequence: \\
@@ -255,7 +255,7 @@ x\\](:){	E	Cannot parse 'x\\](:){': Encountered " ":" ": "" at line 1, column 4.
 [wi-fi AND Bar\\u0041	E	Cannot parse '[wi-fi AND Bar\\u0041': Encountered " <RANGE_GOOP> "AND "" at line 1, column 7.\nWas expecting:\n    "TO" ...\n    
 ~2) OR a}^2title	E	Cannot parse '~2) OR a}^2title': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 &&{2.5)\\:(	E	Cannot parse '&&{2.5)\\:(': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title1bwi-fi||b	Q	(title:title1bwi body:title1bwi) (title:fi body:fi) (title:b body:b)	Boolean(Boolean(TermQuery(title:title1bwi) TermQuery(body:title1bwi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)) Boolean(TermQuery(title:b) TermQuery(body:b)))
+title1bwi-fi||b	Q	+(title:title1bwi body:title1bwi) +(title:fi body:fi) +(title:b body:b)	Boolean(+Boolean(TermQuery(title:title1bwi) TermQuery(body:title1bwi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)) +Boolean(TermQuery(title:b) TermQuery(body:b)))
 ~ AND 	E	Cannot parse '~ AND ': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 && TO ANDfoo{\\u0041a-	E	Cannot parse '&& TO ANDfoo{\\u0041a-': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\"||é&&, NOT the	Q	+(title:é body:é) -(title:the body:the)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) -Boolean(TermQuery(title:the) TermQuery(body:the)))
@@ -296,7 +296,7 @@ TOBaraa*	Q	title:tobaraa* body:tobaraa*	Boolean(PrefixQuery(title:tobaraa*) Pref
 \\"	Q		Boolean()
 ? NOT the	E	Cannot parse '? NOT the': '*' or '?' not allowed as first character in WildcardQuery
 foo~2é-1 OR 	E	Cannot parse 'foo~2é-1 OR ': Encountered "<EOF>" at line 1, column 12.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
-wi-fithe	Q	(title:wi body:wi) (title:fithe body:fithe)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fithe) TermQuery(body:fithe)))
+wi-fithe	Q	+(title:wi body:wi) +(title:fithe body:fithe)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fithe) TermQuery(body:fithe)))
 \\	E	Cannot parse '\\': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 -foo!)日本\\u\\u\\	E	Cannot parse '-foo!)日本\\u\\u\\': Encountered " ")" ") "" at line 1, column 5.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 \\".~2\\u0041)&&^	E	Cannot parse '\\".~2\\u0041)&&^': Encountered " ")" ") "" at line 1, column 11.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
@@ -325,7 +325,7 @@ x\\ TO \\:|| a* AND 	E	Cannot parse 'x\\ TO \\:|| a* AND ': Encountered "<EOF>" 
 é NOT 2.5é^2éwi-fi~	Q	+(title:é body:é) -(title:2.5é body:2.5é)^2.0 +(title:éwi-fi~2 body:éwi-fi~2)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) -Boost(Boolean(TermQuery(title:2.5é) TermQuery(body:2.5é))^2.0) +Boolean(FuzzyQuery(title:éwi-fi~2) FuzzyQuery(body:éwi-fi~2)))
 (	E	Cannot parse '(': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 )!,]	E	Cannot parse ')!,]': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-b-日本	Q	(title:b body:b) (title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:b) TermQuery(body:b)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+b-日本	Q	+(title:b body:b) +(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:b) TermQuery(body:b)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 *:*  x\\a	Q	+*:* +(title:xa body:xa)	Boolean(+MatchAllDocsQuery(*:*) +Boolean(TermQuery(title:xa) TermQuery(body:xa)))
 [TO OR TO	E	Cannot parse '[TO OR TO': Encountered " <RANGE_GOOP> "OR "" at line 1, column 4.\nWas expecting:\n    "TO" ...\n    
 .?b~2 TO 	Q	+(title:.?b body:.?b) +(title:to body:to)	Boolean(+Boolean(WildcardQuery(title:.?b) WildcardQuery(body:.?b)) +Boolean(TermQuery(title:to) TermQuery(body:to)))
@@ -363,7 +363,7 @@ a the	Q	+(title:a body:a) +(title:the body:the)	Boolean(+Boolean(TermQuery(title
 Bar	Q	title:bar body:bar	Boolean(TermQuery(title:bar) TermQuery(body:bar))
 ~2/2.5TOa* TO &&	E	Cannot parse '~2/2.5TOa* TO &&': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^2	E	Cannot parse '^2': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title\\:\\"the2.5the	Q	(title:title body:title) (title:the2.5the body:the2.5the)	Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(TermQuery(title:the2.5the) TermQuery(body:the2.5the)))
+title\\:\\"the2.5the	Q	+(title:title body:title) +(title:the2.5the body:the2.5the)	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:the2.5the) TermQuery(body:the2.5the)))
 2.5-[x\\ wi-fi)^.5	E	Cannot parse '2.5-[x\\ wi-fi)^.5': Encountered " <RANGE_GOOP> "wi-fi)^.5 "" at line 1, column 8.\nWas expecting:\n    "TO" ...\n    
 :: TO ^{the	E	Cannot parse ':: TO ^{the': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  TO a*!	E	Cannot parse ' TO a*!': Encountered "<EOF>" at line 1, column 7.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -383,7 +383,7 @@ wi-fi,2.5éAND{*:*	E	Cannot parse 'wi-fi,2.5éAND{*:*': Encountered "<EOF>" at l
 ||a*-1	Q	title:||a*-1 body:||a*-1	Boolean(WildcardQuery(title:||a*-1) WildcardQuery(body:||a*-1))
 \t?b	E	Cannot parse '\t?b': '*' or '?' not allowed as first character in WildcardQuery
 -,&&~~0.5	E	Cannot parse '-,&&~~0.5': Encountered " <FUZZY_SLOP> "~0.5 "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
- 日本foo-	Q	(title:日 body:日) (title:本 body:本) (title:foo body:foo)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:foo) TermQuery(body:foo)))
+ 日本foo-	Q	+(title:日 body:日) +(title:本 body:本) +(title:foo body:foo)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:foo) TermQuery(body:foo)))
 a*日本	Q	title:a*日本 body:a*日本	Boolean(WildcardQuery(title:a*日本) WildcardQuery(body:a*日本))
 (a*	E	Cannot parse '(a*': Encountered "<EOF>" at line 1, column 3.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 ?^2	E	Cannot parse '?^2': '*' or '?' not allowed as first character in WildcardQuery
@@ -419,13 +419,13 @@ thex\\	E	Cannot parse 'thex\\': Lexical error at line 1, column 6.  Encountered:
 x\\ OR AND	E	Cannot parse 'x\\ OR AND': Encountered "<EOF>" at line 1, column 9.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 ) / AND the+\\:	E	Cannot parse ') / AND the+\\:': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 b}^21 OR 	E	Cannot parse 'b}^21 OR ': Lexical error at line 1, column 2.  Encountered: '125' (125), (in lexical state 2)
-1-1\\u0041wi-fi	Q	(title:1 body:1) (title:1awi body:1awi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:1awi) TermQuery(body:1awi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+1-1\\u0041wi-fi	Q	+(title:1 body:1) +(title:1awi body:1awi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:1awi) TermQuery(body:1awi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 . TO \\u0041wi-fithe*2.5[	E	Cannot parse '. TO \\u0041wi-fithe*2.5[': Encountered "<EOF>" at line 1, column 24.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 /,)Bar	E	Cannot parse '/,)Bar': Lexical error at line 1, column 7.  Encountered: <EOF> after prefix "/,)Bar" (in lexical state 2)
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 foo1?TO?\\u0041^	E	Cannot parse 'foo1?TO?\\u0041^': Encountered "<EOF>" at line 1, column 15.\nWas expecting:\n    <NUMBER> ...\n    
 !  OR   \\u,	E	Cannot parse '!  OR   \\u,': Non-hex character in Unicode escape sequence: ,
-title-1	Q	(title:title body:title) (title:1 body:1)	Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+title-1	Q	+(title:title body:title) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
  NOT 11* ^.5\\:+	E	Cannot parse ' NOT 11* ^.5\\:+': Lexical error at line 1, column 11.  Encountered: '46' (46),
  1 OR *:*,TO TO 	E	Cannot parse ' 1 OR *:*,TO TO ': '*' or '?' not allowed as first character in WildcardQuery
 /x.*/ 	Q	title:/x.*/ body:/x.*/	Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/))
@@ -446,7 +446,7 @@ TO	Q	title:to body:to	Boolean(TermQuery(title:to) TermQuery(body:to))
  AND wi-fi	E	Cannot parse ' AND wi-fi': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 (\\u00?	E	Cannot parse '(\\u00?': Non-hex character in Unicode escape sequence: ?
 1	Q	title:1 body:1	Boolean(TermQuery(title:1) TermQuery(body:1))
-1wi-fi?  titlewi-fi	Q	+(title:1wi-fi? body:1wi-fi?) +((title:titlewi body:titlewi) (title:fi body:fi))	Boolean(+Boolean(WildcardQuery(title:1wi-fi?) WildcardQuery(body:1wi-fi?)) +Boolean(Boolean(TermQuery(title:titlewi) TermQuery(body:titlewi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))))
+1wi-fi?  titlewi-fi	Q	+(title:1wi-fi? body:1wi-fi?) +(+(title:titlewi body:titlewi) +(title:fi body:fi))	Boolean(+Boolean(WildcardQuery(title:1wi-fi?) WildcardQuery(body:1wi-fi?)) +Boolean(+Boolean(TermQuery(title:titlewi) TermQuery(body:titlewi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))))
  OR .?-1^.5 OR ~)	E	Cannot parse ' OR .?-1^.5 OR ~)': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\"~2	Q	title:"~2 body:"~2	Boolean(FuzzyQuery(title:"~2) FuzzyQuery(body:"~2))
 a*^.5^2(\tfoo	E	Cannot parse 'a*^.5^2(\tfoo': Lexical error at line 1, column 4.  Encountered: '46' (46),
@@ -474,10 +474,10 @@ a/. AND {*:*^.5AND	E	Cannot parse 'a/. AND {*:*^.5AND': Lexical error at line 1,
 a*.^[,b	E	Cannot parse 'a*.^[,b': Lexical error at line 1, column 5.  Encountered: '91' (91),
 \\"  日本}~2	E	Cannot parse '\\"  日本}~2': Lexical error at line 1, column 7.  Encountered: '125' (125), (in lexical state 2)
 1^.\\u\\u AND 	E	Cannot parse '1^.\\u\\u AND ': Lexical error at line 1, column 3.  Encountered: '46' (46),
-  &&\\"  AND 1-1the	Q	+((title:1 body:1) (title:1the body:1the))	Boolean(+Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:1the) TermQuery(body:1the))))
+  &&\\"  AND 1-1the	Q	+(+(title:1 body:1) +(title:1the body:1the))	Boolean(+Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:1the) TermQuery(body:1the))))
 a&&	Q	title:a body:a	Boolean(TermQuery(title:a) TermQuery(body:a))
 -)?b AND 	E	Cannot parse '-)?b AND ': Encountered " ")" ") "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
-thewi-fi a* \\u0041~2	Q	+((title:thewi body:thewi) (title:fi body:fi)) +(title:a* body:a*) +(title:a~2 body:a~2)	Boolean(+Boolean(Boolean(TermQuery(title:thewi) TermQuery(body:thewi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)) +Boolean(FuzzyQuery(title:a~2) FuzzyQuery(body:a~2)))
+thewi-fi a* \\u0041~2	Q	+(+(title:thewi body:thewi) +(title:fi body:fi)) +(title:a* body:a*) +(title:a~2 body:a~2)	Boolean(+Boolean(+Boolean(TermQuery(title:thewi) TermQuery(body:thewi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)) +Boolean(FuzzyQuery(title:a~2) FuzzyQuery(body:a~2)))
  AND	E	Cannot parse ' AND': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?b-1	E	Cannot parse '?b-1': '*' or '?' not allowed as first character in WildcardQuery
 1.! x\\~0.5:1	Q	+(title:1 body:1) +x~0.5:1	Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +TermQuery(x~0.5:1))
@@ -494,7 +494,7 @@ title~0.5~2	E	Cannot parse 'title~0.5~2': Encountered " <FUZZY_SLOP> "~2 "" at l
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
  	E	Cannot parse ' ': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 1!*:*~0.5:\\u	E	Cannot parse '1!*:*~0.5:\\u': Encountered " ":" ": "" at line 1, column 9.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-\\:.日本TO\\u0041TO	Q	(title:日 body:日) (title:本 body:本) (title:toato body:toato)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:toato) TermQuery(body:toato)))
+\\:.日本TO\\u0041TO	Q	+(title:日 body:日) +(title:本 body:本) +(title:toato body:toato)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:toato) TermQuery(body:toato)))
 \\u00+Bar TO wi-fi  	E	Cannot parse '\\u00+Bar TO wi-fi  ': Non-hex character in Unicode escape sequence: +
 ~0.5	E	Cannot parse '~0.5': Encountered " <FUZZY_SLOP> "~0.5 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?&&1^2]	E	Cannot parse '?&&1^2]': Lexical error at line 1, column 8.  Encountered: <EOF> (in lexical state 2)
@@ -522,7 +522,7 @@ Bar/a/ TO ^2	Q	+(title:bar body:bar) +(title:/a/ body:/a/) +(title:to body:to)^2
 \\: AND 	E	Cannot parse '\\: AND ': Encountered "<EOF>" at line 1, column 7.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 ~2{	E	Cannot parse '~2{': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 -1||TO*:*the1a	E	Cannot parse '-1||TO*:*the1a': Encountered " ":" ": "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 [{1*:*[/x.*/	E	Cannot parse '[{1*:*[/x.*/': Encountered "<EOF>" at line 1, column 12.\nWas expecting:\n    "TO" ...\n    
  TO ?b\tb	E	Cannot parse ' TO ?b\tb': '*' or '?' not allowed as first character in WildcardQuery
 "title^2 Bar&&^2	E	Cannot parse '"title^2 Bar&&^2': Lexical error at line 1, column 17.  Encountered: <EOF> after prefix "\\"title^2 Bar&&^2" (in lexical state 2)
@@ -537,10 +537,10 @@ wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi
 ^2 TO.(wi-fi//x.*/	E	Cannot parse '^2 TO.(wi-fi//x.*/': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~2	E	Cannot parse '~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 " 	E	Cannot parse '" ': Lexical error at line 1, column 3.  Encountered: <EOF> after prefix "\\" " (in lexical state 2)
-\\:é||b 	Q	(title:é body:é) (title:b body:b)	Boolean(Boolean(TermQuery(title:é) TermQuery(body:é)) Boolean(TermQuery(title:b) TermQuery(body:b)))
+\\:é||b 	Q	+(title:é body:é) +(title:b body:b)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(TermQuery(title:b) TermQuery(body:b)))
 ~2(?b(\\u	E	Cannot parse '~2(?b(\\u': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041]. TO 	E	Cannot parse '\\u0041]. TO ': Lexical error at line 1, column 7.  Encountered: '93' (93), (in lexical state 2)
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 Bar/x.*/]}[	E	Cannot parse 'Bar/x.*/]}[': Lexical error at line 1, column 9.  Encountered: '93' (93), (in lexical state 2)
 é)~0.5	E	Cannot parse 'é)~0.5': Encountered " ")" ") "" at line 1, column 1.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 &&||}\\&&	E	Cannot parse '&&||}\\&&': Lexical error at line 1, column 5.  Encountered: '125' (125), (in lexical state 2)
@@ -563,7 +563,7 @@ Bar/x.*/]}[	E	Cannot parse 'Bar/x.*/]}[': Lexical error at line 1, column 9.  En
 [	E	Cannot parse '[': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 )wi-fi(	E	Cannot parse ')wi-fi(': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^2(~2/x.*/b	E	Cannot parse '^2(~2/x.*/b': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-\\wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+\\wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
  AND  TO \\:ab\\u1-1	E	Cannot parse ' AND  TO \\:ab\\u1-1': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  } TO ,}a*	E	Cannot parse ' } TO ,}a*': Lexical error at line 1, column 2.  Encountered: '125' (125), (in lexical state 2)
  	E	Cannot parse ' ': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -579,13 +579,13 @@ b 	Q	title:b body:b	Boolean(TermQuery(title:b) TermQuery(body:b))
 !/[b\\u0041title  -	E	Cannot parse '!/[b\\u0041title  -': Lexical error at line 1, column 19.  Encountered: <EOF> after prefix "/[b\\\\u0041title  -" (in lexical state 2)
 }*aTO\\u0041	E	Cannot parse '}*aTO\\u0041': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
 [	E	Cannot parse '[': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
-é日本日本	Q	(title:é body:é) (title:日 body:日) (title:本 body:本) (title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:é) TermQuery(body:é)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+é日本日本	Q	+(title:é body:é) +(title:日 body:日) +(title:本 body:本) +(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 -1	Q	-(title:1 body:1)	Boolean(-Boolean(TermQuery(title:1) TermQuery(body:1)))
 &&++\\:foo -1TO	Q	+(title:foo body:foo) -(title:1to body:1to)	Boolean(+Boolean(TermQuery(title:foo) TermQuery(body:foo)) -Boolean(TermQuery(title:1to) TermQuery(body:1to)))
 {||/x.*/	E	Cannot parse '{||/x.*/': Encountered "<EOF>" at line 1, column 8.\nWas expecting:\n    "TO" ...\n    
 :TO+^\\u	E	Cannot parse ':TO+^\\u': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~2a*wi-fi	E	Cannot parse '~2a*wi-fi': Encountered " <FUZZY_SLOP> "~2a "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-日本 \\u0041 a*~0.5+	Q	+(title:日 body:日) +(title:本 body:本) +(title:a body:a) +(title:a* body:a*)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)))
+日本 \\u0041 a*~0.5+	Q	+(+(title:日 body:日) +(title:本 body:本) +(title:a body:a)) +(title:a* body:a*)	Boolean(+Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:a) TermQuery(body:a))) +Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)))
 \\u00-1||.	E	Cannot parse '\\u00-1||.': Non-hex character in Unicode escape sequence: -
  NOT /(\\:a}	E	Cannot parse ' NOT /(\\:a}': Lexical error at line 1, column 12.  Encountered: <EOF> after prefix "/(\\\\:a}" (in lexical state 2)
 ~2&&	E	Cannot parse '~2&&': Encountered " <FUZZY_SLOP> "~2&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -662,7 +662,7 @@ foo? *:*Bar/x.*/	E	Cannot parse 'foo? *:*Bar/x.*/': '*' or '?' not allowed as fi
 \\:{[TO]	E	Cannot parse '\\:{[TO]': Encountered " "]" "] "" at line 1, column 6.\nWas expecting:\n    "TO" ...\n    
 ]aBar-1	E	Cannot parse ']aBar-1': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 wi-fi&&\\u00)*"	E	Cannot parse 'wi-fi&&\\u00)*"': Truncated Unicode escape sequence.
-wi-fi.titleBar||	Q	(title:wi body:wi) (title:fi.titlebar body:fi.titlebar)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi.titlebar) TermQuery(body:fi.titlebar)))
+wi-fi.titleBar||	Q	+(title:wi body:wi) +(title:fi.titlebar body:fi.titlebar)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi.titlebar) TermQuery(body:fi.titlebar)))
  é TO ^.5! TO  OR 	E	Cannot parse ' é TO ^.5! TO  OR ': Lexical error at line 1, column 8.  Encountered: '46' (46),
 a	Q	title:a body:a	Boolean(TermQuery(title:a) TermQuery(body:a))
 , NOT ANDthex\\\\ a*	Q	-(title:andthex body:andthex) +(title:a* body:a*)	Boolean(-Boolean(TermQuery(title:andthex) TermQuery(body:andthex)) +Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)))
@@ -678,7 +678,7 @@ b\\u0041?b+\\uBar	E	Cannot parse 'b\\u0041?b+\\uBar': Non-hex character in Unico
 \\"	Q		Boolean()
 ^||\\u,}-	E	Cannot parse '^||\\u,}-': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 TO)?b\\u1a OR :	E	Cannot parse 'TO)?b\\u1a OR :': Encountered " ")" ") "" at line 1, column 2.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-wi-fi2.5.\\:\\u0041&&\t	Q	(title:wi body:wi) (title:fi2.5 body:fi2.5) (title:a body:a)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi2.5) TermQuery(body:fi2.5)) Boolean(TermQuery(title:a) TermQuery(body:a)))
+wi-fi2.5.\\:\\u0041&&\t	Q	+(title:wi body:wi) +(title:fi2.5 body:fi2.5) +(title:a body:a)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi2.5) TermQuery(body:fi2.5)) +Boolean(TermQuery(title:a) TermQuery(body:a)))
 \ttitle	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:title))
 \\:AND	Q	title:and body:and	Boolean(TermQuery(title:and) TermQuery(body:and))
   	E	Cannot parse '  ': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -688,7 +688,7 @@ the]\\:!Bar^.5	E	Cannot parse 'the]\\:!Bar^.5': Lexical error at line 1, column 
 ~(\\"~\\u	E	Cannot parse '~(\\"~\\u': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \t?^.5\\") OR ||	E	Cannot parse '\t?^.5\\") OR ||': Lexical error at line 1, column 4.  Encountered: '46' (46),
 AND,	Q	title:and body:and	Boolean(TermQuery(title:and) TermQuery(body:and))
-bwi-fi	Q	(title:bwi body:bwi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:bwi) TermQuery(body:bwi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+bwi-fi	Q	+(title:bwi body:bwi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:bwi) TermQuery(body:bwi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 é! Bar	Q	+(title:é body:é) +(title:bar body:bar)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(TermQuery(title:bar) TermQuery(body:bar)))
 a*)/\\:+{	E	Cannot parse 'a*)/\\:+{': Encountered " ")" ") "" at line 1, column 2.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 ]	E	Cannot parse ']': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
@@ -707,7 +707,7 @@ x\\||-1[&& NOT ?	E	Cannot parse 'x\\||-1[&& NOT ?': Encountered " <RANGE_GOOP> "
 ^2title	E	Cannot parse '^2title': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041\\u,	E	Cannot parse '\\u0041\\u,': Non-hex character in Unicode escape sequence: ,
 \\ua*-	E	Cannot parse '\\ua*-': Non-hex character in Unicode escape sequence: *
-the2.5wi-fi AND \t*:*	Q	+((title:the2.5wi body:the2.5wi) (title:fi body:fi)) +*:*	Boolean(+Boolean(Boolean(TermQuery(title:the2.5wi) TermQuery(body:the2.5wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +MatchAllDocsQuery(*:*))
+the2.5wi-fi AND \t*:*	Q	+(+(title:the2.5wi body:the2.5wi) +(title:fi body:fi)) +*:*	Boolean(+Boolean(+Boolean(TermQuery(title:the2.5wi) TermQuery(body:the2.5wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +MatchAllDocsQuery(*:*))
  *:*.!	E	Cannot parse ' *:*.!': '*' or '?' not allowed as first character in WildcardQuery
  TO 日本foo(AND	E	Cannot parse ' TO 日本foo(AND': Encountered " <AND> "AND "" at line 1, column 10.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^.5,:AND?\\u00wi-fi日本	E	Cannot parse '^.5,:AND?\\u00wi-fi日本': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -720,7 +720,7 @@ the2.5wi-fi AND \t*:*	Q	+((title:the2.5wi body:the2.5wi) (title:fi body:fi)) +*:
 [a NOT 	E	Cannot parse '[a NOT ': Encountered " <RANGE_GOOP> "NOT "" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
 &&^}2.5é~2the	E	Cannot parse '&&^}2.5é~2the': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\:*:*wi-fi\\u00title~2\t	E	Cannot parse '\\:*:*wi-fi\\u00title~2\t': Encountered " ":" ": "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-wi-fi-	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi-	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 [a*	E	Cannot parse '[a*': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
 a*a	Q	title:a*a body:a*a	Boolean(WildcardQuery(title:a*a) WildcardQuery(body:a*a))
 /x.*/{	E	Cannot parse '/x.*/{': Encountered "<EOF>" at line 1, column 6.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
@@ -753,7 +753,7 @@ TOBar: NOT 	E	Cannot parse 'TOBar: NOT ': Encountered " <NOT> "NOT "" at line 1,
 ~a)	E	Cannot parse '~a)': Encountered " <FUZZY_SLOP> "~a "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }\\"\\"日本,\\::	E	Cannot parse '}\\"\\"日本,\\::': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
  ^title\\:	E	Cannot parse ' ^title\\:': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-a* TO the	Q	+(title:a* body:a*) +(title:to body:to) +(title:the body:the)	Boolean(+Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)) +Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:the) TermQuery(body:the)))
+a* TO the	Q	+(title:a* body:a*) +(+(title:to body:to) +(title:the body:the))	Boolean(+Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*)) +Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:the) TermQuery(body:the))))
 /x.*/ 	Q	title:/x.*/ body:/x.*/	Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/))
 ]	E	Cannot parse ']': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 *x\\2.5?b	E	Cannot parse '*x\\2.5?b': '*' or '?' not allowed as first character in WildcardQuery
@@ -762,7 +762,7 @@ a* TO the	Q	+(title:a* body:a*) +(title:to body:to) +(title:the body:the)	Boolea
 ]-	E	Cannot parse ']-': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 &&]?b"	E	Cannot parse '&&]?b"': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u00a]title	E	Cannot parse '\\u00a]title': Lexical error at line 1, column 6.  Encountered: '93' (93), (in lexical state 2)
-1wi-fi OR \\"2.5	Q	((title:1wi body:1wi) (title:fi body:fi)) (title:2.5 body:2.5)	Boolean(Boolean(Boolean(TermQuery(title:1wi) TermQuery(body:1wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
+1wi-fi OR \\"2.5	Q	(+(title:1wi body:1wi) +(title:fi body:fi)) (title:2.5 body:2.5)	Boolean(Boolean(+Boolean(TermQuery(title:1wi) TermQuery(body:1wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
 \\u0041^2]	E	Cannot parse '\\u0041^2]': Lexical error at line 1, column 10.  Encountered: <EOF> (in lexical state 2)
 ^2^.5~0.5\\:?~0.5	E	Cannot parse '^2^.5~0.5\\:?~0.5': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 thebx\\&&}	E	Cannot parse 'thebx\\&&}': Lexical error at line 1, column 10.  Encountered: <EOF> (in lexical state 2)
@@ -772,7 +772,7 @@ thebx\\&&}	E	Cannot parse 'thebx\\&&}': Lexical error at line 1, column 10.  Enc
 /,title*:*	E	Cannot parse '/,title*:*': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "/,title*:*" (in lexical state 2)
 {foo	E	Cannot parse '{foo': Encountered "<EOF>" at line 1, column 4.\nWas expecting:\n    "TO" ...\n    
 *:*	Q	*:*	MatchAllDocsQuery(*:*)
-awi-fi	Q	(title:awi body:awi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:awi) TermQuery(body:awi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+awi-fi	Q	+(title:awi body:awi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:awi) TermQuery(body:awi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 x\\	E	Cannot parse 'x\\': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
 "\\:/AND+^	E	Cannot parse '"\\:/AND+^': Lexical error at line 1, column 10.  Encountered: <EOF> after prefix "\\"\\\\:/AND+^" (in lexical state 2)
 a*{~2 AND *:*^AND	E	Cannot parse 'a*{~2 AND *:*^AND': Encountered " <RANGE_GOOP> "AND "" at line 1, column 6.\nWas expecting:\n    "TO" ...\n    
@@ -780,9 +780,9 @@ a*{~2 AND *:*^AND	E	Cannot parse 'a*{~2 AND *:*^AND': Encountered " <RANGE_GOOP>
 &&? /"x\\	E	Cannot parse '&&? /"x\\': Lexical error at line 1, column 9.  Encountered: <EOF> after prefix "/\\"x\\\\" (in lexical state 2)
 .&&a~0.5?	E	Cannot parse '.&&a~0.5?': '*' or '?' not allowed as first character in WildcardQuery
 foo-1?	Q	title:foo-1? body:foo-1?	Boolean(WildcardQuery(title:foo-1?) WildcardQuery(body:foo-1?))
-\\:\\u0041日本é	Q	(title:a body:a) (title:日 body:日) (title:本 body:本) (title:é body:é)	Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:é) TermQuery(body:é)))
+\\:\\u0041日本é	Q	+(title:a body:a) +(title:日 body:日) +(title:本 body:本) +(title:é body:é)	Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:é) TermQuery(body:é)))
 wi-fi^.5 {!wi-fi	E	Cannot parse 'wi-fi^.5 {!wi-fi': Lexical error at line 1, column 7.  Encountered: '46' (46),
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 \\:a**:*~2 AND	E	Cannot parse '\\:a**:*~2 AND': Encountered " ":" ": "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 é  a	Q	+(title:é body:é) +(title:a body:a)	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(TermQuery(title:a) TermQuery(body:a)))
  OR \\(\\u	E	Cannot parse ' OR \\(\\u': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -878,7 +878,7 @@ Bar^.5. é	E	Cannot parse 'Bar^.5. é': Lexical error at line 1, column 5.  Enco
 *fooTO^日本	E	Cannot parse '*fooTO^日本': Lexical error at line 1, column 8.  Encountered: '26085' (26085),
 /x.*/1.1~	Q	+(title:/x.*/ body:/x.*/) +(title:1.1~2 body:1.1~2)	Boolean(+Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(FuzzyQuery(title:1.1~2) FuzzyQuery(body:1.1~2)))
 Bar**,~	Q	title:bar**, body:bar**,	Boolean(WildcardQuery(title:bar**,) WildcardQuery(body:bar**,))
-. TO 2.5a*TO	Q	title:to body:to +(title:2.5a*to body:2.5a*to)	Boolean(TermQuery(title:to) TermQuery(body:to) +Boolean(WildcardQuery(title:2.5a*to) WildcardQuery(body:2.5a*to)))
+. TO 2.5a*TO	Q	+(title:to body:to) +(title:2.5a*to body:2.5a*to)	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(WildcardQuery(title:2.5a*to) WildcardQuery(body:2.5a*to)))
 *foo\\:1title^2~2	E	Cannot parse '*foo\\:1title^2~2': '*' or '?' not allowed as first character in WildcardQuery
 AND:\t/x.*/é	E	Cannot parse 'AND:\t/x.*/é': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?!	E	Cannot parse '?!': '*' or '?' not allowed as first character in WildcardQuery
@@ -957,7 +957,7 @@ foo~é~2	E	Cannot parse 'foo~é~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1,
  OR  NOT ,~0.5 NOT ~	E	Cannot parse ' OR  NOT ,~0.5 NOT ~': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  TO 	Q	title:to body:to	Boolean(TermQuery(title:to) TermQuery(body:to))
 [^.5!	E	Cannot parse '[^.5!': Encountered "<EOF>" at line 1, column 5.\nWas expecting:\n    "TO" ...\n    
-title TO /x.*/	Q	+(title:title body:title) +(title:to body:to) +(title:/x.*/ body:/x.*/)	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
+title TO /x.*/	Q	+(+(title:title body:title) +(title:to body:to)) +(title:/x.*/ body:/x.*/)	Boolean(+Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:to) TermQuery(body:to))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
 ~ TO [/~0.5*:*	E	Cannot parse '~ TO [/~0.5*:*': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 AND&&	Q	title:and body:and	Boolean(TermQuery(title:and) TermQuery(body:and))
 /x.*//~0.5(a*^2!/	X	IllegalArgumentException: expected ')' at position 10
@@ -989,7 +989,7 @@ AND\\u00?b\t[\\u00}	E	Cannot parse 'AND\\u00?b\t[\\u00}': Non-hex character in U
 ] OR a*~]]a	E	Cannot parse '] OR a*~]]a': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 \\:  \t+ TO } AND 	E	Cannot parse '\\:  \t+ TO } AND ': Lexical error at line 1, column 11.  Encountered: '125' (125), (in lexical state 2)
 Bar(?b(AND*\t	E	Cannot parse 'Bar(?b(AND*\t': '*' or '?' not allowed as first character in WildcardQuery
-2.5wi-fi	Q	(title:2.5wi body:2.5wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:2.5wi) TermQuery(body:2.5wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+2.5wi-fi	Q	+(title:2.5wi body:2.5wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:2.5wi) TermQuery(body:2.5wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 (b^.5 *&&	E	Cannot parse '(b^.5 *&&': Lexical error at line 1, column 4.  Encountered: '46' (46),
 .x\\},*:*\\u/a	E	Cannot parse '.x\\},*:*\\u/a': Encountered " ":" ": "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 ~~2\\	E	Cannot parse '~~2\\': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1001,7 +1001,7 @@ a~||	Q	title:a~2 body:a~2	Boolean(FuzzyQuery(title:a~2) FuzzyQuery(body:a~2))
 \\u[	E	Cannot parse '\\u[': Truncated Unicode escape sequence.
  Bar||the TO foo	Q	+(title:bar body:bar) +(title:the body:the) +(title:to body:to) +(title:foo body:foo)	Boolean(+Boolean(TermQuery(title:bar) TermQuery(body:bar)) +Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:foo) TermQuery(body:foo)))
 && NOT x\\[ TO ^	E	Cannot parse '&& NOT x\\[ TO ^': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-éwi-fi	Q	(title:éwi body:éwi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:éwi) TermQuery(body:éwi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+éwi-fi	Q	+(title:éwi body:éwi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:éwi) TermQuery(body:éwi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 +^2 .	E	Cannot parse '+^2 .': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 title\\b( 	E	Cannot parse 'title\\b( ': Encountered "<EOF>" at line 1, column 9.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  NOT  TO x\\ NOT ~0.5	Q	-(title:to body:to) +(title:x not~2 body:x not~2)	Boolean(-Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(FuzzyQuery(title:x not~2) FuzzyQuery(body:x not~2)))
@@ -1017,7 +1017,7 @@ wi-fi\\"a+2.5TO^.5-	E	Cannot parse 'wi-fi\\"a+2.5TO^.5-': Lexical error at line 
 ?bb, TO 	E	Cannot parse '?bb, TO ': '*' or '?' not allowed as first character in WildcardQuery
 x\\	E	Cannot parse 'x\\': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
-+ wi-fi   - 	Q	+((title:wi body:wi) (title:fi body:fi))	Boolean(+Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))))
++ wi-fi   - 	Q	+(+(title:wi body:wi) +(title:fi body:fi))	Boolean(+Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))))
 !title*:*2.5	E	Cannot parse '!title*:*2.5': Encountered " ":" ": "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 ~ a*wi-fi	E	Cannot parse '~ a*wi-fi': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~é/)title	E	Cannot parse '~é/)title': Encountered " <FUZZY_SLOP> "~\\u00e9 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1044,14 +1044,14 @@ TO	Q	title:to body:to	Boolean(TermQuery(title:to) TermQuery(body:to))
  }. AND \\"\\"	E	Cannot parse ' }. AND \\"\\"': Lexical error at line 1, column 2.  Encountered: '125' (125), (in lexical state 2)
 b]	E	Cannot parse 'b]': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
  OR {the!~0.5	E	Cannot parse ' OR {the!~0.5': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-\\~2-1é	Q	(title:2 body:2) (title:1é body:1é)	Boolean(Boolean(TermQuery(title:2) TermQuery(body:2)) Boolean(TermQuery(title:1é) TermQuery(body:1é)))
+\\~2-1é	Q	+(title:2 body:2) +(title:1é body:1é)	Boolean(+Boolean(TermQuery(title:2) TermQuery(body:2)) +Boolean(TermQuery(title:1é) TermQuery(body:1é)))
 /(  AND AND 	E	Cannot parse '/(  AND AND ': Lexical error at line 1, column 13.  Encountered: <EOF> after prefix "/(  AND AND " (in lexical state 2)
 (?~0.5	E	Cannot parse '(?~0.5': '*' or '?' not allowed as first character in WildcardQuery
 - OR 	E	Cannot parse '- OR ': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
   é"AND	E	Cannot parse '  é"AND': Lexical error at line 1, column 8.  Encountered: <EOF> after prefix "\\"AND" (in lexical state 2)
- wi-fi日本x\\Bar	Q	(title:wi body:wi) (title:fi body:fi) (title:日 body:日) (title:本 body:本) (title:xbar body:xbar)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:xbar) TermQuery(body:xbar)))
+ wi-fi日本x\\Bar	Q	+(title:wi body:wi) +(title:fi body:fi) +(title:日 body:日) +(title:本 body:本) +(title:xbar body:xbar)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:xbar) TermQuery(body:xbar)))
 ||	E	Cannot parse '||': Encountered " <OR> "|| "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-wi-fi/x.*/, :2.5	Q	+((title:wi body:wi) (title:fi body:fi)) +(title:/x.*/ body:/x.*/) +,:2.5	Boolean(+Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +TermQuery(,:2.5))
+wi-fi/x.*/, :2.5	Q	+(+(title:wi body:wi) +(title:fi body:fi)) +(title:/x.*/ body:/x.*/) +,:2.5	Boolean(+Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +TermQuery(,:2.5))
 \\" NOT 2.5\\:a*?b+	Q	-(title:2.5\\:a*?b+ body:2.5\\:a*?b+)	Boolean(-Boolean(WildcardQuery(title:2.5\\:a*?b+) WildcardQuery(body:2.5\\:a*?b+)))
  TO ~\\\\u0041^	E	Cannot parse ' TO ~\\\\u0041^': Encountered "<EOF>" at line 1, column 13.\nWas expecting:\n    <NUMBER> ...\n    
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
@@ -1063,7 +1063,7 @@ AND\\"^2*-]	E	Cannot parse 'AND\\"^2*-]': Lexical error at line 1, column 11.  E
 \\"\\:	Q		Boolean()
 )	E	Cannot parse ')': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?)  ~2a*^2-	E	Cannot parse '?)  ~2a*^2-': '*' or '?' not allowed as first character in WildcardQuery
- 日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+ 日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
  [wi-fi&&	E	Cannot parse ' [wi-fi&&': Encountered "<EOF>" at line 1, column 9.\nWas expecting:\n    "TO" ...\n    
 ?b^.5^\\u0041 	E	Cannot parse '?b^.5^\\u0041 ': Lexical error at line 1, column 4.  Encountered: '46' (46),
 2.5b? /x.*/:.	E	Cannot parse '2.5b? /x.*/:.': Encountered " ":" ": "" at line 1, column 11.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
@@ -1103,8 +1103,8 @@ b]\\u00||\\:	E	Cannot parse 'b]\\u00||\\:': Lexical error at line 1, column 2.  
 (^!~2/"x\\	E	Cannot parse '(^!~2/"x\\': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 AND/x.*/	E	Cannot parse 'AND/x.*/': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }\\u00!:/x.*/}the.	E	Cannot parse '}\\u00!:/x.*/}the.': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
-\\thea* TO ||title	Q	+(title:thea* body:thea*) +(title:to body:to) +(title:title body:title)	Boolean(+Boolean(PrefixQuery(title:thea*) PrefixQuery(body:thea*)) +Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:title) TermQuery(body:title)))
-日本\\"	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+\\thea* TO ||title	Q	+(title:thea* body:thea*) +(+(title:to body:to) +(title:title body:title))	Boolean(+Boolean(PrefixQuery(title:thea*) PrefixQuery(body:thea*)) +Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:title) TermQuery(body:title))))
+日本\\"	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 }	E	Cannot parse '}': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 a\\u00+TO,\\:	E	Cannot parse 'a\\u00+TO,\\:': Non-hex character in Unicode escape sequence: +
  AND .2.5-1^.5]?b/	E	Cannot parse ' AND .2.5-1^.5]?b/': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1205,14 +1205,14 @@ TOwi-fiTO{AND NOT 	E	Cannot parse 'TOwi-fiTO{AND NOT ': Encountered " <RANGE_GOO
 title\t\\\\u00AND\\:	Q	+(title:title body:title) +(title:u00and body:u00and)	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:u00and) TermQuery(body:u00and)))
 \\\\:1-x\\x\\ AND ?b	E	Cannot parse '\\\\:1-x\\x\\ AND ?b': '*' or '?' not allowed as first character in WildcardQuery
 é(	E	Cannot parse 'é(': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-*:* OR b日本&&	Q	*:* ((title:b body:b) (title:日 body:日) (title:本 body:本))	Boolean(MatchAllDocsQuery(*:*) Boolean(Boolean(TermQuery(title:b) TermQuery(body:b)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+*:* OR b日本&&	Q	*:* (+(title:b body:b) +(title:日 body:日) +(title:本 body:本))	Boolean(MatchAllDocsQuery(*:*) Boolean(+Boolean(TermQuery(title:b) TermQuery(body:b)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 \\u&&.} AND AND]	E	Cannot parse '\\u&&.} AND AND]': Lexical error at line 1, column 6.  Encountered: '125' (125), (in lexical state 2)
 ^2^ AND ~/\\x\\	E	Cannot parse '^2^ AND ~/\\x\\': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 Barwi-fi^  *]	E	Cannot parse 'Barwi-fi^  *]': Lexical error at line 1, column 10.  Encountered: '32' (32),
 {b	E	Cannot parse '{b': Encountered "<EOF>" at line 1, column 2.\nWas expecting:\n    "TO" ...\n    
 TOa/	E	Cannot parse 'TOa/': Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2)
 a*:*^2,! NOT 	E	Cannot parse 'a*:*^2,! NOT ': Encountered " ":" ": "" at line 1, column 2.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 \\	E	Cannot parse '\\': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 &&\\u2.5BarTO\\u00b-	E	Cannot parse '&&\\u2.5BarTO\\u00b-': Non-hex character in Unicode escape sequence: .
 }日本aBar日本~0.51	E	Cannot parse '}日本aBar日本~0.51': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
@@ -1223,7 +1223,7 @@ a*:*^2,! NOT 	E	Cannot parse 'a*:*^2,! NOT ': Encountered " ":" ": "" at line 1,
 Barx\\~ ^.5 TO ]	E	Cannot parse 'Barx\\~ ^.5 TO ]': Lexical error at line 1, column 9.  Encountered: '46' (46),
 AND	E	Cannot parse 'AND': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041~2?ba*[,-1	E	Cannot parse '\\u0041~2?ba*[,-1': '*' or '?' not allowed as first character in WildcardQuery
-日本- NOT 2.51	Q	+((title:日 body:日) (title:本 body:本)) -(title:2.51 body:2.51)	Boolean(+Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))) -Boolean(TermQuery(title:2.51) TermQuery(body:2.51)))
+日本- NOT 2.51	Q	+(+(title:日 body:日) +(title:本 body:本)) -(title:2.51 body:2.51)	Boolean(+Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))) -Boolean(TermQuery(title:2.51) TermQuery(body:2.51)))
 AND\\:::^+	E	Cannot parse 'AND\\:::^+': Encountered " ":" ": "" at line 1, column 6.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 foo\\AND~?	E	Cannot parse 'foo\\AND~?': '*' or '?' not allowed as first character in WildcardQuery
 "TO2.5*?é+~0.5	E	Cannot parse '"TO2.5*?é+~0.5': Lexical error at line 1, column 15.  Encountered: <EOF> after prefix "\\"TO2.5*?\\u00e9+~0.5" (in lexical state 2)
@@ -1244,7 +1244,7 @@ foo\\\\"a1\tfooAND	E	Cannot parse 'foo\\\\"a1\tfooAND': Lexical error at line 1,
  AND	E	Cannot parse ' AND': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 -^/x.*/ TO  AND 	E	Cannot parse '-^/x.*/ TO  AND ': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 \\u00\\u0041	E	Cannot parse '\\u00\\u0041': Non-hex character in Unicode escape sequence: \\
- NOT 日本	Q	-((title:日 body:日) (title:本 body:本))	Boolean(-Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+ NOT 日本	Q	-(+(title:日 body:日) +(title:本 body:本))	Boolean(-Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 :	E	Cannot parse ':': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 */x.*/*:*a||?b	E	Cannot parse '*/x.*/*:*a||?b': '*' or '?' not allowed as first character in WildcardQuery
 "  ^.5||  	E	Cannot parse '"  ^.5||  ': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "\\"  ^.5||  " (in lexical state 2)
@@ -1267,9 +1267,9 @@ title/	E	Cannot parse 'title/': Lexical error at line 1, column 7.  Encountered:
 ?^||	E	Cannot parse '?^||': Lexical error at line 1, column 3.  Encountered: '124' (124),
 \\"\\foo^.5  b	E	Cannot parse '\\"\\foo^.5  b': Lexical error at line 1, column 8.  Encountered: '46' (46),
 [./x.*/*:*\\the:	E	Cannot parse '[./x.*/*:*\\the:': Encountered "<EOF>" at line 1, column 15.\nWas expecting:\n    "TO" ...\n    
-+the\\{the	Q	+((title:the body:the) (title:the body:the))	Boolean(+Boolean(Boolean(TermQuery(title:the) TermQuery(body:the)) Boolean(TermQuery(title:the) TermQuery(body:the))))
++the\\{the	Q	+(+(title:the body:the) +(title:the body:the))	Boolean(+Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:the) TermQuery(body:the))))
  OR x\\	E	Cannot parse ' OR x\\': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
--日本1titleBar,^2 	Q	-((title:日 body:日) (title:本 body:本) (title:1titlebar body:1titlebar))^2.0	Boolean(-Boost(Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:1titlebar) TermQuery(body:1titlebar)))^2.0))
+-日本1titleBar,^2 	Q	-(+(title:日 body:日) +(title:本 body:本) +(title:1titlebar body:1titlebar))^2.0	Boolean(-Boost(Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:1titlebar) TermQuery(body:1titlebar)))^2.0))
  	E	Cannot parse ' ': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041Bar*:*b NOT -	E	Cannot parse '\\u0041Bar*:*b NOT -': Encountered " ":" ": "" at line 1, column 10.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 *. TO *	E	Cannot parse '*. TO *': '*' or '?' not allowed as first character in WildcardQuery
@@ -1299,7 +1299,7 @@ foox\\[é^TO]b	E	Cannot parse 'foox\\[é^TO]b': Lexical error at line 1, column 
 Bar*a*é-1	Q	title:bar*a*é-1 body:bar*a*é-1	Boolean(WildcardQuery(title:bar*a*é-1) WildcardQuery(body:bar*a*é-1))
 ^2 AND x\\*+/x.*/+a*	E	Cannot parse '^2 AND x\\*+/x.*/+a*': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 )a*,^.5^2-	E	Cannot parse ')a*,^.5^2-': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title  \\&& OR 2.5wi-fiAND	Q	(title:title body:title) ((title:2.5wi body:2.5wi) (title:fiand body:fiand))	Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(Boolean(TermQuery(title:2.5wi) TermQuery(body:2.5wi)) Boolean(TermQuery(title:fiand) TermQuery(body:fiand))))
+title  \\&& OR 2.5wi-fiAND	Q	(title:title body:title) (+(title:2.5wi body:2.5wi) +(title:fiand body:fiand))	Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(+Boolean(TermQuery(title:2.5wi) TermQuery(body:2.5wi)) +Boolean(TermQuery(title:fiand) TermQuery(body:fiand))))
 \\u-*	E	Cannot parse '\\u-*': Non-hex character in Unicode escape sequence: -
 *	E	Cannot parse '*': '*' or '?' not allowed as first character in WildcardQuery
 !\\u\\u\\AND&&	E	Cannot parse '!\\u\\u\\AND&&': Non-hex character in Unicode escape sequence: \\
@@ -1309,7 +1309,7 @@ b	Q	title:b body:b	Boolean(TermQuery(title:b) TermQuery(body:b))
 \\:	Q		Boolean()
 -1a*+日本?  \\:	Q	-(title:1a*+日本? body:1a*+日本?)	Boolean(-Boolean(WildcardQuery(title:1a*+日本?) WildcardQuery(body:1a*+日本?)))
 b NOT ,a*foofoo  	Q	+(title:b body:b) -(title:,a*foofoo body:,a*foofoo)	Boolean(+Boolean(TermQuery(title:b) TermQuery(body:b)) -Boolean(WildcardQuery(title:,a*foofoo) WildcardQuery(body:,a*foofoo)))
-  日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+  日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 a* AND /{	E	Cannot parse 'a* AND /{': Lexical error at line 1, column 10.  Encountered: <EOF> after prefix "/{" (in lexical state 2)
 -]\\"^2*	E	Cannot parse '-]\\"^2*': Lexical error at line 1, column 2.  Encountered: '93' (93), (in lexical state 2)
 ||Bar	Q	title:bar body:bar	Boolean(TermQuery(title:bar) TermQuery(body:bar))
@@ -1321,7 +1321,7 @@ a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
 éBar OR  /x.*/	Q	(title:ébar body:ébar) (title:/x.*/ body:/x.*/)	Boolean(Boolean(TermQuery(title:ébar) TermQuery(body:ébar)) Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
 *2.5||}" 	E	Cannot parse '*2.5||}" ': Lexical error at line 1, column 7.  Encountered: '125' (125), (in lexical state 2)
  [\\"1a*	E	Cannot parse ' [\\"1a*': Encountered "<EOF>" at line 1, column 7.\nWas expecting:\n    "TO" ...\n    
-\\"ax\\?b\\\t OR  TO 	Q	((title:ax body:ax) (title:b body:b)) (title:to body:to)	Boolean(Boolean(Boolean(TermQuery(title:ax) TermQuery(body:ax)) Boolean(TermQuery(title:b) TermQuery(body:b))) Boolean(TermQuery(title:to) TermQuery(body:to)))
+\\"ax\\?b\\\t OR  TO 	Q	(+(title:ax body:ax) +(title:b body:b)) (title:to body:to)	Boolean(Boolean(+Boolean(TermQuery(title:ax) TermQuery(body:ax)) +Boolean(TermQuery(title:b) TermQuery(body:b))) Boolean(TermQuery(title:to) TermQuery(body:to)))
 !.2.5	Q	-(title:2.5 body:2.5)	Boolean(-Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
 title NOT  OR thea*	E	Cannot parse 'title NOT  OR thea*': Encountered " <OR> "OR "" at line 1, column 11.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
  AND \tBar/ .	E	Cannot parse ' AND \tBar/ .': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1421,7 +1421,7 @@ Bar^.5  	E	Cannot parse 'Bar^.5  ': Lexical error at line 1, column 5.  Encounte
 \\u00\\" OR   *:*^.5[	E	Cannot parse '\\u00\\" OR   *:*^.5[': Non-hex character in Unicode escape sequence: \\
 ",~wi-fi]]/x.*/	E	Cannot parse '",~wi-fi]]/x.*/': Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\",~wi-fi]]/x.*/" (in lexical state 2)
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
-2.5\\:Bar\\"Bar	Q	(title:2.5 body:2.5) (title:bar body:bar) (title:bar body:bar)	Boolean(Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) Boolean(TermQuery(title:bar) TermQuery(body:bar)) Boolean(TermQuery(title:bar) TermQuery(body:bar)))
+2.5\\:Bar\\"Bar	Q	+(title:2.5 body:2.5) +(title:bar body:bar) +(title:bar body:bar)	Boolean(+Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) +Boolean(TermQuery(title:bar) TermQuery(body:bar)) +Boolean(TermQuery(title:bar) TermQuery(body:bar)))
 bawi-fi|| TO \t	Q	+(title:bawi body:bawi) +(title:fi body:fi) +(title:to body:to)	Boolean(+Boolean(TermQuery(title:bawi) TermQuery(body:bawi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)) +Boolean(TermQuery(title:to) TermQuery(body:to)))
 日本x\\title^\\~0.5	E	Cannot parse '日本x\\title^\\~0.5': Lexical error at line 1, column 11.  Encountered: '92' (92),
 \\u^2	E	Cannot parse '\\u^2': Truncated Unicode escape sequence.
@@ -1452,7 +1452,7 @@ foo\\u0041wi-fi日本*	Q	title:fooawi-fi日本* body:fooawi-fi日本*	Boolean(Pr
 é	Q	title:é body:é	Boolean(TermQuery(title:é) TermQuery(body:é))
  AND 1\\:-1~2AND	E	Cannot parse ' AND 1\\:-1~2AND': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ]]2.5	E	Cannot parse ']]2.5': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
-日本 	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本 	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 /x.*/,bx\\*:*~0.5é]	E	Cannot parse '/x.*/,bx\\*:*~0.5é]': Lexical error at line 1, column 19.  Encountered: <EOF> (in lexical state 2)
 ~0.5~2	E	Cannot parse '~0.5~2': Encountered " <FUZZY_SLOP> "~0.5 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \tfoo[	E	Cannot parse '\tfoo[': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
@@ -1468,7 +1468,7 @@ b"*:*	E	Cannot parse 'b"*:*': Lexical error at line 1, column 6.  Encountered: <
 \\:wi-fi-1-1wi-fi \t\\"	Q	+(title:wi body:wi) +(title:fi body:fi) +(title:1 body:1) +(title:1wi body:1wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)) +Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:1wi) TermQuery(body:1wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 a*	Q	title:a* body:a*	Boolean(PrefixQuery(title:a*) PrefixQuery(body:a*))
 ||  \\u00. AND ~	E	Cannot parse '||  \\u00. AND ~': Encountered " <OR> "|| "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-bfootitle,Bar	Q	(title:bfootitle body:bfootitle) (title:bar body:bar)	Boolean(Boolean(TermQuery(title:bfootitle) TermQuery(body:bfootitle)) Boolean(TermQuery(title:bar) TermQuery(body:bar)))
+bfootitle,Bar	Q	+(title:bfootitle body:bfootitle) +(title:bar body:bar)	Boolean(+Boolean(TermQuery(title:bfootitle) TermQuery(body:bfootitle)) +Boolean(TermQuery(title:bar) TermQuery(body:bar)))
 the	Q	title:the body:the	Boolean(TermQuery(title:the) TermQuery(body:the))
 &&日本^.5	E	Cannot parse '&&日本^.5': Lexical error at line 1, column 6.  Encountered: '46' (46),
  ""	Q		Boolean()
@@ -1525,7 +1525,7 @@ a*[   ~~2\\a	E	Cannot parse 'a*[   ~~2\\a': Encountered "<EOF>" at line 1, colum
 thetitle,||*AND\t\\u	E	Cannot parse 'thetitle,||*AND\t\\u': Truncated Unicode escape sequence.
 fooBar||	Q	title:foobar body:foobar	Boolean(TermQuery(title:foobar) TermQuery(body:foobar))
 "~2x\\é}title.?	E	Cannot parse '"~2x\\é}title.?': Lexical error at line 1, column 15.  Encountered: <EOF> after prefix "\\"~2x\\\\\\u00e9}title.?" (in lexical state 2)
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 /x.*/)the	E	Cannot parse '/x.*/)the': Encountered " ")" ") "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
   \\b~2a	Q	title:b~2 body:b~2	Boolean(FuzzyQuery(title:b~2) FuzzyQuery(body:b~2))
 /x.*/*-1x\\TO 	E	Cannot parse '/x.*/*-1x\\TO ': '*' or '?' not allowed as first character in WildcardQuery
@@ -1559,7 +1559,7 @@ x\\AND	Q	title:xand body:xand	Boolean(TermQuery(title:xand) TermQuery(body:xand)
 +é: OR &&	E	Cannot parse '+é: OR &&': Encountered " <OR> "OR "" at line 1, column 4.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 AND1&&^	E	Cannot parse 'AND1&&^': Encountered "<EOF>" at line 1, column 7.\nWas expecting:\n    <NUMBER> ...\n    
 +\\"a*}	E	Cannot parse '+\\"a*}': Lexical error at line 1, column 7.  Encountered: <EOF> (in lexical state 2)
-||\\"the/x.*//x.*/wi-fi\\"	Q	+(title:the body:the) +(title:/x.*/ body:/x.*/) +(title:/x.*/ body:/x.*/) +((title:wi body:wi) (title:fi body:fi))	Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))))
+||\\"the/x.*//x.*/wi-fi\\"	Q	+(title:the body:the) +(title:/x.*/ body:/x.*/) +(title:/x.*/ body:/x.*/) +(+(title:wi body:wi) +(title:fi body:fi))	Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))))
 "\\"a*Bar ]\\	E	Cannot parse '"\\"a*Bar ]\\': Lexical error at line 1, column 12.  Encountered: <EOF> after prefix "\\"\\\\\\"a*Bar ]\\\\" (in lexical state 2)
 ^.5&&a*TO !/	E	Cannot parse '^.5&&a*TO !/': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~0.5Bar	E	Cannot parse '~0.5Bar': Encountered " <FUZZY_SLOP> "~0.5Bar "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1594,7 +1594,7 @@ title.	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:ti
 -12.5 OR 	E	Cannot parse '-12.5 OR ': Encountered "<EOF>" at line 1, column 9.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 /é1	E	Cannot parse '/é1': Lexical error at line 1, column 4.  Encountered: <EOF> after prefix "/\\u00e91" (in lexical state 2)
 wi-fi\\u{*:*	E	Cannot parse 'wi-fi\\u{*:*': Truncated Unicode escape sequence.
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 ~!wi-fi NOT  	E	Cannot parse '~!wi-fi NOT  ': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 &&b||	Q	title:b body:b	Boolean(TermQuery(title:b) TermQuery(body:b))
 AND/日本?a*	E	Cannot parse 'AND/日本?a*': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1619,7 +1619,7 @@ x\\	E	Cannot parse 'x\\': Lexical error at line 1, column 3.  Encountered: <EOF>
 AND [^.5-	E	Cannot parse 'AND [^.5-': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^	E	Cannot parse '^': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 (\\u0041foo日本^2wi-fi  the	E	Cannot parse '(\\u0041foo日本^2wi-fi  the': Encountered "<EOF>" at line 1, column 24.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
  NOT \\u*?:	E	Cannot parse ' NOT \\u*?:': Non-hex character in Unicode escape sequence: *
 ^.5	E	Cannot parse '^.5': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 foo[\\:the}/x.*/	E	Cannot parse 'foo[\\:the}/x.*/': Encountered " "}" "} "" at line 1, column 9.\nWas expecting:\n    "TO" ...\n    
@@ -1674,7 +1674,7 @@ the^  )!	E	Cannot parse 'the^  )!': Lexical error at line 1, column 5.  Encounte
 [fooa*:1\t}}	E	Cannot parse '[fooa*:1\t}}': Encountered " "}" "} "" at line 1, column 9.\nWas expecting:\n    "TO" ...\n    
 })\\u	E	Cannot parse '})\\u': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
  OR 日本 TO \\*:*\\u00~0.5	E	Cannot parse ' OR 日本 TO \\*:*\\u00~0.5': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title-\\"/x.*/||&&日本	Q	+(title:title body:title) +(title:/x.*/ body:/x.*/) +((title:日 body:日) (title:本 body:本))	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+title-\\"/x.*/||&&日本	Q	+(title:title body:title) +(title:/x.*/ body:/x.*/) +(+(title:日 body:日) +(title:本 body:本))	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 \\"+/wi-fi TO ~0.5	E	Cannot parse '\\"+/wi-fi TO ~0.5': Lexical error at line 1, column 18.  Encountered: <EOF> after prefix "/wi-fi TO ~0.5" (in lexical state 2)
 / ^2b~0.5}	E	Cannot parse '/ ^2b~0.5}': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "/ ^2b~0.5}" (in lexical state 2)
 ~2\\ua TO 	E	Cannot parse '~2\\ua TO ': Encountered " <FUZZY_SLOP> "~2\\\\ua "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1702,7 +1702,7 @@ the.~0.5fooé OR 	E	Cannot parse 'the.~0.5fooé OR ': Encountered "<EOF>" at lin
 Bar~0.5	Q	title:bar~1 body:bar~1	Boolean(FuzzyQuery(title:bar~1) FuzzyQuery(body:bar~1))
 a*/x.*/||Bar||(wi-fi OR 	E	Cannot parse 'a*/x.*/||Bar||(wi-fi OR ': Encountered "<EOF>" at line 1, column 24.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 \\u\\u00é)2.5/x.*/foo(	E	Cannot parse '\\u\\u00é)2.5/x.*/foo(': Non-hex character in Unicode escape sequence: \\
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 /x.*/)/:2.5{)	E	Cannot parse '/x.*/)/:2.5{)': Encountered " ")" ") "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 1{.\\:~0.5	E	Cannot parse '1{.\\:~0.5': Encountered "<EOF>" at line 1, column 9.\nWas expecting:\n    "TO" ...\n    
 ]wi-fi\\u2.5x\\ OR -1	E	Cannot parse ']wi-fi\\u2.5x\\ OR -1': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
@@ -1741,7 +1741,7 @@ title日本a*"+Bar(\\	E	Cannot parse 'title日本a*"+Bar(\\': Lexical error at l
 Bar+\\	E	Cannot parse 'Bar+\\': Lexical error at line 1, column 6.  Encountered: <EOF> (in lexical state 2)
 ^:!bTO"	E	Cannot parse '^:!bTO"': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 {	E	Cannot parse '{': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
-AND,-1	Q	(title:and body:and) (title:1 body:1)	Boolean(Boolean(TermQuery(title:and) TermQuery(body:and)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+AND,-1	Q	+(title:and body:and) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:and) TermQuery(body:and)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
  AND  OR -1wi-fi~	E	Cannot parse ' AND  OR -1wi-fi~': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u00\\:^*:*TO OR 	E	Cannot parse '\\u00\\:^*:*TO OR ': Lexical error at line 1, column 8.  Encountered: '42' (42),
 *\t AND \t|| AND 2.5	E	Cannot parse '*\t AND \t|| AND 2.5': '*' or '?' not allowed as first character in WildcardQuery
@@ -1755,11 +1755,11 @@ the~	Q	title:the~2 body:the~2	Boolean(FuzzyQuery(title:the~2) FuzzyQuery(body:th
 日本title /x\\-.	E	Cannot parse '日本title /x\\-.': Lexical error at line 1, column 14.  Encountered: <EOF> after prefix "/x\\\\-." (in lexical state 2)
 }\t	E	Cannot parse '}\t': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
 !1	Q	-(title:1 body:1)	Boolean(-Boolean(TermQuery(title:1) TermQuery(body:1)))
-a||-1	Q	(title:a body:a) (title:1 body:1)	Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+a||-1	Q	+(title:a body:a) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 \\u00{	E	Cannot parse '\\u00{': Truncated Unicode escape sequence.
 -foo OR  	E	Cannot parse '-foo OR  ': Encountered "<EOF>" at line 1, column 9.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 Bar	Q	title:bar body:bar	Boolean(TermQuery(title:bar) TermQuery(body:bar))
-日本TO OR x\\the	Q	((title:日 body:日) (title:本 body:本) (title:to body:to)) (title:xthe body:xthe)	Boolean(Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:to) TermQuery(body:to))) Boolean(TermQuery(title:xthe) TermQuery(body:xthe)))
+日本TO OR x\\the	Q	(+(title:日 body:日) +(title:本 body:本) +(title:to body:to)) (title:xthe body:xthe)	Boolean(Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:to) TermQuery(body:to))) Boolean(TermQuery(title:xthe) TermQuery(body:xthe)))
   ~x\\a\t	E	Cannot parse '  ~x\\a\t': Encountered " <FUZZY_SLOP> "~x\\\\a "" at line 1, column 2.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 /title\\u0041~2 AND\\u日本	E	Cannot parse '/title\\u0041~2 AND\\u日本': Lexical error at line 1, column 23.  Encountered: <EOF> after prefix "/title\\\\u0041~2 AND\\\\u\\u65e5\\u672c" (in lexical state 2)
 ?a+	E	Cannot parse '?a+': '*' or '?' not allowed as first character in WildcardQuery
@@ -1790,7 +1790,7 @@ bthe:b?	Q	bthe:b?	WildcardQuery(bthe:b?)
 /foo	E	Cannot parse '/foo': Lexical error at line 1, column 5.  Encountered: <EOF> after prefix "/foo" (in lexical state 2)
 1- \\: *:*TO	E	Cannot parse '1- \\: *:*TO': '*' or '?' not allowed as first character in WildcardQuery
  OR 	E	Cannot parse ' OR ': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-a-1	Q	(title:a body:a) (title:1 body:1)	Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+a-1	Q	+(title:a body:a) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 a\ta||	Q	+(title:a body:a) +(title:a body:a)	Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:a) TermQuery(body:a)))
 {{	E	Cannot parse '{{': Encountered "<EOF>" at line 1, column 2.\nWas expecting:\n    "TO" ...\n    
  TO ~0.5! b\\u	E	Cannot parse ' TO ~0.5! b\\u': Truncated Unicode escape sequence.
@@ -1832,16 +1832,16 @@ b~2Bar	Q	title:b~2 body:b~2	Boolean(FuzzyQuery(title:b~2) FuzzyQuery(body:b~2))
 *:*1	E	Cannot parse '*:*1': '*' or '?' not allowed as first character in WildcardQuery
 +^	E	Cannot parse '+^': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 ?TO+::	E	Cannot parse '?TO+::': '*' or '?' not allowed as first character in WildcardQuery
- wi-fi  the2.5x\\a*	Q	+((title:wi body:wi) (title:fi body:fi)) +(title:the2.5xa* body:the2.5xa*)	Boolean(+Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(PrefixQuery(title:the2.5xa*) PrefixQuery(body:the2.5xa*)))
+ wi-fi  the2.5x\\a*	Q	+(+(title:wi body:wi) +(title:fi body:fi)) +(title:the2.5xa* body:the2.5xa*)	Boolean(+Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(PrefixQuery(title:the2.5xa*) PrefixQuery(body:the2.5xa*)))
 :^.5-	E	Cannot parse ':^.5-': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041: ||.\\u-	E	Cannot parse '\\u0041: ||.\\u-': Non-hex character in Unicode escape sequence: -
 ^.5-\\"é!~	E	Cannot parse '^.5-\\"é!~': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u/x.*/	E	Cannot parse '\\u/x.*/': Truncated Unicode escape sequence.
 !~/x.*/x\\Bar\\"?b2.5	E	Cannot parse '!~/x.*/x\\Bar\\"?b2.5': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 {!title\\u0041\\:-1	E	Cannot parse '{!title\\u0041\\:-1': Encountered "<EOF>" at line 1, column 17.\nWas expecting:\n    "TO" ...\n    
-x\\ NOT 	Q	(title:x body:x) (title:not body:not)	Boolean(Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:not) TermQuery(body:not)))
+x\\ NOT 	Q	+(title:x body:x) +(title:not body:not)	Boolean(+Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:not) TermQuery(body:not)))
 &&title,?b2.5	Q	title:&&title,?b2.5 body:&&title,?b2.5	Boolean(WildcardQuery(title:&&title,?b2.5) WildcardQuery(body:&&title,?b2.5))
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
  AND 	E	Cannot parse ' AND ': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ,	Q		Boolean()
 ^2\t} TO	E	Cannot parse '^2\t} TO': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -1871,7 +1871,7 @@ TO   a*,foo	Q	+(title:to body:to) +(title:a*,foo body:a*,foo)	Boolean(+Boolean(T
 !]éé	E	Cannot parse '!]éé': Lexical error at line 1, column 2.  Encountered: '93' (93), (in lexical state 2)
 title	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:title))
 1\\u0041~)\\u	E	Cannot parse '1\\u0041~)\\u': Encountered " ")" ") "" at line 1, column 8.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 \\u1\\u0041,~x\\\\"\t	E	Cannot parse '\\u1\\u0041,~x\\\\"\t': Lexical error at line 1, column 17.  Encountered: <EOF> after prefix "\\"\\t" (in lexical state 2)
  TO \\u  /é~0.5~0.5\t	E	Cannot parse ' TO \\u  /é~0.5~0.5\t': Lexical error at line 1, column 20.  Encountered: <EOF> after prefix "/\\u00e9~0.5~0.5\\t" (in lexical state 2)
 \\u AND ,)	E	Cannot parse '\\u AND ,)': Truncated Unicode escape sequence.
@@ -1901,7 +1901,7 @@ b/é	E	Cannot parse 'b/é': Lexical error at line 1, column 4.  Encountered: <EO
 foo2.5~2)/x.*/\\"	E	Cannot parse 'foo2.5~2)/x.*/\\"': Encountered " ")" ") "" at line 1, column 8.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 " AND /x.*/^\\u00	E	Cannot parse '" AND /x.*/^\\u00': Lexical error at line 1, column 17.  Encountered: <EOF> after prefix "\\" AND /x.*/^\\\\u00" (in lexical state 2)
  é	Q	title:é body:é	Boolean(TermQuery(title:é) TermQuery(body:é))
-- TO athe|| AND the日本	Q	+(title:to body:to) +(title:athe body:athe) +((title:the body:the) (title:日 body:日) (title:本 body:本))	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:athe) TermQuery(body:athe)) +Boolean(Boolean(TermQuery(title:the) TermQuery(body:the)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+- TO athe|| AND the日本	Q	+(title:to body:to) +(title:athe body:athe) +(+(title:the body:the) +(title:日 body:日) +(title:本 body:本))	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:athe) TermQuery(body:athe)) +Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 \\u00\t~0.5*:*^2	E	Cannot parse '\\u00\t~0.5*:*^2': Truncated Unicode escape sequence.
      AND /x.*/  *{wi-fi	E	Cannot parse '     AND /x.*/  *{wi-fi': Encountered " <AND> "AND "" at line 1, column 5.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 *	E	Cannot parse '*': '*' or '?' not allowed as first character in WildcardQuery
@@ -1917,7 +1917,7 @@ title\\:	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:
  NOT +\\:foo~0.5!	E	Cannot parse ' NOT +\\:foo~0.5!': Encountered " "+" "+ "" at line 1, column 5.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 theéfoo:-1	E	Cannot parse 'theéfoo:-1': Encountered " "-" "- "" at line 1, column 8.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 {x\\\\u AND .}	E	Cannot parse '{x\\\\u AND .}': Encountered " <RANGE_GOOP> "AND "" at line 1, column 6.\nWas expecting:\n    "TO" ...\n    
-\\: \\"^2title日本TO||	Q	+((title:title body:title) (title:日 body:日) (title:本 body:本) (title:to body:to))	Boolean(+Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:to) TermQuery(body:to))))
+\\: \\"^2title日本TO||	Q	+(+(title:title body:title) +(title:日 body:日) +(title:本 body:本) +(title:to body:to))	Boolean(+Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:to) TermQuery(body:to))))
  TO (?^.5-\\u00 OR foo	E	Cannot parse ' TO (?^.5-\\u00 OR foo': Lexical error at line 1, column 8.  Encountered: '46' (46),
 *:*"~:||(	E	Cannot parse '*:*"~:||(': Lexical error at line 1, column 10.  Encountered: <EOF> after prefix "\\"~:||(" (in lexical state 2)
 +	E	Cannot parse '+': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -1942,7 +1942,7 @@ AND1a	Q	title:and1a body:and1a	Boolean(TermQuery(title:and1a) TermQuery(body:and
 \\u~2\\:/	E	Cannot parse '\\u~2\\:/': Lexical error at line 1, column 8.  Encountered: <EOF> (in lexical state 2)
 ^ TO !/x.*/	E	Cannot parse '^ TO !/x.*/': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 .wi-fié?	Q	title:.wi-fié? body:.wi-fié?	Boolean(WildcardQuery(title:.wi-fié?) WildcardQuery(body:.wi-fié?))
-wi-fi,\\u0041	Q	(title:wi body:wi) (title:fi body:fi) (title:a body:a)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)) Boolean(TermQuery(title:a) TermQuery(body:a)))
+wi-fi,\\u0041	Q	+(title:wi body:wi) +(title:fi body:fi) +(title:a body:a)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)) +Boolean(TermQuery(title:a) TermQuery(body:a)))
 !foo-1)\\: a*?	E	Cannot parse '!foo-1)\\: a*?': Encountered " ")" ") "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
   \\u00~0.5\\u:	E	Cannot parse '  \\u00~0.5\\u:': Truncated Unicode escape sequence.
 2.5日本* TO \\u  	E	Cannot parse '2.5日本* TO \\u  ': Truncated Unicode escape sequence.
@@ -1976,7 +1976,7 @@ the\\u00^!a*	E	Cannot parse 'the\\u00^!a*': Lexical error at line 1, column 9.  
 a?2.5\\u((éa	E	Cannot parse 'a?2.5\\u((éa': Truncated Unicode escape sequence.
 .b?	Q	title:.b? body:.b?	Boolean(WildcardQuery(title:.b?) WildcardQuery(body:.b?))
 &&\\	E	Cannot parse '&&\\': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-&&日本Bar	Q	(title:日 body:日) (title:本 body:本) (title:bar body:bar)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:bar) TermQuery(body:bar)))
+&&日本Bar	Q	+(title:日 body:日) +(title:本 body:本) +(title:bar body:bar)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:bar) TermQuery(body:bar)))
 /x.*/]!	E	Cannot parse '/x.*/]!': Lexical error at line 1, column 6.  Encountered: '93' (93), (in lexical state 2)
 \\ AND title~0.5	Q	+(title:and body:and) +(title:title~2 body:title~2)	Boolean(+Boolean(TermQuery(title:and) TermQuery(body:and)) +Boolean(FuzzyQuery(title:title~2) FuzzyQuery(body:title~2)))
 ~0.5-:)^2 OR ^.5	E	Cannot parse '~0.5-:)^2 OR ^.5': Encountered " <FUZZY_SLOP> "~0.5- "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2036,11 +2036,11 @@ TO{~-  ^^	E	Cannot parse 'TO{~-  ^^': Encountered " <RANGE_GOOP> "^^ "" at line 
 ||?  {	E	Cannot parse '||?  {': Encountered "<EOF>" at line 1, column 6.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 the	Q	title:the body:the	Boolean(TermQuery(title:the) TermQuery(body:the))
 日本):é  title	E	Cannot parse '日本):é  title': Encountered " ")" ") "" at line 1, column 2.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-ANDwi-fi	Q	(title:andwi body:andwi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:andwi) TermQuery(body:andwi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+ANDwi-fi	Q	+(title:andwi body:andwi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:andwi) TermQuery(body:andwi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 \\u00~?b\\:~	E	Cannot parse '\\u00~?b\\:~': Truncated Unicode escape sequence.
 wi-fi"!\t!?	E	Cannot parse 'wi-fi"!\t!?': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "\\"!\\t!?" (in lexical state 2)
 , NOT \\u00^&&/ NOT 	E	Cannot parse ', NOT \\u00^&&/ NOT ': Lexical error at line 1, column 12.  Encountered: '38' (38),
-  1\\:&&2.5-the	Q	(title:1 body:1) (title:2.5 body:2.5) (title:the body:the)	Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) Boolean(TermQuery(title:the) TermQuery(body:the)))
+  1\\:&&2.5-the	Q	+(title:1 body:1) +(title:2.5 body:2.5) +(title:the body:the)	Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) +Boolean(TermQuery(title:the) TermQuery(body:the)))
 ^2éé	E	Cannot parse '^2éé': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 (*/x.*/{	E	Cannot parse '(*/x.*/{': '*' or '?' not allowed as first character in WildcardQuery
  OR &&	E	Cannot parse ' OR &&': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2057,7 +2057,7 @@ TOb	Q	title:tob body:tob	Boolean(TermQuery(title:tob) TermQuery(body:tob))
 the2.5	Q	title:the2.5 body:the2.5	Boolean(TermQuery(title:the2.5) TermQuery(body:the2.5))
 *+}a*	E	Cannot parse '*+}a*': Lexical error at line 1, column 3.  Encountered: '125' (125), (in lexical state 2)
  TO 	Q	title:to body:to	Boolean(TermQuery(title:to) TermQuery(body:to))
-titleBar+AND	Q	(title:titlebar body:titlebar) (title:and body:and)	Boolean(Boolean(TermQuery(title:titlebar) TermQuery(body:titlebar)) Boolean(TermQuery(title:and) TermQuery(body:and)))
+titleBar+AND	Q	+(title:titlebar body:titlebar) +(title:and body:and)	Boolean(+Boolean(TermQuery(title:titlebar) TermQuery(body:titlebar)) +Boolean(TermQuery(title:and) TermQuery(body:and)))
 [x\\&&|| AND 11 AND 	E	Cannot parse '[x\\&&|| AND 11 AND ': Encountered " <RANGE_GOOP> "AND "" at line 1, column 8.\nWas expecting:\n    "TO" ...\n    
 \\u0041	Q	title:a body:a	Boolean(TermQuery(title:a) TermQuery(body:a))
 Bar-a*.	Q	title:bar-a*. body:bar-a*.	Boolean(WildcardQuery(title:bar-a*.) WildcardQuery(body:bar-a*.))
@@ -2069,7 +2069,7 @@ ANDtitle	Q	title:andtitle body:andtitle	Boolean(TermQuery(title:andtitle) TermQu
 ~/\\"a*}\\u0041-)	E	Cannot parse '~/\\"a*}\\u0041-)': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 [~2	E	Cannot parse '[~2': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
 2.5\\u00 NOT 2.5\\] OR ,	E	Cannot parse '2.5\\u00 NOT 2.5\\] OR ,': Truncated Unicode escape sequence.
-! TO ,\\u0041&&a	Q	+(title:to body:to) +(title:a body:a) +(title:a body:a)	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:a) TermQuery(body:a)))
+! TO ,\\u0041&&a	Q	+(+(title:to body:to) +(title:a body:a) +(title:a body:a))	Boolean(+Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:a) TermQuery(body:a))))
  b."^~0.5	E	Cannot parse ' b."^~0.5': Lexical error at line 1, column 10.  Encountered: <EOF> after prefix "\\"^~0.5" (in lexical state 2)
 {x\\ AND 日本\\u00	E	Cannot parse '{x\\ AND 日本\\u00': Encountered " <RANGE_GOOP> "AND "" at line 1, column 4.\nWas expecting:\n    "TO" ...\n    
 ^]"-\\" OR a*	E	Cannot parse '^]"-\\" OR a*': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2085,7 +2085,7 @@ AND	E	Cannot parse 'AND': Encountered " <AND> "AND "" at line 1, column 0.\nWas 
 [ TO ,.}/^.5	E	Cannot parse '[ TO ,.}/^.5': Encountered " <RANGE_GOOP> ",. "" at line 1, column 5.\nWas expecting:\n    "TO" ...\n    
 ~0.5 OR x\\~*:*	E	Cannot parse '~0.5 OR x\\~*:*': Encountered " <FUZZY_SLOP> "~0.5 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^.5	E	Cannot parse '^.5': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-fooé||2.5.	Q	(title:fooé body:fooé) (title:2.5 body:2.5)	Boolean(Boolean(TermQuery(title:fooé) TermQuery(body:fooé)) Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
+fooé||2.5.	Q	+(title:fooé body:fooé) +(title:2.5 body:2.5)	Boolean(+Boolean(TermQuery(title:fooé) TermQuery(body:fooé)) +Boolean(TermQuery(title:2.5) TermQuery(body:2.5)))
 titlewi-fi(( NOT ^2	E	Cannot parse 'titlewi-fi(( NOT ^2': Encountered " "^" "^ "" at line 1, column 17.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
  OR  ~2,   NOT \\u00	E	Cannot parse ' OR  ~2,   NOT \\u00': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 +	E	Cannot parse '+': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -2141,7 +2141,7 @@ the&&"(^\t	E	Cannot parse 'the&&"(^\t': Lexical error at line 1, column 10.  Enc
  AND 1*	E	Cannot parse ' AND 1*': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041"\\ AND \\"	E	Cannot parse '\\u0041"\\ AND \\"': Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\"\\\\ AND \\\\\\"" (in lexical state 2)
 -1?bwi-fiwi-fiAND	Q	-(title:1?bwi-fiwi-fiand body:1?bwi-fiwi-fiand)	Boolean(-Boolean(WildcardQuery(title:1?bwi-fiwi-fiand) WildcardQuery(body:1?bwi-fiwi-fiand)))
- 日本foo	Q	(title:日 body:日) (title:本 body:本) (title:foo body:foo)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:foo) TermQuery(body:foo)))
+ 日本foo	Q	+(title:日 body:日) +(title:本 body:本) +(title:foo body:foo)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:foo) TermQuery(body:foo)))
 ) 	E	Cannot parse ') ': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u0041"	E	Cannot parse '\\u0041"': Lexical error at line 1, column 8.  Encountered: <EOF> (in lexical state 2)
 Bar,  	Q	title:bar body:bar	Boolean(TermQuery(title:bar) TermQuery(body:bar))
@@ -2160,12 +2160,12 @@ the{||\\u00\\:	E	Cannot parse 'the{||\\u00\\:': Encountered "<EOF>" at line 1, c
 é}titleTO\\"\\"/x.*/*:*	E	Cannot parse 'é}titleTO\\"\\"/x.*/*:*': Lexical error at line 1, column 2.  Encountered: '125' (125), (in lexical state 2)
  NOT 	E	Cannot parse ' NOT ': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 the{	E	Cannot parse 'the{': Encountered "<EOF>" at line 1, column 4.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
-2.5日本1||	Q	(title:2.5 body:2.5) (title:日 body:日) (title:本 body:本) (title:1 body:1)	Boolean(Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+2.5日本1||	Q	+(title:2.5 body:2.5) +(title:日 body:日) +(title:本 body:本) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 ? TO ANDAND2.5 	E	Cannot parse '? TO ANDAND2.5 ': '*' or '?' not allowed as first character in WildcardQuery
 foo\\u00\\u/x.*/+,-	E	Cannot parse 'foo\\u00\\u/x.*/+,-': Non-hex character in Unicode escape sequence: \\
  AND 	E	Cannot parse ' AND ': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }AND:(\\:\t	E	Cannot parse '}AND:(\\:\t': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
-1日本+Barb	Q	(title:1 body:1) (title:日 body:日) (title:本 body:本) (title:barb body:barb)	Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:barb) TermQuery(body:barb)))
+1日本+Barb	Q	+(title:1 body:1) +(title:日 body:日) +(title:本 body:本) +(title:barb body:barb)	Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:barb) TermQuery(body:barb)))
 + OR titletitle~2 AND {||	E	Cannot parse '+ OR titletitle~2 AND {||': Encountered "<EOF>" at line 1, column 25.\nWas expecting:\n    "TO" ...\n    
 \\~title-)	E	Cannot parse '\\~title-)': Encountered " ")" ") "" at line 1, column 8.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 x\\\\u00||1?b:	E	Cannot parse 'x\\\\u00||1?b:': Encountered " ":" ": "" at line 1, column 11.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
@@ -2200,10 +2200,10 @@ Baré	Q	title:baré body:baré	Boolean(TermQuery(title:baré) TermQuery(body:bar
 \t^.||: NOT 	E	Cannot parse '\t^.||: NOT ': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ":^.5	E	Cannot parse '":^.5': Lexical error at line 1, column 6.  Encountered: <EOF> after prefix "\\":^.5" (in lexical state 2)
 ?b(\\"wi-fi\\u0041	E	Cannot parse '?b(\\"wi-fi\\u0041': '*' or '?' not allowed as first character in WildcardQuery
-日本1	Q	(title:日 body:日) (title:本 body:本) (title:1 body:1)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:1) TermQuery(body:1)))
+日本1	Q	+(title:日 body:日) +(title:本 body:本) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 )	E	Cannot parse ')': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~0.51*)\\u0041	E	Cannot parse '~0.51*)\\u0041': Encountered " <FUZZY_SLOP> "~0.51 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-+wi-fi	Q	+((title:wi body:wi) (title:fi body:fi))	Boolean(+Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))))
++wi-fi	Q	+(+(title:wi body:wi) +(title:fi body:fi))	Boolean(+Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))))
 \tfoo.{	E	Cannot parse '\tfoo.{': Encountered "<EOF>" at line 1, column 6.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 \\*	Q		Boolean()
 \\\\:日本b,\\u0041 AND 	E	Cannot parse '\\\\:日本b,\\u0041 AND ': Encountered "<EOF>" at line 1, column 18.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -2225,7 +2225,7 @@ Bar?b	Q	title:bar?b body:bar?b	Boolean(WildcardQuery(title:bar?b) WildcardQuery(
 日本^2-1a**x\\	E	Cannot parse '日本^2-1a**x\\': Lexical error at line 1, column 12.  Encountered: <EOF> (in lexical state 2)
 /x.*/ AND 	E	Cannot parse '/x.*/ AND ': Encountered "<EOF>" at line 1, column 10.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 +~2\\} NOT &&]	E	Cannot parse '+~2\\} NOT &&]': Encountered " <FUZZY_SLOP> "~2\\\\} "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
-the+é	Q	(title:the body:the) (title:é body:é)	Boolean(Boolean(TermQuery(title:the) TermQuery(body:the)) Boolean(TermQuery(title:é) TermQuery(body:é)))
+the+é	Q	+(title:the body:the) +(title:é body:é)	Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:é) TermQuery(body:é)))
 &&	E	Cannot parse '&&': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 éb	Q	title:éb body:éb	Boolean(TermQuery(title:éb) TermQuery(body:éb))
  AND 	E	Cannot parse ' AND ': Encountered " <AND> "AND "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2349,7 +2349,7 @@ title?b1^2TO+	Q	+(title:title?b1 body:title?b1)^2.0 +(title:to body:to)	Boolean(
 }日本 ].:	E	Cannot parse '}日本 ].:': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
 ^\\"b?TO	E	Cannot parse '^\\"b?TO': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ]	E	Cannot parse ']': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 &&	E	Cannot parse '&&': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ]x\\^é OR wi-fi	E	Cannot parse ']x\\^é OR wi-fi': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 ,	Q		Boolean()
@@ -2385,14 +2385,14 @@ Bartitleb \\u0041}	E	Cannot parse 'Bartitleb \\u0041}': Lexical error at line 1,
 .\t[!é\t(	E	Cannot parse '.\t[!é\t(': Encountered "<EOF>" at line 1, column 7.\nWas expecting:\n    "TO" ...\n    
 !	E	Cannot parse '!': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
 :&&\\u00b日本a	E	Cannot parse ':&&\\u00b日本a': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-wi-fititle\\u0041	Q	(title:wi body:wi) (title:fititlea body:fititlea)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fititlea) TermQuery(body:fititlea)))
+wi-fititle\\u0041	Q	+(title:wi body:wi) +(title:fititlea body:fititlea)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fititlea) TermQuery(body:fititlea)))
 - OR ?^.5b?	E	Cannot parse '- OR ?^.5b?': Lexical error at line 1, column 8.  Encountered: '46' (46),
   *b\\:é\\"*	E	Cannot parse '  *b\\:é\\"*': '*' or '?' not allowed as first character in WildcardQuery
 { OR \\u00)	E	Cannot parse '{ OR \\u00)': Encountered " <RANGE_GOOP> "\\\\u00) "" at line 1, column 5.\nWas expecting:\n    "TO" ...\n    
 1\\u00 	E	Cannot parse '1\\u00 ': Truncated Unicode escape sequence.
 b\\u\ttitle OR AND	E	Cannot parse 'b\\u\ttitle OR AND': Truncated Unicode escape sequence.
 Bar^.5*:*a TO ^.5-&&	E	Cannot parse 'Bar^.5*:*a TO ^.5-&&': Lexical error at line 1, column 5.  Encountered: '46' (46),
-, OR wi-fi/x.*/1日本/x.*/	Q	((title:wi body:wi) (title:fi body:fi)) +(title:/x.*/ body:/x.*/) +((title:1 body:1) (title:日 body:日) (title:本 body:本)) +(title:/x.*/ body:/x.*/)	Boolean(Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(Boolean(TermQuery(title:1) TermQuery(body:1)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
+, OR wi-fi/x.*/1日本/x.*/	Q	(+(title:wi body:wi) +(title:fi body:fi)) +(title:/x.*/ body:/x.*/) +(+(title:1 body:1) +(title:日 body:日) +(title:本 body:本)) +(title:/x.*/ body:/x.*/)	Boolean(Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(+Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
 ++||)	E	Cannot parse '++||)': Encountered " "+" "+ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
  TO ^	E	Cannot parse ' TO ^': Encountered "<EOF>" at line 1, column 5.\nWas expecting:\n    <NUMBER> ...\n    
 \\u00TO)-12.5	E	Cannot parse '\\u00TO)-12.5': Non-hex character in Unicode escape sequence: T
@@ -2435,7 +2435,7 @@ AND NOT é,	E	Cannot parse 'AND NOT é,': Encountered " <AND> "AND "" at line 1,
  foo[,	E	Cannot parse ' foo[,': Encountered "<EOF>" at line 1, column 6.\nWas expecting:\n    "TO" ...\n    
 ]aAND	E	Cannot parse ']aAND': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 ||^2^2!\\x\\	E	Cannot parse '||^2^2!\\x\\': Encountered " <OR> "|| "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-日本\\"日本	Q	(title:日 body:日) (title:本 body:本) (title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本\\"日本	Q	+(title:日 body:日) +(title:本 body:本) +(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 ,	Q		Boolean()
 {+\\u0041a^2	E	Cannot parse '{+\\u0041a^2': Encountered "<EOF>" at line 1, column 11.\nWas expecting:\n    "TO" ...\n    
 -\tfoo AND -:TO1	E	Cannot parse '-\tfoo AND -:TO1': Encountered " ":" ": "" at line 1, column 11.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -2454,7 +2454,7 @@ TO~2/{./	Q	+(title:to~2 body:to~2) +(title:/{./ body:/{./)	Boolean(+Boolean(Fuzz
 1^.5 	E	Cannot parse '1^.5 ': Lexical error at line 1, column 3.  Encountered: '46' (46),
 ||+\\"b OR (	E	Cannot parse '||+\\"b OR (': Encountered "<EOF>" at line 1, column 11.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^~AND	E	Cannot parse '^~AND': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-x\\++title||||	Q	(title:x body:x) (title:title body:title)	Boolean(Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:title) TermQuery(body:title)))
+x\\++title||||	Q	+(title:x body:x) +(title:title body:title)	Boolean(+Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:title) TermQuery(body:title)))
 /x.*//x.*/~ / NOT 	E	Cannot parse '/x.*//x.*/~ / NOT ': Lexical error at line 1, column 19.  Encountered: <EOF> after prefix "/ NOT " (in lexical state 2)
   ,the the\\"\\"	Q	+(title:the body:the) +(title:the body:the)	Boolean(+Boolean(TermQuery(title:the) TermQuery(body:the)) +Boolean(TermQuery(title:the) TermQuery(body:the)))
 ,\\u00	E	Cannot parse ',\\u00': Truncated Unicode escape sequence.
@@ -2528,7 +2528,7 @@ foo+  	Q	title:foo body:foo	Boolean(TermQuery(title:foo) TermQuery(body:foo))
 x\\	E	Cannot parse 'x\\': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
 "~0.5~0.5/x.*/foo/x.*/?||	E	Cannot parse '"~0.5~0.5/x.*/foo/x.*/?||': Lexical error at line 1, column 26.  Encountered: <EOF> after prefix "\\"~0.5~0.5/x.*/foo/x.*/?||" (in lexical state 2)
 Bar:\\:	Q		Boolean()
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 日本é{^2-\\"]\\"	E	Cannot parse '日本é{^2-\\"]\\"': Encountered " "]" "] "" at line 1, column 9.\nWas expecting:\n    "TO" ...\n    
 a\\	E	Cannot parse 'a\\': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
 ?the(-1é	E	Cannot parse '?the(-1é': '*' or '?' not allowed as first character in WildcardQuery
@@ -2550,7 +2550,7 @@ foo\\u0041  b"~\\u0041/	E	Cannot parse 'foo\\u0041  b"~\\u0041/': Lexical error 
 -TO2.5	Q	-(title:to2.5 body:to2.5)	Boolean(-Boolean(TermQuery(title:to2.5) TermQuery(body:to2.5)))
 é NOT })!:	E	Cannot parse 'é NOT })!:': Lexical error at line 1, column 7.  Encountered: '125' (125), (in lexical state 2)
 a*1|| TO /x.*/.2.5foo	Q	+(title:a*1|| body:a*1||) +(title:to body:to) +(title:/x.*/ body:/x.*/) +(title:2.5foo body:2.5foo)	Boolean(+Boolean(WildcardQuery(title:a*1||) WildcardQuery(body:a*1||)) +Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(TermQuery(title:2.5foo) TermQuery(body:2.5foo)))
- TO +\\u0041-1	Q	+(title:to body:to) +((title:a body:a) (title:1 body:1))	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(TermQuery(title:1) TermQuery(body:1))))
+ TO +\\u0041-1	Q	+(title:to body:to) +(+(title:a body:a) +(title:1 body:1))	Boolean(+Boolean(TermQuery(title:to) TermQuery(body:to)) +Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:1) TermQuery(body:1))))
 *2.5[	E	Cannot parse '*2.5[': '*' or '?' not allowed as first character in WildcardQuery
 foo TO 	Q	+(title:foo body:foo) +(title:to body:to)	Boolean(+Boolean(TermQuery(title:foo) TermQuery(body:foo)) +Boolean(TermQuery(title:to) TermQuery(body:to)))
 ?&&&&	E	Cannot parse '?&&&&': '*' or '?' not allowed as first character in WildcardQuery
@@ -2563,10 +2563,10 @@ a* -1the+(.	E	Cannot parse 'a* -1the+(.': Encountered "<EOF>" at line 1, column 
 )x\\	E	Cannot parse ')x\\': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 wi-fiaa*^.5||)	E	Cannot parse 'wi-fiaa*^.5||)': Lexical error at line 1, column 10.  Encountered: '46' (46),
 /-[	E	Cannot parse '/-[': Lexical error at line 1, column 4.  Encountered: <EOF> after prefix "/-[" (in lexical state 2)
-thethethe\\^.5	Q	(title:thethethe body:thethethe) (title:5 body:5)	Boolean(Boolean(TermQuery(title:thethethe) TermQuery(body:thethethe)) Boolean(TermQuery(title:5) TermQuery(body:5)))
-\\"日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+thethethe\\^.5	Q	+(title:thethethe body:thethethe) +(title:5 body:5)	Boolean(+Boolean(TermQuery(title:thethethe) TermQuery(body:thethethe)) +Boolean(TermQuery(title:5) TermQuery(body:5)))
+\\"日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 ~0.5b{	E	Cannot parse '~0.5b{': Encountered " <FUZZY_SLOP> "~0.5b "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title日本	Q	(title:title body:title) (title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:title) TermQuery(body:title)) Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+title日本	Q	+(title:title body:title) +(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:title) TermQuery(body:title)) +Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
  NOT  TO \t)?b	E	Cannot parse ' NOT  TO \t)?b': Encountered " ")" ") "" at line 1, column 10.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 x\\*:*\\"\t-||	E	Cannot parse 'x\\*:*\\"\t-||': '*' or '?' not allowed as first character in WildcardQuery
 ![b	E	Cannot parse '![b': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
@@ -2624,7 +2624,7 @@ fooAND]	E	Cannot parse 'fooAND]': Lexical error at line 1, column 8.  Encountere
 \\u00412.5?bfooa,	Q	title:\\u00412.5?bfooa, body:\\u00412.5?bfooa,	Boolean(WildcardQuery(title:\\u00412.5?bfooa,) WildcardQuery(body:\\u00412.5?bfooa,))
 ||^.5	E	Cannot parse '||^.5': Encountered " <OR> "|| "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 [:	E	Cannot parse '[:': Encountered "<EOF>" at line 1, column 2.\nWas expecting:\n    "TO" ...\n    
-/x.*/a\t1+Baré 	Q	+(title:/x.*/ body:/x.*/) +(title:a body:a) +(title:1 body:1) +(title:baré body:baré)	Boolean(+Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:baré) TermQuery(body:baré)))
+/x.*/a\t1+Baré 	Q	+(title:/x.*/ body:/x.*/) +(+(title:a body:a) +(title:1 body:1) +(title:baré body:baré))	Boolean(+Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)) +Boolean(TermQuery(title:1) TermQuery(body:1)) +Boolean(TermQuery(title:baré) TermQuery(body:baré))))
 ^	E	Cannot parse '^': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
   日本~0.5 AND ]	E	Cannot parse '  日本~0.5 AND ]': Lexical error at line 1, column 15.  Encountered: <EOF> (in lexical state 2)
 a**:* NOT ^.5wi-fi!x\\*:*	E	Cannot parse 'a**:* NOT ^.5wi-fi!x\\*:*': Encountered " ":" ": "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
@@ -2650,7 +2650,7 @@ a/-	E	Cannot parse 'a/-': Lexical error at line 1, column 4.  Encountered: <EOF>
 \\"] OR  AND 	E	Cannot parse '\\"] OR  AND ': Lexical error at line 1, column 3.  Encountered: '93' (93), (in lexical state 2)
 ~2	E	Cannot parse '~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 &&foo~0.5	Q	title:&&foo~2 body:&&foo~2	Boolean(FuzzyQuery(title:&&foo~2) FuzzyQuery(body:&&foo~2))
-b^2日本	Q	+(title:b body:b)^2.0 +((title:日 body:日) (title:本 body:本))	Boolean(+Boost(Boolean(TermQuery(title:b) TermQuery(body:b))^2.0) +Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+b^2日本	Q	+(title:b body:b)^2.0 +(+(title:日 body:日) +(title:本 body:本))	Boolean(+Boost(Boolean(TermQuery(title:b) TermQuery(body:b))^2.0) +Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 -1~2\\:[/x.*/ OR *:*	E	Cannot parse '-1~2\\:[/x.*/ OR *:*': Encountered " <RANGE_GOOP> "OR "" at line 1, column 13.\nWas expecting:\n    "TO" ...\n    
 &&	E	Cannot parse '&&': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 .^2	Q		Boolean()
@@ -2662,7 +2662,7 @@ x\\é~*\\:&&	E	Cannot parse 'x\\é~*\\:&&': '*' or '?' not allowed as first char
 ^2?b] 	E	Cannot parse '^2?b] ': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\u00~0.5	E	Cannot parse '\\u00~0.5': Truncated Unicode escape sequence.
 ~  	E	Cannot parse '~  ': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-x\\^2?+ NOT .日本	Q	+(title:x\\^2?+ body:x\\^2?+) -((title:日 body:日) (title:本 body:本))	Boolean(+Boolean(WildcardQuery(title:x\\^2?+) WildcardQuery(body:x\\^2?+)) -Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+x\\^2?+ NOT .日本	Q	+(title:x\\^2?+ body:x\\^2?+) -(+(title:日 body:日) +(title:本 body:本))	Boolean(+Boolean(WildcardQuery(title:x\\^2?+) WildcardQuery(body:x\\^2?+)) -Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 \\u(?btitle	E	Cannot parse '\\u(?btitle': Truncated Unicode escape sequence.
  TO 日本 *:**:*\\u0041	E	Cannot parse ' TO 日本 *:**:*\\u0041': '*' or '?' not allowed as first character in WildcardQuery
 ?b&&	E	Cannot parse '?b&&': '*' or '?' not allowed as first character in WildcardQuery
@@ -2694,14 +2694,14 @@ foo^.5Bar[[\\:	E	Cannot parse 'foo^.5Bar[[\\:': Lexical error at line 1, column 
 ~0.5AND\\u0041the1/\\u^	E	Cannot parse '~0.5AND\\u0041the1/\\u^': Encountered " <FUZZY_SLOP> "~0.5AND\\\\u0041the1 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 *:*\\:wi-fi*:* +*	E	Cannot parse '*:*\\:wi-fi*:* +*': '*' or '?' not allowed as first character in WildcardQuery
 :&&?\\:]	E	Cannot parse ':&&?\\:]': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-/x.*/日本a	Q	+(title:/x.*/ body:/x.*/) +((title:日 body:日) (title:本 body:本) (title:a body:a))	Boolean(+Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)) Boolean(TermQuery(title:a) TermQuery(body:a))))
+/x.*/日本a	Q	+(title:/x.*/ body:/x.*/) +(+(title:日 body:日) +(title:本 body:本) +(title:a body:a))	Boolean(+Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)) +Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)) +Boolean(TermQuery(title:a) TermQuery(body:a))))
 +?b&&~2\\x\\	E	Cannot parse '+?b&&~2\\x\\': Lexical error at line 1, column 11.  Encountered: <EOF> (in lexical state 2)
 -1^2(title	E	Cannot parse '-1^2(title': Encountered "<EOF>" at line 1, column 10.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 \\u TO foo[&&  "	E	Cannot parse '\\u TO foo[&&  "': Non-hex character in Unicode escape sequence:  
 *:*\\u00	E	Cannot parse '*:*\\u00': Truncated Unicode escape sequence.
 :[1	E	Cannot parse ':[1': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?b-~0.5~*:*~	E	Cannot parse '?b-~0.5~*:*~': '*' or '?' not allowed as first character in WildcardQuery
-! \\u0041 OR wi-fib	Q	(title:a body:a) ((title:wi body:wi) (title:fib body:fib))	Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fib) TermQuery(body:fib))))
+! \\u0041 OR wi-fib	Q	(title:a body:a) (+(title:wi body:wi) +(title:fib body:fib))	Boolean(Boolean(TermQuery(title:a) TermQuery(body:a)) Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fib) TermQuery(body:fib))))
 ^2^2x\\)\\u00	E	Cannot parse '^2^2x\\)\\u00': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ||foo\\a NOT 2.5\\:a*	Q	+(title:fooa body:fooa) -(title:2.5:a* body:2.5:a*)	Boolean(+Boolean(TermQuery(title:fooa) TermQuery(body:fooa)) -Boolean(PrefixQuery(title:2.5:a*) PrefixQuery(body:2.5:a*)))
 +^2^2日本\\u0041title\\:	E	Cannot parse '+^2^2日本\\u0041title\\:': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -2711,8 +2711,8 @@ foo^.5Bar[[\\:	E	Cannot parse 'foo^.5Bar[[\\:': Lexical error at line 1, column 
 \\"	Q		Boolean()
 }1.\\u~2 TO the}	E	Cannot parse '}1.\\u~2 TO the}': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
  OR TO,	E	Cannot parse ' OR TO,': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
-2.5\\ TO 	Q	(title:2.5 body:2.5) (title:to body:to)	Boolean(Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) Boolean(TermQuery(title:to) TermQuery(body:to)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+2.5\\ TO 	Q	+(title:2.5 body:2.5) +(title:to body:to)	Boolean(+Boolean(TermQuery(title:2.5) TermQuery(body:2.5)) +Boolean(TermQuery(title:to) TermQuery(body:to)))
 ) TO  OR ?b(	E	Cannot parse ') TO  OR ?b(': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ,/ OR \\/x.*/	Q	+(title:/ or \\/x.*/ body:/ or \\/x.*/)	Boolean(+Boolean(RegexpQuery(title:/ or \\/x.*/) RegexpQuery(body:/ or \\/x.*/)))
 a*~0.5*:*wi-fi||	E	Cannot parse 'a*~0.5*:*wi-fi||': '*' or '?' not allowed as first character in WildcardQuery
@@ -2755,7 +2755,7 @@ AND\t)-	E	Cannot parse 'AND\t)-': Encountered " <AND> "AND "" at line 1, column 
 TO\t(!\\	E	Cannot parse 'TO\t(!\\': Lexical error at line 1, column 7.  Encountered: <EOF> (in lexical state 2)
  OR &&||^.5	E	Cannot parse ' OR &&||^.5': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?	E	Cannot parse '?': '*' or '?' not allowed as first character in WildcardQuery
-x\\?b	Q	(title:x body:x) (title:b body:b)	Boolean(Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:b) TermQuery(body:b)))
+x\\?b	Q	+(title:x body:x) +(title:b body:b)	Boolean(+Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:b) TermQuery(body:b)))
 {	E	Cannot parse '{': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 ^2} AND  )&&	E	Cannot parse '^2} AND  )&&': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^.5	E	Cannot parse '^.5': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2765,7 +2765,7 @@ x\\||	Q	title:x body:x	Boolean(TermQuery(title:x) TermQuery(body:x))
 && : AND )b	E	Cannot parse '&& : AND )b': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ,\t,  2.5Bar-1	Q	+(title:2.5bar body:2.5bar) +(title:1 body:1)	Boolean(+Boolean(TermQuery(title:2.5bar) TermQuery(body:2.5bar)) +Boolean(TermQuery(title:1) TermQuery(body:1)))
 ||2.5x\\) AND 	E	Cannot parse '||2.5x\\) AND ': Encountered "<EOF>" at line 1, column 13.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
-x\\~0.5	Q	(title:x body:x) (title:0.5 body:0.5)	Boolean(Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:0.5) TermQuery(body:0.5)))
+x\\~0.5	Q	+(title:x body:x) +(title:0.5 body:0.5)	Boolean(+Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:0.5) TermQuery(body:0.5)))
 &&/]aa	E	Cannot parse '&&/]aa': Encountered " <AND> "&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ,*	Q	title:,* body:,*	Boolean(PrefixQuery(title:,*) PrefixQuery(body:,*))
 ^2	E	Cannot parse '^2': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2800,7 +2800,7 @@ foo/x.*/AND*~0.52.5)	E	Cannot parse 'foo/x.*/AND*~0.52.5)': Encountered " ")" ")
 \\:^^.5\\	E	Cannot parse '\\:^^.5\\': Lexical error at line 1, column 4.  Encountered: '94' (94),
 -1fooéAND~foo	Q	-(title:1fooéand~2 body:1fooéand~2)	Boolean(-Boolean(FuzzyQuery(title:1fooéand~2) FuzzyQuery(body:1fooéand~2)))
 ~{)TO OR ^b	E	Cannot parse '~{)TO OR ^b': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-title:a* OR 日本	Q	title:a* ((title:日 body:日) (title:本 body:本))	Boolean(PrefixQuery(title:a*) Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+title:a* OR 日本	Q	title:a* (+(title:日 body:日) +(title:本 body:本))	Boolean(PrefixQuery(title:a*) Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 AND 	E	Cannot parse 'AND ': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  OR \\:?b]?bBar)a*	E	Cannot parse ' OR \\:?b]?bBar)a*': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }^ NOT Bar )é	E	Cannot parse '}^ NOT Bar )é': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
@@ -2845,7 +2845,7 @@ aTO}^21	E	Cannot parse 'aTO}^21': Lexical error at line 1, column 4.  Encountere
 ^(	E	Cannot parse '^(': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ^Bar	E	Cannot parse '^Bar': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 AND-[	E	Cannot parse 'AND-[': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 (^2a*-^.5	E	Cannot parse '(^2a*-^.5': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 2.5?b1atitlewi-fi   	Q	title:2.5?b1atitlewi-fi body:2.5?b1atitlewi-fi	Boolean(WildcardQuery(title:2.5?b1atitlewi-fi) WildcardQuery(body:2.5?b1atitlewi-fi))
  \\"?bb/^.5 NOT 	E	Cannot parse ' \\"?bb/^.5 NOT ': Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "/^.5 NOT " (in lexical state 2)
@@ -2855,7 +2855,7 @@ TO/x.*/a*:wi-fi/	E	Cannot parse 'TO/x.*/a*:wi-fi/': Encountered " ":" ": "" at l
 a]	E	Cannot parse 'a]': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
 *]\\"&&	E	Cannot parse '*]\\"&&': Lexical error at line 1, column 2.  Encountered: '93' (93), (in lexical state 2)
 1&&)\\u[wi-fi\\u/	E	Cannot parse '1&&)\\u[wi-fi\\u/': Encountered " ")" ") "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
-\\wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+\\wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 ]  +||]	E	Cannot parse ']  +||]': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 the\\u00	E	Cannot parse 'the\\u00': Truncated Unicode escape sequence.
 *]?b-1	E	Cannot parse '*]?b-1': Lexical error at line 1, column 2.  Encountered: '93' (93), (in lexical state 2)
@@ -2871,7 +2871,7 @@ title	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:tit
 ,"^*a"	Q	+(title:a body:a)	Boolean(+Boolean(TermQuery(title:a) TermQuery(body:a)))
 . !	E	Cannot parse '. !': Encountered "<EOF>" at line 1, column 3.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
  \\u00[*:*/x.*/\\u00]&&	E	Cannot parse ' \\u00[*:*/x.*/\\u00]&&': Truncated Unicode escape sequence.
-foo-\\:TOwi-fi\\:	Q	(title:foo body:foo) (title:towi body:towi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:foo) TermQuery(body:foo)) Boolean(TermQuery(title:towi) TermQuery(body:towi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+foo-\\:TOwi-fi\\:	Q	+(title:foo body:foo) +(title:towi body:towi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:foo) TermQuery(body:foo)) +Boolean(TermQuery(title:towi) TermQuery(body:towi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 é^ NOT :~*:* OR (	E	Cannot parse 'é^ NOT :~*:* OR (': Lexical error at line 1, column 3.  Encountered: '32' (32),
 /a[	E	Cannot parse '/a[': Lexical error at line 1, column 4.  Encountered: <EOF> after prefix "/a[" (in lexical state 2)
 TO+/a~x\\&&	E	Cannot parse 'TO+/a~x\\&&': Lexical error at line 1, column 11.  Encountered: <EOF> after prefix "/a~x\\\\&&" (in lexical state 2)
@@ -2881,12 +2881,12 @@ title 	Q	title:title body:title	Boolean(TermQuery(title:title) TermQuery(body:ti
  NOT /x.*/  	Q	-(title:/x.*/ body:/x.*/)	Boolean(-Boolean(RegexpQuery(title:/x.*/) RegexpQuery(body:/x.*/)))
  {"	E	Cannot parse ' {"': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
 ^.5	E	Cannot parse '^.5': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-  !wi-fi	Q	-((title:wi body:wi) (title:fi body:fi))	Boolean(-Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))))
+  !wi-fi	Q	-(+(title:wi body:wi) +(title:fi body:fi))	Boolean(-Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))))
 foob||]+\\\t!	E	Cannot parse 'foob||]+\\\t!': Lexical error at line 1, column 7.  Encountered: '93' (93), (in lexical state 2)
 ,*:*\\u0041-1	E	Cannot parse ',*:*\\u0041-1': Encountered " ":" ": "" at line 1, column 2.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 ~2TO日本1	E	Cannot parse '~2TO日本1': Encountered " <FUZZY_SLOP> "~2TO\\u65e5\\u672c1 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \\:(*:*the.!	E	Cannot parse '\\:(*:*the.!': '*' or '?' not allowed as first character in WildcardQuery
-é AND wi-fi  日本	Q	+(title:é body:é) +((title:wi body:wi) (title:fi body:fi)) +((title:日 body:日) (title:本 body:本))	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
+é AND wi-fi  日本	Q	+(title:é body:é) +(+(title:wi body:wi) +(title:fi body:fi)) +(+(title:日 body:日) +(title:本 body:本))	Boolean(+Boolean(TermQuery(title:é) TermQuery(body:é)) +Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi))) +Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 a(titlefoob\\	E	Cannot parse 'a(titlefoob\\': Lexical error at line 1, column 13.  Encountered: <EOF> (in lexical state 2)
  \\u0041\\u0041  -1	Q	+(title:aa body:aa) -(title:1 body:1)	Boolean(+Boolean(TermQuery(title:aa) TermQuery(body:aa)) -Boolean(TermQuery(title:1) TermQuery(body:1)))
  TO )\\u NOT /x.*/{\\u00	E	Cannot parse ' TO )\\u NOT /x.*/{\\u00': Encountered " ")" ") "" at line 1, column 4.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
@@ -2897,7 +2897,7 @@ AND-	Q	title:and body:and	Boolean(TermQuery(title:and) TermQuery(body:and))
 )é	E	Cannot parse ')é': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ["\\\\u0041)&&	E	Cannot parse '["\\\\u0041)&&': Encountered "<EOF>" at line 1, column 12.\nWas expecting:\n    "TO" ...\n    
 x\\?b]!~2	E	Cannot parse 'x\\?b]!~2': Lexical error at line 1, column 5.  Encountered: '93' (93), (in lexical state 2)
-x\\?b	Q	(title:x body:x) (title:b body:b)	Boolean(Boolean(TermQuery(title:x) TermQuery(body:x)) Boolean(TermQuery(title:b) TermQuery(body:b)))
+x\\?b	Q	+(title:x body:x) +(title:b body:b)	Boolean(+Boolean(TermQuery(title:x) TermQuery(body:x)) +Boolean(TermQuery(title:b) TermQuery(body:b)))
 ."~2é*:*\\~0.5?b	E	Cannot parse '."~2é*:*\\~0.5?b': Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\"~2\\u00e9*:*\\\\~0.5?b" (in lexical state 2)
 ]Bar-1\t!  	E	Cannot parse ']Bar-1\t!  ': Lexical error at line 1, column 1.  Encountered: '93' (93), (in lexical state 2)
 a\\"foothe:a*TO AND 	E	Cannot parse 'a\\"foothe:a*TO AND ': Encountered "<EOF>" at line 1, column 19.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
@@ -2908,7 +2908,7 @@ a\\"foothe:a*TO AND 	E	Cannot parse 'a\\"foothe:a*TO AND ': Encountered "<EOF>" 
 [}thewi-fi\\u0041	E	Cannot parse '[}thewi-fi\\u0041': Encountered " "}" "} "" at line 1, column 1.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
 ||*^.5	E	Cannot parse '||*^.5': Lexical error at line 1, column 5.  Encountered: '46' (46),
 :^2&&the ^2	E	Cannot parse ':^2&&the ^2': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-+日本	Q	+((title:日 body:日) (title:本 body:本))	Boolean(+Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本))))
++日本	Q	+(+(title:日 body:日) +(title:本 body:本))	Boolean(+Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本))))
 .^.5	E	Cannot parse '.^.5': Lexical error at line 1, column 3.  Encountered: '46' (46),
 ^.5foo/ NOT Bar~ 	E	Cannot parse '^.5foo/ NOT Bar~ ': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ?[&&?b~2x\\	E	Cannot parse '?[&&?b~2x\\': '*' or '?' not allowed as first character in WildcardQuery
@@ -2967,7 +2967,7 @@ title-1\\:2.51?&&the	Q	title:title-1\\:2.51?&&the body:title-1\\:2.51?&&the	Bool
 \\u/	E	Cannot parse '\\u/': Lexical error at line 1, column 4.  Encountered: <EOF> (in lexical state 2)
 ~	E	Cannot parse '~': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 2.5/x.*/\\u	E	Cannot parse '2.5/x.*/\\u': Truncated Unicode escape sequence.
-日本	Q	(title:日 body:日) (title:本 body:本)	Boolean(Boolean(TermQuery(title:日) TermQuery(body:日)) Boolean(TermQuery(title:本) TermQuery(body:本)))
+日本	Q	+(title:日 body:日) +(title:本 body:本)	Boolean(+Boolean(TermQuery(title:日) TermQuery(body:日)) +Boolean(TermQuery(title:本) TermQuery(body:本)))
 wi-fi^.5:	E	Cannot parse 'wi-fi^.5:': Lexical error at line 1, column 7.  Encountered: '46' (46),
 \\u0041!" TO .	E	Cannot parse '\\u0041!" TO .': Lexical error at line 1, column 14.  Encountered: <EOF> after prefix "\\" TO ." (in lexical state 2)
  the */	E	Cannot parse ' the */': Lexical error at line 1, column 8.  Encountered: <EOF> (in lexical state 2)
@@ -2995,6 +2995,6 @@ foo?b\\"\\:\\:AND	Q	title:foo?b\\"\\:\\:and body:foo?b\\"\\:\\:and	Boolean(Wildc
 ~ 	E	Cannot parse '~ ': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 \t^.5*!\\u+:a*	E	Cannot parse '\t^.5*!\\u+:a*': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 +,"/x.*/}&&	E	Cannot parse '+,"/x.*/}&&': Lexical error at line 1, column 12.  Encountered: <EOF> after prefix "\\"/x.*/}&&" (in lexical state 2)
-wi-fi	Q	(title:wi body:wi) (title:fi body:fi)	Boolean(Boolean(TermQuery(title:wi) TermQuery(body:wi)) Boolean(TermQuery(title:fi) TermQuery(body:fi)))
+wi-fi	Q	+(title:wi body:wi) +(title:fi body:fi)	Boolean(+Boolean(TermQuery(title:wi) TermQuery(body:wi)) +Boolean(TermQuery(title:fi) TermQuery(body:fi)))
 }~2/x.*/~2.5wi-fi}	E	Cannot parse '}~2/x.*/~2.5wi-fi}': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
 *:*?:x\\2.5	E	Cannot parse '*:*?:x\\2.5': '*' or '?' not allowed as first character in WildcardQuery

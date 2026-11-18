@@ -164,7 +164,9 @@ pub(crate) trait Scorer {
     /// `TwoPhaseIterator.docIDRunEnd()` of a two-phase scorer positioned on
     /// a document [`Self::matches`] confirmed: one past the end of the run
     /// of consecutive *matches* starting there, or the current document --
-    /// the conservative default -- when no run is known.
+    /// the conservative default -- when no run is known. No bulk scorer
+    /// reads it: `ReqExclBulkScorer` bulk-loads its excluded clause per window.
+    #[allow(dead_code)]
     fn two_phase_run_end(&self) -> i32 {
         self.doc_id()
     }

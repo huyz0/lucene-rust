@@ -21,7 +21,7 @@ fn data(name: &str) -> Vec<u8> {
     .unwrap()
 }
 fn files(prefix: &str) -> Files {
-    ["dvm", "dvd", "dvs"]
+    ["dvm", "dvd", "dvs", "dvp"]
         .into_iter()
         .map(|extension| (extension.to_owned(), data(&format!("{prefix}.{extension}"))))
         .collect()

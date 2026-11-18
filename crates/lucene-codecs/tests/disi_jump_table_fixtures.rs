@@ -22,6 +22,8 @@
 // `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+mod support;
+
 use lucene_codecs::{doc_values as ndv, field_infos};
 
 fn dir() -> String {
@@ -106,6 +108,9 @@ struct Fixture {
     manifest: Manifest,
     data: Vec<u8>,
     parsed: ndv::DocValuesMeta,
+    /// The segment's `.dvp`, which holds the sparse region of a format-3
+    /// `.dvm`.
+    dvp: Option<Vec<u8>>,
 }
 
 fn open() -> Fixture {
@@ -116,11 +121,13 @@ fn open() -> Fixture {
     let meta = std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
     let data = std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta, &id, &suffix, &fis).unwrap();
+    let dvp = support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     Fixture {
         manifest,
         data,
         parsed,
+        dvp,
     }
 }
 
@@ -272,8 +279,18 @@ fn corrupting_the_java_written_jump_table_changes_the_answer() {
 
     for (label, byte_offset) in [("index", third_entry), ("offset", third_entry + 4)] {
         let mut data = f.data.clone();
-        data[byte_offset] ^= 0x11;
-        let got = ndv::numeric_value(&data, entry, doc);
+        let mut entry = entry.clone();
+        match &f.dvp {
+            // The region is in `.dvp` from format 3 on.
+            Some(dvp) => {
+                let mut dvp = dvp.clone();
+                dvp[byte_offset] ^= 0x11;
+                entry.disi =
+                    ndv::DisiLoc::in_separate_file(ndv::DisiBytes::new(std::sync::Arc::new(dvp)));
+            }
+            None => data[byte_offset] ^= 0x11,
+        }
+        let got = ndv::numeric_value(&data, &entry, doc);
         assert!(
             got.is_err() || got.unwrap() != *want,
             "{label}: perturbing the jump table left the answer unchanged, so nothing read it"

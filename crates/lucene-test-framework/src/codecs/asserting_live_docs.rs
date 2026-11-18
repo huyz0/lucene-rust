@@ -126,13 +126,11 @@ impl Bits for DenseLiveDocs {
         self.bits.len()
     }
     fn apply_mask(&self, mask: &mut FixedBitSet, offset: usize) {
-        // Java Bits.applyMask calls nextSetBit(0), which asserts for an empty
-        // mask. Preserve that observed behavior for the concrete Java view.
-        assert!(!mask.is_empty());
-        // Use the Bits default: unlike FixedBitSet's inherent bulk helper,
-        // Java DenseLiveDocs checks each set mask bit and asserts at the
-        // first out-of-range access after preserving earlier mutations.
-        Bits::apply_mask(&self.bits, mask, offset);
+        // `DenseLiveDocs.applyMask`: a word-wise AND over the covered range,
+        // an `IllegalArgumentException` for a set bit beyond the end.
+        if let Err(message) = self.bits.apply_mask(mask, offset) {
+            panic!("{message}");
+        }
     }
 }
 

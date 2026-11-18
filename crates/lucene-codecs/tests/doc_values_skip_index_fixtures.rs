@@ -10,6 +10,8 @@
 // `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+mod support;
+
 use lucene_codecs::doc_values::{self, DocValuesSkipperMeta, SkipIndexLevelInterval};
 use lucene_codecs::field_infos;
 
@@ -124,7 +126,8 @@ fn parses_real_numeric_skip_index_meta_and_intervals() {
     let suffix = dv_suffix(&manifest);
 
     let field_number = manifest.get_i32("field_number");
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
 
     let want_skipper = DocValuesSkipperMeta {
         offset: manifest.get_i64("skip.offset"),
@@ -181,7 +184,8 @@ fn skipper_walks_real_skip_index_and_brackets_the_real_values() {
     let suffix = dv_suffix(&manifest);
     let field_number = manifest.get_i32("field_number");
 
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let skipper_meta = parsed.skipper_meta(field_number).copied().unwrap();
     let numeric = parsed.numeric_entry(field_number).unwrap();
     let index = doc_values::parse_skip_index(&dvs, &id, &suffix, &skipper_meta).unwrap();
@@ -254,7 +258,8 @@ fn skipper_advance_range_lands_on_the_first_intersecting_interval() {
     let suffix = dv_suffix(&manifest);
     let field_number = manifest.get_i32("field_number");
 
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let skipper_meta = parsed.skipper_meta(field_number).copied().unwrap();
     let index = doc_values::parse_skip_index(&dvs, &id, &suffix, &skipper_meta).unwrap();
 
@@ -290,14 +295,16 @@ fn writes_the_skip_index_java_writes() {
     let field_number = manifest.get_i32("field_number");
     let max_doc = manifest.get_i32("max_doc");
     let values: Vec<i64> = (0..i64::from(max_doc)).map(|i| i * 7 - 3).collect();
-    let (dvm, _dvd, dvs) = doc_values::write_fields_with_skip_indexes(
+    let files = doc_values::write_fields_with_format_files(
         &[doc_values::DenseField::Numeric(field_number, &values)],
         &[field_number],
         max_doc,
         &id,
         &suffix,
+        doc_values::Lucene90DocValuesFormat::default().with_disi_file(true),
     )
     .unwrap();
+    let (dvm, dvs) = (files.dvm, files.dvs);
 
     let java_dvs =
         std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvs_file_name"))).unwrap();
@@ -316,7 +323,8 @@ fn writes_the_skip_index_java_writes() {
     // And this port's reader reads the whole triple back.
     let fnm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("fnm_file_name"))).unwrap();
     let fis = field_infos::parse(&fnm, &id, "").unwrap();
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let skipper = parsed.skipper_meta(field_number).copied().unwrap();
     doc_values::parse_skip_index(&dvs, &id, &suffix, &skipper).unwrap();
 }

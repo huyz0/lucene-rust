@@ -10,6 +10,8 @@
 // `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+mod support;
+
 use lucene_codecs::doc_values::{self, SortedSetKind};
 use lucene_codecs::{field_infos, terms_dict};
 
@@ -92,7 +94,8 @@ fn parses_real_sorted_numeric_and_matches_lucene_values() {
     let dvd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
     let suffix = dv_suffix(&manifest);
 
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .sorted_numeric_entry(field_number(&manifest, "nums"))
         .unwrap();
@@ -122,7 +125,8 @@ fn parses_real_sorted_set_and_matches_lucene_ords_and_terms() {
     let dvd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
     let suffix = dv_suffix(&manifest);
 
-    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    support::attach_dvp(&mut parsed, version, &dir(), &id, &suffix);
     let entry = parsed
         .sorted_set_entry(field_number(&manifest, "tags"))
         .unwrap();

@@ -585,7 +585,7 @@ b 	Q	b	TermQuery(b)
 {||/x.*/	E	Cannot parse '{||/x.*/': Encountered "<EOF>" at line 1, column 8.\nWas expecting:\n    "TO" ...\n    
 :TO+^\\u	E	Cannot parse ':TO+^\\u': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 ~2a*wi-fi	E	Cannot parse '~2a*wi-fi': Encountered " <FUZZY_SLOP> "~2a "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-日本 \\u0041 a*~0.5+	Q	日 本 a a*	Boolean(TermQuery(日) TermQuery(本) TermQuery(a) PrefixQuery(a*))
+日本 \\u0041 a*~0.5+	Q	(日 本 a) a*	Boolean(Boolean(TermQuery(日) TermQuery(本) TermQuery(a)) PrefixQuery(a*))
 \\u00-1||.	E	Cannot parse '\\u00-1||.': Non-hex character in Unicode escape sequence: -
  NOT /(\\:a}	E	Cannot parse ' NOT /(\\:a}': Lexical error at line 1, column 12.  Encountered: <EOF> after prefix "/(\\\\:a}" (in lexical state 2)
 ~2&&	E	Cannot parse '~2&&': Encountered " <FUZZY_SLOP> "~2&& "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -753,7 +753,7 @@ TOBar: NOT 	E	Cannot parse 'TOBar: NOT ': Encountered " <NOT> "NOT "" at line 1,
 ~a)	E	Cannot parse '~a)': Encountered " <FUZZY_SLOP> "~a "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }\\"\\"日本,\\::	E	Cannot parse '}\\"\\"日本,\\::': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
  ^title\\:	E	Cannot parse ' ^title\\:': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
-a* TO the	Q	a* to the	Boolean(PrefixQuery(a*) TermQuery(to) TermQuery(the))
+a* TO the	Q	a* (to the)	Boolean(PrefixQuery(a*) Boolean(TermQuery(to) TermQuery(the)))
 /x.*/ 	Q	/x.*/	RegexpQuery(/x.*/)
 ]	E	Cannot parse ']': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 *x\\2.5?b	E	Cannot parse '*x\\2.5?b': '*' or '?' not allowed as first character in WildcardQuery
@@ -957,7 +957,7 @@ foo~é~2	E	Cannot parse 'foo~é~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1,
  OR  NOT ,~0.5 NOT ~	E	Cannot parse ' OR  NOT ,~0.5 NOT ~': Encountered " <OR> "OR "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
  TO 	Q	to	TermQuery(to)
 [^.5!	E	Cannot parse '[^.5!': Encountered "<EOF>" at line 1, column 5.\nWas expecting:\n    "TO" ...\n    
-title TO /x.*/	Q	title to /x.*/	Boolean(TermQuery(title) TermQuery(to) RegexpQuery(/x.*/))
+title TO /x.*/	Q	(title to) /x.*/	Boolean(Boolean(TermQuery(title) TermQuery(to)) RegexpQuery(/x.*/))
 ~ TO [/~0.5*:*	E	Cannot parse '~ TO [/~0.5*:*': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 AND&&	Q	and	TermQuery(and)
 /x.*//~0.5(a*^2!/	X	IllegalArgumentException: expected ')' at position 10
@@ -1103,7 +1103,7 @@ b]\\u00||\\:	E	Cannot parse 'b]\\u00||\\:': Lexical error at line 1, column 2.  
 (^!~2/"x\\	E	Cannot parse '(^!~2/"x\\': Encountered " "^" "^ "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 AND/x.*/	E	Cannot parse 'AND/x.*/': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 }\\u00!:/x.*/}the.	E	Cannot parse '}\\u00!:/x.*/}the.': Lexical error at line 1, column 1.  Encountered: '125' (125), (in lexical state 2)
-\\thea* TO ||title	Q	thea* to title	Boolean(PrefixQuery(thea*) TermQuery(to) TermQuery(title))
+\\thea* TO ||title	Q	thea* (to title)	Boolean(PrefixQuery(thea*) Boolean(TermQuery(to) TermQuery(title)))
 日本\\"	Q	日 本	Boolean(TermQuery(日) TermQuery(本))
 }	E	Cannot parse '}': Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
 a\\u00+TO,\\:	E	Cannot parse 'a\\u00+TO,\\:': Non-hex character in Unicode escape sequence: +
@@ -2069,7 +2069,7 @@ ANDtitle	Q	andtitle	TermQuery(andtitle)
 ~/\\"a*}\\u0041-)	E	Cannot parse '~/\\"a*}\\u0041-)': Encountered " <FUZZY_SLOP> "~ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 [~2	E	Cannot parse '[~2': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
 2.5\\u00 NOT 2.5\\] OR ,	E	Cannot parse '2.5\\u00 NOT 2.5\\] OR ,': Truncated Unicode escape sequence.
-! TO ,\\u0041&&a	Q	to a a	Boolean(TermQuery(to) TermQuery(a) TermQuery(a))
+! TO ,\\u0041&&a	Q	(to a a)	Boolean(Boolean(TermQuery(to) TermQuery(a) TermQuery(a)))
  b."^~0.5	E	Cannot parse ' b."^~0.5': Lexical error at line 1, column 10.  Encountered: <EOF> after prefix "\\"^~0.5" (in lexical state 2)
 {x\\ AND 日本\\u00	E	Cannot parse '{x\\ AND 日本\\u00': Encountered " <RANGE_GOOP> "AND "" at line 1, column 4.\nWas expecting:\n    "TO" ...\n    
 ^]"-\\" OR a*	E	Cannot parse '^]"-\\" OR a*': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
@@ -2624,7 +2624,7 @@ fooAND]	E	Cannot parse 'fooAND]': Lexical error at line 1, column 8.  Encountere
 \\u00412.5?bfooa,	Q	\\u00412.5?bfooa,	WildcardQuery(\\u00412.5?bfooa,)
 ||^.5	E	Cannot parse '||^.5': Encountered " <OR> "|| "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
 [:	E	Cannot parse '[:': Encountered "<EOF>" at line 1, column 2.\nWas expecting:\n    "TO" ...\n    
-/x.*/a\t1+Baré 	Q	/x.*/ a 1 baré	Boolean(RegexpQuery(/x.*/) TermQuery(a) TermQuery(1) TermQuery(baré))
+/x.*/a\t1+Baré 	Q	/x.*/ (a 1 baré)	Boolean(RegexpQuery(/x.*/) Boolean(TermQuery(a) TermQuery(1) TermQuery(baré)))
 ^	E	Cannot parse '^': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
   日本~0.5 AND ]	E	Cannot parse '  日本~0.5 AND ]': Lexical error at line 1, column 15.  Encountered: <EOF> (in lexical state 2)
 a**:* NOT ^.5wi-fi!x\\*:*	E	Cannot parse 'a**:* NOT ^.5wi-fi!x\\*:*': Encountered " ":" ": "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    

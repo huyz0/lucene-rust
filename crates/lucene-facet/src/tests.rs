@@ -95,7 +95,15 @@ fn load_dv_meta(dir: &str) -> (Manifest, Vec<u8>, DocValuesMeta) {
     let meta_buf = std::fs::read(format!("{dir}{}.raw", manifest.get("dvm_file_name"))).unwrap();
     let data_buf = std::fs::read(format!("{dir}{}.raw", manifest.get("dvd_file_name"))).unwrap();
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = doc_values::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = doc_values::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    if doc_values::has_disi_file(version) {
+        let dvp = std::fs::read(format!(
+            "{dir}{}",
+            manifest.get("dvm_file_name").replace(".dvm", ".dvp")
+        ))
+        .unwrap();
+        parsed.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(dvp)));
+    }
     (manifest, data_buf, parsed)
 }
 

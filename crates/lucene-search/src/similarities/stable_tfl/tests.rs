@@ -182,7 +182,7 @@ fn multi_term_score_is_sum_of_single_term_scores() {
     assert!((sum - combined).abs() <= 1e-6, "{sum} vs {combined}");
 }
 
-/// Java's class (`branch_10_6`, compiled against the 10.5.2 jars) over
+/// Java's class (`branch_10_6`, compiled against the 10.6.0 jars) over
 /// a grid of parameters, terms (a multi-byte one summed with another),
 /// boosts, norms and frequencies: the FNV-1a hash of every score's bits
 /// it printed, and a two-term explanation.

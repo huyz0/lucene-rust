@@ -774,23 +774,28 @@ impl DocValuesConsumer for Lucene90DocValuesConsumer<'_> {
                     .map(|_| *number)
             })
             .collect();
-        let (meta, data, skip) = if fields.is_empty() {
-            dv::write_no_fields(self.state.segment_id, self.state.segment_suffix)
+        let format = self.format.with_disi_file(true);
+        let files = if fields.is_empty() {
+            dv::write_no_fields_files(self.state.segment_id, self.state.segment_suffix, format)
         } else {
-            dv::write_fields_with_format(
+            dv::write_fields_with_format_files(
                 &fields,
                 &skip,
                 self.state.max_doc,
                 self.state.segment_id,
                 self.state.segment_suffix,
-                self.format,
+                format,
             )?
         };
-        self.output = Some(BTreeMap::from([
-            ("dvm".into(), meta),
-            ("dvd".into(), data),
-            ("dvs".into(), skip),
-        ]));
+        let mut output = BTreeMap::from([
+            ("dvm".into(), files.dvm),
+            ("dvd".into(), files.dvd),
+            ("dvs".into(), files.dvs),
+        ]);
+        if let Some(dvp) = files.dvp {
+            output.insert("dvp".into(), dvp);
+        }
+        self.output = Some(output);
         self.closed = true;
         Ok(())
     }
@@ -956,12 +961,17 @@ impl DocValuesFormat for Lucene90DocValuesFormat {
         }
         let meta_bytes = file(state.files, "dvm")?;
         checksum(meta_bytes)?;
-        let (version, meta) = dv::parse_meta(
+        let (version, mut meta) = dv::parse_meta(
             meta_bytes,
             segment.segment_id,
             segment.segment_suffix,
             segment.field_infos,
         )?;
+        if dv::has_disi_file(version) {
+            let dvp = file(state.files, "dvp")?;
+            dv::check_disi_header_footer(dvp, segment.segment_id, segment.segment_suffix, version)?;
+            meta.attach_disi(dv::DisiBytes::new(std::sync::Arc::new(dvp.to_vec())));
+        }
         let data = file(state.files, "dvd")?;
         let skip = file(state.files, "dvs")?;
         if dv::check_data_header_footer(data, segment.segment_id, segment.segment_suffix)?

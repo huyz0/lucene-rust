@@ -14,6 +14,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::codec::Lucene104Codec;
+use lucene_codecs::index_format::IndexFormat;
 use lucene_codecs::per_field_doc_values::Lucene90DocValuesFormat;
 use lucene_index::check_index;
 use lucene_index::document::{
@@ -80,10 +81,11 @@ impl Lucene104Codec for Codec {
 fn write(dir: &FsDirectory, merge: bool, codec: bool) {
     let version = LuceneVersion {
         major: 10,
-        minor: 5,
+        minor: 6,
         bugfix: 0,
     };
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version).unwrap();
+    w.set_index_format(IndexFormat::Lucene106);
     if codec {
         w.set_codec(Some(Arc::new(Codec))).unwrap();
     } else {
@@ -199,7 +201,7 @@ fn check(which: &str, merge: bool, codec: bool) {
     let theirs = segment_infos::read_latest(&java).unwrap();
     let mut compared = 0;
     for (a, b) in ours.segments.iter().zip(&theirs.segments) {
-        for ext in ["dvm", "dvd", "dvs"] {
+        for ext in ["dvm", "dvd", "dvp", "dvs"] {
             for suffix in 0..2 {
                 let name = format!("{}_Lucene90_{suffix}.{ext}", a.segment_name);
                 let mine = dir.open(&name).unwrap();
@@ -212,7 +214,7 @@ fn check(which: &str, merge: bool, codec: bool) {
             }
         }
     }
-    assert_eq!(compared, ours.segments.len() * 6);
+    assert_eq!(compared, ours.segments.len() * 8);
     let results = check_index::check_directory(&dir).unwrap();
     assert!(
         results.iter().all(|r| r.failures().is_empty()),

@@ -4575,8 +4575,10 @@ fn a_segment_that_disagrees_with_its_own_term_vectors_is_caught() {
 
 /// The NUMERIC/BINARY halves of `check_doc_values`' per-document decode,
 /// driven by re-signed single-byte corruptions of a real Java-written
-/// `.dvd` carrying dense numeric, GCD-compressed numeric, sparse numeric,
-/// fixed-length binary, variable-length binary and sparse binary fields.
+/// `.dvd` and `.dvp` (the sparse fields' `IndexedDISI`, in the `.dvp` since
+/// format version 3) carrying dense numeric, GCD-compressed numeric, sparse
+/// numeric, fixed-length binary, variable-length binary and sparse binary
+/// fields.
 ///
 /// `corrupted_doc_values_payload_is_caught` covers the SORTED fixture;
 /// this one covers the five other entry shapes, whose decode-failure arms
@@ -4585,8 +4587,8 @@ fn a_segment_that_disagrees_with_its_own_term_vectors_is_caught() {
 #[test]
 fn no_re_signed_corruption_of_a_numeric_or_binary_dvd_goes_unnoticed() {
     let dst = copy_fixture("doc_values_index");
-    let dvd_path = find_file(&dst, ".dvd");
-    let original = std::fs::read(&dvd_path).unwrap();
+    let files = [find_file(&dst, ".dvd"), find_file(&dst, ".dvp")];
+    let originals: Vec<Vec<u8>> = files.iter().map(|p| std::fs::read(p).unwrap()).collect();
     let dir = FsDirectory::open(&dst);
     assert!(
         check_directory(&dir)
@@ -4596,67 +4598,68 @@ fn no_re_signed_corruption_of_a_numeric_or_binary_dvd_goes_unnoticed() {
         "the fixture must start clean"
     );
 
-    let body_end = original.len() - lucene_store::codec_util::FOOTER_LENGTH;
     let mut caught_by_dv = 0usize;
     let mut caught_by_other = 0usize;
     let mut accepted = 0usize;
-    let mut isolated: Option<(usize, u8)> = None;
-    for off in 48..body_end {
-        for mask in [0x01u8, 0x80, 0xff] {
-            let mut bytes = original.clone();
-            bytes[off] ^= mask;
-            repair_checksum(&mut bytes);
-            std::fs::write(&dvd_path, &bytes).unwrap();
-            let dir = FsDirectory::open(&dst);
-            // A corruption that makes the *commit* unreadable is still a
-            // corruption this module rejected -- counting it as
-            // "caught by another check" keeps `total` equal to the sweep's
-            // own iteration count, which is what makes the floors below
-            // mean what they say.
-            let failed = match check_directory(&dir) {
-                Ok(r) => failed_names(&r),
-                Err(e) => vec![format!("commit.unreadable: {e}")],
-            };
-            let is_dv = |n: &String| n.starts_with("doc_values.");
-            if failed.iter().any(is_dv) {
-                caught_by_dv += 1;
-                if failed.iter().all(is_dv) {
-                    isolated.get_or_insert((off, mask));
+    let mut isolated: Option<(usize, usize, u8)> = None;
+    for (file, original) in originals.iter().enumerate() {
+        let body_end = original.len() - lucene_store::codec_util::FOOTER_LENGTH;
+        for off in 48..body_end {
+            for mask in [0x01u8, 0x80, 0xff] {
+                let mut bytes = original.clone();
+                bytes[off] ^= mask;
+                repair_checksum(&mut bytes);
+                std::fs::write(&files[file], &bytes).unwrap();
+                let dir = FsDirectory::open(&dst);
+                // A corruption that makes the *commit* unreadable is still a
+                // corruption this module rejected -- counting it as
+                // "caught by another check" keeps `total` equal to the
+                // sweep's own iteration count, which is what makes the
+                // floors below mean what they say.
+                let failed = match check_directory(&dir) {
+                    Ok(r) => failed_names(&r),
+                    Err(e) => vec![format!("commit.unreadable: {e}")],
+                };
+                let is_dv = |n: &String| n.starts_with("doc_values.");
+                if failed.iter().any(is_dv) {
+                    caught_by_dv += 1;
+                    if failed.iter().all(is_dv) {
+                        isolated.get_or_insert((file, off, mask));
+                    }
+                } else if failed.is_empty() {
+                    accepted += 1;
+                } else {
+                    caught_by_other += 1;
                 }
-            } else if failed.is_empty() {
-                accepted += 1;
-            } else {
-                caught_by_other += 1;
             }
         }
+        std::fs::write(&files[file], original).unwrap();
     }
-    std::fs::write(&dvd_path, &original).unwrap();
     let total = caught_by_dv + caught_by_other + accepted;
-    // Measured when this was written: of 261 re-signed corruptions, 69
-    // were rejected by a `doc_values.*` check, **0** by anything else,
-    // and 192 accepted. The zero matters as much as the 69: nothing but
-    // these checks reads the `.dvd`, so a corruption they miss is a
-    // corruption nothing catches. The 192 are the same phenomenon as the
-    // `.tip` and single-valued-SORTED_SET controls -- most of this file
-    // is raw values, and a different value is still a valid one.
+    // Of the 288 re-signed corruptions, 96 were rejected by a `doc_values.*`
+    // check, none by anything else, and 192 accepted; the floor leaves a
+    // margin below the 96. Nothing but these checks reads the `.dvd`
+    // and `.dvp`, so a corruption they miss is a corruption nothing
+    // catches; most of the `.dvd` is raw values, and a different value is
+    // still a valid one.
     assert!(
-        caught_by_dv >= 60,
-        "the doc-values checks rejected only {caught_by_dv} of {total} re-signed .dvd \
-             corruptions ({caught_by_other} caught by another check, {accepted} accepted); \
-             69 were rejected when this test was written"
+        caught_by_dv >= 85,
+        "the doc-values checks rejected only {caught_by_dv} of {total} re-signed .dvd/.dvp \
+             corruptions ({caught_by_other} caught by another check, {accepted} accepted)"
     );
     assert_eq!(
         caught_by_other, 0,
-        "a .dvd corruption was reported by something other than a doc_values.* check"
+        "a .dvd or .dvp corruption was reported by something other than a doc_values.* check"
     );
-    let (off, mask) = isolated.expect("at least one corruption is caught by doc_values alone");
-    let mut bytes = original.clone();
+    let (file, off, mask) =
+        isolated.expect("at least one corruption is caught by doc_values alone");
+    let mut bytes = originals[file].clone();
     bytes[off] ^= mask;
     repair_checksum(&mut bytes);
-    std::fs::write(&dvd_path, &bytes).unwrap();
+    std::fs::write(&files[file], &bytes).unwrap();
     let dir = FsDirectory::open(&dst);
     let failed = failed_names(&check_directory(&dir).unwrap());
-    std::fs::write(&dvd_path, &original).unwrap();
+    std::fs::write(&files[file], &originals[file]).unwrap();
     assert!(
         !failed.is_empty() && failed.iter().all(|n| n.starts_with("doc_values.")),
         "byte {off} ^ {mask:#x} was expected to trip only the doc-values checks: {failed:?}"

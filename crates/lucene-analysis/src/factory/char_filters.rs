@@ -260,7 +260,7 @@ impl CharFilterFactory for PersianCharFilterFactory {
 }
 
 /// `org.apache.lucene.analysis.th.ThaiCharFilterFactory` (`thai`; Lucene
-/// 10.6, #16717, not in the 10.5.2 jars).
+/// 10.6, #16717).
 pub struct ThaiCharFilterFactory {
     base: FactoryBase,
 }
