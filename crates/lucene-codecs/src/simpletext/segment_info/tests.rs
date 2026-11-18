@@ -79,10 +79,11 @@ fn min_version_and_bad_versions() {
         si.min_version
     );
     let b = body(&full);
+    let latest = format!("    version {}", Version::LATEST);
     for (from, to) in [
-        ("    version 10.5.2", "    version 10.x"),
+        (latest.as_str(), "    version 10.x"),
         ("    min version 9.12.1", "    min version 9"),
-        ("    version 10.5.2", "    version 256.0.0"),
+        (latest.as_str(), "    version 256.0.0"),
     ] {
         let err = read(&reseal(&b.replacen(from, to, 1)), "_4", &ID).unwrap_err();
         assert!(

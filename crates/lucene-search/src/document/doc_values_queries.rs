@@ -604,12 +604,17 @@ impl DocumentQuery for SortedNumericDocValuesSetQuery {
         let Some((data, column)) = numeric_column(leaf, info)? else {
             return Ok(());
         };
-        // `DefaultScorerSupplier(ConstantScoreScorer)`: `DefaultBulkScorer`.
+        // `ConstantScoreScorerSupplier.fromIterator` over the column's
+        // two-phase iterator, whose cost is the column's documents.
         if saturated(collector, boost) {
             return Ok(());
         }
         let max_doc = reader(leaf)?.max_doc;
-        let mut bulk = Bulk::default_scorer(max_doc);
+        let mut bulk = Bulk::new(
+            collector.score_mode().needs_scores(),
+            max_doc,
+            column.docs_with_field(),
+        );
         let n = &self.numbers;
         let mut values = Vec::new();
         for doc in 0..max_doc {

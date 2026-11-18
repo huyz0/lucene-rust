@@ -16,7 +16,7 @@ fn data(name: &str) -> Vec<u8> {
     .unwrap()
 }
 fn files() -> Files {
-    ["dvm", "dvd", "dvs"]
+    ["dvm", "dvd", "dvs", "dvp"]
         .into_iter()
         .map(|ext| (ext.into(), data(&format!("asserting_doc_values.{ext}"))))
         .collect()
@@ -208,7 +208,7 @@ fn native_headers_corruption_type_and_lifecycle_errors_are_observable() {
     let fields = field_infos::parse(&data("asserting_doc_values.fnm"), &ID, "").unwrap();
     let files = files();
     let format = Lucene90DocValuesFormat;
-    for ext in ["dvm", "dvd", "dvs"] {
+    for ext in ["dvm", "dvd", "dvs", "dvp"] {
         let mut damaged = files.clone();
         damaged.get_mut(ext).unwrap()[0] ^= 1;
         assert!(format.fields_producer(read(&fields, &damaged)).is_err());

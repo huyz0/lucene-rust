@@ -228,11 +228,12 @@ fn count_terms(reader: &DirectoryReader, field: &str) -> lucene_search::Result<i
 
 /// `IndexUtils.getIndexFormat`'s name for a `segments_N` format version.
 pub fn index_format(version: i32) -> &'static str {
-    // SegmentInfos.VERSION_74 / VERSION_86
+    // SegmentInfos.VERSION_74 / VERSION_86 / VERSION_10_6
     match version {
         9 => "Lucene 7.4 or later",
         10 => "Lucene 8.6 or later",
-        v if v > 10 => "Lucene 8.6 or later (UNSUPPORTED)",
+        11 => "Lucene 10.6 or later",
+        v if v > 11 => "Lucene 10.6 or later (UNSUPPORTED)",
         _ => "unknown",
     }
 }
@@ -251,7 +252,8 @@ mod tests {
     fn formats_are_named_by_header_version() {
         assert_eq!(index_format(9), "Lucene 7.4 or later");
         assert_eq!(index_format(10), "Lucene 8.6 or later");
-        assert_eq!(index_format(11), "Lucene 8.6 or later (UNSUPPORTED)");
+        assert_eq!(index_format(11), "Lucene 10.6 or later");
+        assert_eq!(index_format(12), "Lucene 10.6 or later (UNSUPPORTED)");
         assert_eq!(index_format(3), "unknown");
         assert_eq!(segments_file_name(36), "segments_10");
         let names: Vec<&str> = TermCountsOrder::ALL.iter().map(|o| o.name()).collect();

@@ -5,7 +5,7 @@ deletions: true
 deleted documents: 1
 optimized: false
 version: 14
-format: Lucene 8.6 or later
+format: Lucene 10.6 or later
 commit: segments_3 (generation=3, segs=3)
 user data: {note=a deletion, source=GenToolsLuke, step=3}
 field names: [id, title, author, text, subject, lang, year, notes, downloads, rating, isbn, pages, weight, vec]

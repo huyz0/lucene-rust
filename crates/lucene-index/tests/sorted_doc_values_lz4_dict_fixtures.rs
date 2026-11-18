@@ -11,6 +11,7 @@
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+use lucene_codecs::index_format::IndexFormat;
 use lucene_index::document::{Document, SortedDocValuesField, SortedSetDocValuesField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
@@ -43,10 +44,11 @@ fn terms_dict_blocks_compress_against_their_first_term_as_java_does() {
     let dir = FsDirectory::open(&tmp);
     let version = LuceneVersion {
         major: 10,
-        minor: 5,
+        minor: 6,
         bugfix: 0,
     };
     let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+    w.set_index_format(IndexFormat::Lucene106);
     for i in 0..300 {
         let mut d = Document::new();
         d.add(SortedDocValuesField::new("sorted", term(i)));
@@ -64,7 +66,7 @@ fn terms_dict_blocks_compress_against_their_first_term_as_java_does() {
     let theirs = segment_infos::read_latest(&java).unwrap();
     assert_eq!(ours.segments.len(), 1);
     let (a, b) = (&ours.segments[0], &theirs.segments[0]);
-    for ext in ["dvm", "dvd", "dvs"] {
+    for ext in ["dvm", "dvd", "dvp", "dvs"] {
         let name = format!("{}_Lucene90_0.{ext}", a.segment_name);
         let mine = dir.open(&name).unwrap();
         let java_bytes = java.open(&name).unwrap();

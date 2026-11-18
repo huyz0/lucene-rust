@@ -9,7 +9,7 @@ use lucene_test_framework::index::threaded_indexing_and_searching::{
 };
 use lucene_test_framework::util::lucene_test_case::LuceneTestCase;
 
-const SEEDS: [i64; 3] = [0x7E57, -0x0BAD_5EED_1234, 42];
+const SEEDS: [i64; 5] = [0x7E57, -0x0BAD_5EED_1234, 42, 2, 5];
 
 fn runs(name: &str, mode: ReaderMode, multiplier: i32) -> Vec<ThreadedRunStats> {
     SEEDS

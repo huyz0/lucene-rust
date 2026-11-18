@@ -65,6 +65,18 @@ impl Bulk {
         }
     }
 
+    /// Whether `scoreWindow` takes the leap-frog path for a lone two-phase
+    /// clause whose approximation costs `cost`: a segment-sparse approximation
+    /// (`cost <= maxDoc / 4`) that is not the whole segment (`cost < maxDoc`).
+    /// Leap-frog confirms only live candidates, so a window's deleted
+    /// documents never reach `matches()`.
+    pub fn with_leap_frog(mut self, cost: i64) -> Self {
+        if self.windows && cost < i64::from(self.max_doc) && cost <= i64::from(self.max_doc / 4) {
+            self.live_first = true;
+        }
+        self
+    }
+
     /// `DefaultBulkScorer`, what a plain `ScorerSupplier` (or a
     /// non-exhaustive `ConstantScoreQuery`) scores with: live candidates
     /// confirmed, the search ending at the hit that saturates the collector.
