@@ -138,6 +138,8 @@ fn undecodable_message(e: &Error) -> Option<String> {
 const STREAM_SLOTS: usize = 8;
 /// How many of a file's slots hold candidate runs rather than confirmed ones.
 const CANDIDATE_SLOTS: usize = 4;
+/// Set in a run's slot when the scan goes backwards.
+const BACKWARD: u64 = 1 << 63;
 
 const UFFD_API: u64 = 0xAA;
 const UFFD_USER_MODE_ONLY: libc::c_int = 1;
@@ -1476,14 +1478,28 @@ impl Pager {
         // doubles its window.
         let found = file.streams.iter().enumerate().find_map(|(slot, s)| {
             let prev = s.load(Ordering::Relaxed);
-            ((prev != u64::MAX) && ((prev >> 24) as usize == index)).then_some((slot, prev))
-        });
-        let (slot, window) = match found {
-            Some((slot, prev)) if slot >= CANDIDATE_SLOTS => {
-                let size = (prev & 0xFF_FFFF) as usize;
-                (slot, size.saturating_mul(2).clamp(2, file.readahead_max))
+            if prev == u64::MAX {
+                return None;
             }
-            Some((slot, _)) => {
+            let next = ((prev & !BACKWARD) >> 24) as usize;
+            if next == index {
+                return Some((slot, prev, prev & BACKWARD != 0));
+            }
+            // A candidate holds the page after its fault: a fault on the
+            // page before it starts a scan backwards.
+            (slot < CANDIDATE_SLOTS && next == index.saturating_add(2))
+                .then_some((slot, prev, true))
+        });
+        let (slot, window, backward) = match found {
+            Some((slot, prev, backward)) if slot >= CANDIDATE_SLOTS => {
+                let size = (prev & 0xFF_FFFF) as usize;
+                (
+                    slot,
+                    size.saturating_mul(2).clamp(2, file.readahead_max),
+                    backward,
+                )
+            }
+            Some((slot, _, backward)) => {
                 file.streams[slot].store(u64::MAX, Ordering::Relaxed);
                 let runs = STREAM_SLOTS.saturating_sub(CANDIDATE_SLOTS).max(1);
                 let run = CANDIDATE_SLOTS.saturating_add(
@@ -1492,7 +1508,7 @@ impl Pager {
                         .checked_rem(runs)
                         .unwrap_or(0),
                 );
-                (run, 1)
+                (run, 1, backward)
             }
             None => (
                 file.next_stream
@@ -1500,31 +1516,60 @@ impl Pager {
                     .checked_rem(CANDIDATE_SLOTS)
                     .unwrap_or(0),
                 1,
+                false,
             ),
         };
-        let end = index.saturating_add(window).min(file.pages);
-        let mut pages: Vec<u64> = vec![index as u64];
-        pages.extend(
+        let (first, end) = if backward {
+            (
+                index.saturating_sub(window.saturating_sub(1)),
+                index.saturating_add(1),
+            )
+        } else {
+            (index, index.saturating_add(window).min(file.pages))
+        };
+        // The page the run's next fault is expected on.
+        let (next, flag) = if backward {
+            // Page 0 ends the run: no page lies before it.
+            (first.checked_sub(1), BACKWARD)
+        } else {
+            (Some(end), 0)
+        };
+        let ahead: Vec<u64> = if backward {
+            (first..index)
+                .filter(|&p| !file.live[p].load(Ordering::Acquire))
+                .map(|p| p as u64)
+                .collect()
+        } else {
             (index.saturating_add(1)..end)
                 .filter(|&p| !file.live[p].load(Ordering::Acquire))
-                .map(|p| p as u64),
-        );
-        let packed = ((end as u64) << 24) | (end.saturating_sub(index) as u64 & 0xFF_FFFF);
+                .map(|p| p as u64)
+                .collect()
+        };
+        let packed = next.map_or(u64::MAX, |next| {
+            ((next as u64) << 24) | (end.saturating_sub(first) as u64 & 0xFF_FFFF) | flag
+        });
         file.streams[slot].store(packed, Ordering::Relaxed);
-        if pages.len() == 1 && window == 1 {
+        if ahead.is_empty() && window == 1 {
             return false;
         }
-        let ahead = pages.get(1..).unwrap_or(&[]);
-        let left = file.start_background(ahead);
+        let left = file.start_background(&ahead);
         if left.is_empty() {
             // Started (or already on its way): the faulting page alone.
             return false;
         }
-        let mut pages = vec![index as u64];
-        pages.extend(left);
         // The filler hands a read's pages over last to first: installing
         // the faulting page wakes its thread, whose next read must not
-        // fault on a page still on its way.
+        // fault on a page still on its way. Backwards the pages stay in
+        // ascending order so the read is one run; the faulting page is the
+        // window's last.
+        let mut pages: Vec<u64> = Vec::with_capacity(left.len().saturating_add(1));
+        if backward {
+            pages.extend(left);
+            pages.push(index as u64);
+        } else {
+            pages.push(index as u64);
+            pages.extend(left);
+        }
         file.filler.fill_into(&pages, &file.sink()).is_ok()
             && file.live[index].load(Ordering::Acquire)
     }

@@ -3,7 +3,7 @@
 //! point reads, or a scan of runs at random places (stored fields read in
 //! docid order).
 //!
-//! `pager_pattern <dir> <file_mb> <budget_mb> <page_kb> <readahead_kb> seq|seq4|rand|runs|scanrand [reads]`
+//! `pager_pattern <dir> <file_mb> <budget_mb> <page_kb> <readahead_kb> seq|seq4|rand|runs|scanrand|back|stride<pages>|back4|rec<bytes> [reads]`
 #![allow(clippy::arithmetic_side_effects)]
 use lucene_store::{Directory, PagedFsConfig, PagedFsDirectory};
 use std::io::Write;
@@ -56,7 +56,7 @@ fn main() {
             ..PagedFsConfig::default()
         },
     );
-    if std::env::var("PAGER_DROP").is_ok() {
+    {
         let _ = std::process::Command::new("sh")
             .args(["-c", "sync; echo 3 > /proc/sys/vm/drop_caches"])
             .status();
@@ -71,6 +71,61 @@ fn main() {
             for at in (0..n).step_by(4096) {
                 sum = sum.wrapping_add(f[at] as u64);
             }
+        }
+        "back" => {
+            for at in (0..n).step_by(4096).rev() {
+                sum = sum.wrapping_add(f[at] as u64);
+            }
+        }
+        "back4" => {
+            // Four threads each scanning a quarter of the file backwards.
+            let q = n / 4;
+            let total = std::sync::atomic::AtomicU64::new(0);
+            std::thread::scope(|sc| {
+                for i in 0..4 {
+                    let (f, total) = (&f, &total);
+                    sc.spawn(move || {
+                        let mut local = 0u64;
+                        for at in (i * q..(i + 1) * q).step_by(4096).rev() {
+                            local = local.wrapping_add(f[at] as u64);
+                        }
+                        total.fetch_add(local, std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
+            });
+            sum = total.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        p if p.starts_with("stride") => {
+            // One read every `pages` x 4 KiB of the file, in order:
+            // doc values or points read at a fixed distance.
+            let step: usize = p["stride".len()..].parse::<usize>().unwrap() * 4096;
+            for at in (0..n).step_by(step) {
+                sum = sum.wrapping_add(f[at] as u64);
+            }
+        }
+        p if p.starts_with("rec") => {
+            // `reads` random records of `bytes` bytes each, at record-aligned
+            // offsets, on four threads: quantized codes read per node.
+            let rec: usize = p["rec".len()..].parse().unwrap();
+            let slots = n / rec;
+            let total = std::sync::atomic::AtomicU64::new(0);
+            std::thread::scope(|sc| {
+                for t in 0..4u64 {
+                    let (f, total) = (&f, &total);
+                    sc.spawn(move || {
+                        let mut y = 99 + t;
+                        let mut local = 0u64;
+                        for _ in 0..reads / 4 {
+                            let at = (rng(&mut y) as usize % slots) * rec;
+                            for b in f[at..at + rec].iter().step_by(64) {
+                                local = local.wrapping_add(*b as u64);
+                            }
+                        }
+                        total.fetch_add(local, std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
+            });
+            sum = total.load(std::sync::atomic::Ordering::Relaxed);
         }
         "rand" => {
             for _ in 0..reads {

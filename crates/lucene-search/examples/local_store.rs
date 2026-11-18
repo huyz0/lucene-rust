@@ -6,7 +6,7 @@
 //! cargo run --release -p lucene-search --example local_store -- build <dir> [docs]
 //! cargo run --release -p lucene-search --example local_store -- query <dir> mmap|paged \
 //!     [--budget-mb N] [--page-kb N] [--queries N] [--passes N] [--threads N] [--buffered] [--readahead-kb N] [--fixed]
-//!     [--tenants N --hot N --hot-share F]
+//!     [--page-sizes ext:kb,..] [--tenants N --hot N --hot-share F]
 //! cargo run --release -p lucene-search --example local_store -- build-tenants <dir> [docs] [tenants]
 //! ```
 //!
@@ -320,19 +320,25 @@ fn query(args: &[String]) {
     let dir: Box<dyn Directory> = match mode {
         "mmap" => Box::new(MmapDirectory::open(path)),
         "paged" => {
-            let d = PagedFsDirectory::with_config(
-                path,
-                PagedFsConfig {
-                    page_size: page_kb << 10,
-                    direct_io: !buffered,
-                    adaptive: !args.iter().any(|a| a == "--fixed"),
-                    readahead: opt(args, "--readahead-kb")
-                        .map_or(lucene_store::paged_fs_directory::DEFAULT_READAHEAD, |v| {
-                            v.parse::<usize>().unwrap() << 10
-                        }),
-                    ..PagedFsConfig::default()
-                },
-            );
+            let mut config = PagedFsConfig {
+                page_size: page_kb << 10,
+                direct_io: !buffered,
+                adaptive: !args.iter().any(|a| a == "--fixed"),
+                readahead: opt(args, "--readahead-kb")
+                    .map_or(lucene_store::paged_fs_directory::DEFAULT_READAHEAD, |v| {
+                        v.parse::<usize>().unwrap() << 10
+                    }),
+                ..PagedFsConfig::default()
+            };
+            if let Some(spec) = opt(args, "--page-sizes") {
+                for item in spec.split(',') {
+                    let (ext, kb) = item.split_once(':').expect("--page-sizes ext:kb,...");
+                    config
+                        .page_sizes
+                        .push((ext.to_string(), kb.parse::<usize>().unwrap() << 10));
+                }
+            }
+            let d = PagedFsDirectory::with_config(path, config);
             assert!(d.is_paged(), "userfaultfd is unavailable");
             lucene_store::paged_input::Pager::global()
                 .unwrap()
