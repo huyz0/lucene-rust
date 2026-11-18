@@ -13,6 +13,7 @@ expressions/js/JavascriptBaseVisitor	not-needed	ANTLR's generated visitor base; 
 expressions/js/JavascriptCompiler	ported	crates/lucene-expressions/src/js.rs::compile_with
 expressions/js/JavascriptErrorHandlingLexer	ported	crates/lucene-expressions/src/js.rs::unexpected_char
 expressions/js/JavascriptLexer	ported	crates/lucene-expressions/src/js.rs::lex
+expressions/js/JavascriptNestingDepthListener	ported	crates/lucene-expressions/src/js.rs::compile_with_max_nesting_depth
 expressions/js/JavascriptParser	ported	crates/lucene-expressions/src/js.rs::Parser
 expressions/js/JavascriptParserErrorStrategy	ported	crates/lucene-expressions/src/js.rs::Parser
 expressions/js/JavascriptVisitor	not-needed	ANTLR's generated visitor interface; the lowering pass in js.rs walks the parse tree directly

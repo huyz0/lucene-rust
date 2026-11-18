@@ -19,6 +19,7 @@ search/grouping/GroupDocs	ported	crates/lucene-grouping/src/lib.rs::GroupDocs
 search/grouping/GroupFacetCollector	ported	crates/lucene-grouping/src/facet.rs::GroupedFacetResult
 search/grouping/GroupReducer	ported	crates/lucene-grouping/src/lib.rs::GroupReducer
 search/grouping/GroupSelector	ported	crates/lucene-grouping/src/lib.rs::GroupSelector
+search/grouping/GroupedFacetResult	ported	crates/lucene-grouping/src/facet.rs::GroupedFacetResult
 search/grouping/GroupingSearch	ported	crates/lucene-grouping/src/search.rs::GroupingSearch
 search/grouping/LongRange	ported	crates/lucene-grouping/src/selector.rs::LongRange
 search/grouping/LongRangeFactory	ported	crates/lucene-grouping/src/selector.rs::LongRangeFactory
@@ -26,6 +27,7 @@ search/grouping/LongRangeGroupSelector	ported	crates/lucene-grouping/src/selecto
 search/grouping/SearchGroup	ported	crates/lucene-grouping/src/lib.rs::SearchGroup
 search/grouping/SecondPassGroupingCollector	ported	crates/lucene-grouping/src/collectors.rs::SecondPassGroupingCollector
 search/grouping/TermGroupFacetCollector	ported	crates/lucene-grouping/src/facet.rs::TermGroupFacetCollector
+search/grouping/TermGroupFacetCollectorManager	partial	crates/lucene-grouping/src/facet.rs::TermGroupFacetCollector -- M14: the per-slice CollectorManager is not ported; the collector it makes is
 search/grouping/TermGroupSelector	ported	crates/lucene-grouping/src/selector.rs::TermGroupSelector
 search/grouping/TopGroups	ported	crates/lucene-grouping/src/lib.rs::TopGroups
 search/grouping/TopGroupsCollector	ported	crates/lucene-grouping/src/collectors.rs::TopGroupsCollector

@@ -21,16 +21,16 @@ LIMIT = 3000
 
 # Files over LIMIT production lines, with their size when listed.
 OVER = {
-    "crates/lucene-index/src/index_writer.rs": 13173,
+    "crates/lucene-index/src/index_writer.rs": 13151,
     "crates/lucene-aggs/src/bucket_aggs.rs": 7314,
     "crates/lucene-codecs/src/postings.rs": 6844,
-    "crates/lucene-index/src/merge.rs": 5851,
-    "crates/lucene-index/src/check_index.rs": 5734,
-    "crates/lucene-codecs/src/doc_values.rs": 6176,
+    "crates/lucene-index/src/merge.rs": 5741,
+    "crates/lucene-index/src/check_index.rs": 5677,
+    "crates/lucene-codecs/src/doc_values.rs": 6117,
     "crates/lucene-search/src/top_field.rs": 5754,
     "crates/lucene-search/src/lib.rs": 5723,
     "crates/lucene-codecs/src/blocktree.rs": 5698,
-    "crates/lucene-search/src/directory_reader.rs": 4179,
+    "crates/lucene-search/src/directory_reader.rs": 4102,
     "crates/lucene-search/src/vector_query.rs": 4014,
     "crates/lucene-codecs/src/fst.rs": 3908,
     "crates/lucene-analysis/src/en/kstem_data.rs": 3791,

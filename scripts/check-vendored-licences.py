@@ -62,6 +62,12 @@ VENDORED = {
     "fixtures/testframework/data": [
         ("this project's Java-generated test-framework fixtures (Apache-2.0)", "LICENSE", APACHE),
     ],
+    "crates/lucene-painless/src/api": [
+        ("this project's JDK-generated Painless API test tables (Apache-2.0)", "LICENSE", APACHE),
+    ],
+    "crates/lucene-painless/src/api/string": [
+        ("this project's JDK-generated Painless string test tables (Apache-2.0)", "LICENSE", APACHE),
+    ],
     "fixtures/data/simpletext_index_sort": [
         ("this project's Java-generated SimpleText test fixtures (Apache-2.0)", "LICENSE", APACHE),
     ],
