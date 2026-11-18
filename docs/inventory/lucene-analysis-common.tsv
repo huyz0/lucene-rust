@@ -71,6 +71,7 @@ analysis/compound/hyphenation/HyphenationTree	ported	crates/lucene-analysis/src/
 analysis/compound/hyphenation/PatternConsumer	ported	crates/lucene-analysis/src/compound/hyphenation.rs::add_pattern
 analysis/compound/hyphenation/PatternParser	ported	crates/lucene-analysis/src/compound/hyphenation.rs::PatternParser
 analysis/compound/hyphenation/TernaryTree	ported	crates/lucene-analysis/src/compound/hyphenation.rs::search_patterns
+analysis/core/CaseFoldingFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::CaseFoldingFilterFactory
 analysis/core/DecimalDigitFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::DecimalDigitFilter
 analysis/core/DecimalDigitFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::DecimalDigitFilterFactory
 analysis/core/FlattenGraphFilter	ported	crates/lucene-analysis/src/core_analysis/flatten_graph_filter.rs::FlattenGraphFilter
@@ -206,6 +207,7 @@ analysis/hunspell/ConvTable	ported	crates/lucene-analysis/src/hunspell/conv_tabl
 analysis/hunspell/DictEntries	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::lookup_entries -- M11 T11.4
 analysis/hunspell/DictEntry	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::DictEntry -- M11 T11.4
 analysis/hunspell/Dictionary	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::Dictionary -- M11 T11.4
+analysis/hunspell/DictionarySuggester	deferred:M14	Lucene 10.6 hunspell class not ported yet; Suggester and Hunspell::suggest are
 analysis/hunspell/EntrySuggestion	ported	crates/lucene-analysis/src/hunspell/entry_suggestion.rs::EntrySuggestion
 analysis/hunspell/FlagEnumerator	ported	crates/lucene-analysis/src/hunspell/flags.rs::FlagEnumerator -- M11 T11.4
 analysis/hunspell/FlyweightEntry	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordEntry -- M11 T11.4
@@ -443,6 +445,13 @@ analysis/te/TeluguStemFilter	ported	crates/lucene-analysis/src/lang/te.rs::Telug
 analysis/te/TeluguStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TeluguStemFilterFactory
 analysis/te/TeluguStemmer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemmer
 analysis/th/ThaiAnalyzer	not-supported	crates/lucene-analysis/src/lang/th.rs::ThaiAnalyzer -- its ThaiTokenizer refuses (UnsupportedOperation: the JDK's Thai dictionary is GPL JDK data); stop set and normalize work
+analysis/th/ThaiCharFilter	ported	crates/lucene-analysis/src/lang/th.rs::ThaiCharFilter
+analysis/th/ThaiCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::ThaiCharFilterFactory
+analysis/th/ThaiNormalizationFilter	ported	crates/lucene-analysis/src/lang/th.rs::ThaiNormalizationFilter
+analysis/th/ThaiNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ThaiNormalizationFilterFactory
+analysis/th/ThaiNormalizer	ported	crates/lucene-analysis/src/lang/th.rs::ThaiNormalizer
+analysis/th/ThaiRepeatFilter	ported	crates/lucene-analysis/src/lang/th.rs::ThaiRepeatFilter
+analysis/th/ThaiRepeatFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ThaiRepeatFilterFactory
 analysis/th/ThaiTokenizer	not-supported	crates/lucene-analysis/src/lang/th.rs::ThaiTokenizer -- Lucene on a JRE without Thai segmentation: UnsupportedOperation, as the JDK's Thai word dictionary is GPL JDK data
 analysis/th/ThaiTokenizerFactory	not-supported	crates/lucene-analysis/src/factory/tokenizers.rs::ThaiTokenizerFactory -- arguments as Java; create() is ThaiTokenizer's UnsupportedOperation
 analysis/tr/ApostropheFilter	ported	crates/lucene-analysis/src/lang/tr.rs::ApostropheFilter

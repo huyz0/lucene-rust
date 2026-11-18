@@ -305,6 +305,14 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     }
 
     /** Maps a native status to Java: refusals to {@link IllegalArgumentException}, the rest tragic. */
+    /** Runs one native setter on the open writer under the writer lock and checks its status. */
+    private void locked(java.util.function.IntSupplier call, String what) throws IOException {
+        synchronized (lock) {
+            ensureOpen();
+            check(call.getAsInt(), what);
+        }
+    }
+
     private void check(int status, String what) throws IOException {
         if (status == NativeBridge.OK) {
             return;
@@ -883,16 +891,12 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
      * upgrade) copy stored-field chunks instead of recompressing them.
      */
     void setMergeLz4HcNonForce() throws IOException {
-        synchronized (lock) {
-            check(NativeWriter.writerSetMergeLz4HcNonForce(handle, true), "setting index.codec.stored_fields.recompress_on_merge");
-        }
+        locked(() -> NativeWriter.writerSetMergeLz4HcNonForce(handle, true), "setting index.codec.stored_fields.recompress_on_merge");
     }
 
     /** {@code index.codec.index_format}: {@code 105} or {@code 106}, see {@link IndexFormatSettings}. */
     void setIndexFormat(int format) throws IOException {
-        synchronized (lock) {
-            check(NativeWriter.writerSetIndexFormat(handle, format), "setting index.codec.index_format");
-        }
+        locked(() -> NativeWriter.writerSetIndexFormat(handle, format), "setting index.codec.index_format");
     }
 
     /**
@@ -900,9 +904,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
      * index sort's first field, {@code 0} off.
      */
     void setIvfPartitionClusters(int minVectors) throws IOException {
-        synchronized (lock) {
-            check(NativeWriter.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
-        }
+        locked(() -> NativeWriter.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
     }
 
     /**
@@ -1025,10 +1027,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
      * its first documents, or keeps the choice its commit holds. Called before the first document.
      */
     void setAdaptiveDocValuesAuto() throws IOException {
-        synchronized (lock) {
-            ensureOpen();
-            check(NativeWriter.writerSetAdaptiveAuto(handle), "setting adaptive doc values to auto");
-        }
+        locked(() -> NativeWriter.writerSetAdaptiveAuto(handle), "setting adaptive doc values to auto");
     }
 
     /** {@code auto}'s choice: true adaptive, false stock, null not made yet (or not {@code auto}). */
@@ -1046,10 +1045,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         if (liveSearch == false || max.millis() == 0) {
             return;
         }
-        synchronized (lock) {
-            ensureOpen();
-            check(NativeLive.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
-        }
+        locked(() -> NativeLive.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
         liveStalenessNanos = max.nanos();
     }
 

@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::dot_rows;
 
 fn naive(a: &[f32], b: &[f32], dim: usize) -> Vec<f32> {
