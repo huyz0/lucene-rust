@@ -263,6 +263,20 @@ impl KeyOrds {
         (h >> shift) as usize
     }
 
+    /// Tables from this many slots (1 MiB) no longer sit in the cache.
+    pub(super) const PREFETCH_SLOTS: usize = 1 << 16;
+    /// Documents ahead whose slot a lookup requests early.
+    pub(super) const PREFETCH_AHEAD: usize = 12;
+
+    /// Starts loading the slot `(owning, key)` hashes to.
+    #[inline(always)]
+    pub(super) fn prefetch(&self, owning: u32, key: i64) {
+        if !self.slots.is_empty() {
+            let at = Self::slot_of(owning, key, Self::shift(self.slots.len()));
+            lucene_util::simd::prefetch(&self.slots, at);
+        }
+    }
+
     /// The shift [`KeyOrds::slot_of`] takes for a table of `len` slots.
     #[inline]
     pub(super) fn shift(len: usize) -> u32 {
@@ -371,6 +385,26 @@ impl KeyOrds {
                     ord: ord as u32,
                 };
             }
+        }
+    }
+}
+
+/// The double of a sortable long ([`numeric_terms_key`] of a double).
+#[inline]
+pub(super) fn sortable_double(k: i64) -> f64 {
+    f64::from_bits((k ^ ((k >> 63) & i64::MAX)) as u64)
+}
+
+/// The bucket key of a numeric `terms` value: a long as it is; a double or
+/// float as `NumericUtils.doubleToSortableLong` of its double, as
+/// `FieldData.toSortableLongBits` hands `NumericTermsAggregator` its values.
+#[inline(always)]
+pub(super) fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
+    match kind {
+        ValueKind::Long => v,
+        k => {
+            let bits = java_double_bits(metric_aggs::to_double(k, v));
+            bits ^ ((bits >> 63) & i64::MAX)
         }
     }
 }

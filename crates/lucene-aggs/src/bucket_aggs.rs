@@ -2374,26 +2374,6 @@ fn numeric_hash(kind: ValueKind, v: i64) -> i64 {
     })
 }
 
-/// The double of a sortable long ([`numeric_terms_key`] of a double).
-#[inline]
-fn sortable_double(k: i64) -> f64 {
-    f64::from_bits((k ^ ((k >> 63) & i64::MAX)) as u64)
-}
-
-/// The bucket key of a numeric `terms` value: a long as it is; a double or
-/// float as `NumericUtils.doubleToSortableLong` of its double, as
-/// `FieldData.toSortableLongBits` hands `NumericTermsAggregator` its values.
-#[inline(always)]
-fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
-    match kind {
-        ValueKind::Long => v,
-        k => {
-            let bits = java_double_bits(metric_aggs::to_double(k, v));
-            bits ^ ((bits >> 63) & i64::MAX)
-        }
-    }
-}
-
 /// An owning bucket's sketch, created at its first value.
 fn sketch_for(
     s: &mut Option<crate::cardinality_sketch::Sketch>,
@@ -2979,12 +2959,24 @@ fn collect_window(
                 win_docs.resize(docs.len(), 0);
                 win_ords.resize(docs.len(), 0);
             }
+            // A table too big for the cache: each lookup is a miss, so the
+            // slot of a value a few documents ahead is requested now and the
+            // misses overlap.
+            let big = ords.slots.len() >= KeyOrds::PREFETCH_SLOTS;
             leaf.each_prefetched(
                 docs,
                 #[inline(always)]
                 |i, v| {
                     let owning = owners.get(i).copied().unwrap_or(0);
                     let key = numeric_terms_key(*kind, v);
+                    if big {
+                        let ahead = i.saturating_add(KeyOrds::PREFETCH_AHEAD);
+                        if let Some(Some(next)) = docs.get(ahead).and_then(|&d| leaf.prefetched(d))
+                        {
+                            let next_owner = owners.get(ahead).copied().unwrap_or(0);
+                            ords.prefetch(next_owner, numeric_terms_key(*kind, next));
+                        }
+                    }
                     let index = if *kind == ValueKind::Long {
                         key as u64
                     } else {
