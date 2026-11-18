@@ -3,7 +3,7 @@
 //! point reads, or a scan of runs at random places (stored fields read in
 //! docid order).
 //!
-//! `pager_pattern <dir> <file_mb> <budget_mb> <page_kb> <readahead_kb> seq|seq4|rand|runs [reads]`
+//! `pager_pattern <dir> <file_mb> <budget_mb> <page_kb> <readahead_kb> seq|seq4|rand|runs|scanrand [reads]`
 #![allow(clippy::arithmetic_side_effects)]
 use lucene_store::{Directory, PagedFsConfig, PagedFsDirectory};
 use std::io::Write;
@@ -96,6 +96,36 @@ fn main() {
                 }
             });
             sum = total.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        "scanrand" => {
+            // One scan in order while four threads read at random places:
+            // a merge reading a segment while queries search it. Prints
+            // the scan's time.
+            let done = std::sync::atomic::AtomicBool::new(false);
+            let scan_s = std::thread::scope(|sc| {
+                for t in 0..4u64 {
+                    let (f, done) = (&f, &done);
+                    sc.spawn(move || {
+                        let mut y = 1000 + t;
+                        let mut local = 0u64;
+                        while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                            let at = (rng(&mut y) as usize) % (n - 4096);
+                            local = local.wrapping_add(f[at] as u64);
+                            std::thread::sleep(std::time::Duration::from_micros(200));
+                        }
+                        std::hint::black_box(local);
+                    });
+                }
+                let t0 = Instant::now();
+                let mut local = 0u64;
+                for at in (0..n).step_by(4096) {
+                    local = local.wrapping_add(f[at] as u64);
+                }
+                std::hint::black_box(local);
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                t0.elapsed().as_secs_f64()
+            });
+            println!("scan alone-in-crowd: {scan_s:.2}s");
         }
         "runs" => {
             // 4 MiB runs at random places, read in order.

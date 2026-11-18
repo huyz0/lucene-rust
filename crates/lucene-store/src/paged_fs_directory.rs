@@ -134,25 +134,43 @@ const RANDOM_ACCESS_EXTENSIONS: &[&str] = &["vec", "ivv", "dhn"];
 /// quantized vectors, IVF cluster codes.
 const SEARCH_STRUCTURE_EXTENSIONS: &[&str] = &["vex", "veq", "ivp"];
 
+/// The page of a file too large to stay resident, given the advice its
+/// extension has ([`crate::read_advice`], the table the mapped reader uses):
+/// random advice and the vector data files read a few hundred bytes at
+/// scattered offsets, so a page is the smallest, 4 KiB; sequential advice
+/// keeps the large page, since read-ahead fetches what a scan needs; other
+/// files get 16 KiB.
+fn small_page(ext: &str, advice: crate::read_advice::ReadAdvice) -> usize {
+    use crate::read_advice::ReadAdvice;
+    match advice {
+        ReadAdvice::Sequential => usize::MAX,
+        ReadAdvice::Random => 4 << 10,
+        ReadAdvice::Normal | ReadAdvice::WillNeed | ReadAdvice::Auto => {
+            if RANDOM_ACCESS_EXTENSIONS.contains(&ext) {
+                4 << 10
+            } else {
+                16 << 10
+            }
+        }
+    }
+}
+
 impl PagedFsConfig {
     /// The page size of a file named `name` of `len` bytes when the pager
     /// keeps `budget` bytes resident. An explicit [`Self::page_sizes`] entry
     /// wins. Otherwise, with [`Self::adaptive`], a file larger than half the
     /// budget, which cannot stay resident, gets small pages so a read
-    /// brings in little it does not need: 4 KiB for vector data, 16 KiB for
-    /// the rest. Everything else gets [`Self::page_size`].
+    /// brings in little it does not need: 4 KiB for files advised random
+    /// ([`crate::read_advice`]) and for vector data, none below
+    /// [`Self::page_size`] for files advised sequential, 16 KiB for the
+    /// rest. Everything else gets [`Self::page_size`].
     pub fn page_size_for(&self, name: &str, len: u64, budget: u64) -> usize {
         let ext = extension(name);
         if let Some(&(_, size)) = self.page_sizes.iter().find(|(e, _)| e == ext) {
             return size;
         }
         if self.adaptive && len > budget / 2 {
-            let small = if RANDOM_ACCESS_EXTENSIONS.contains(&ext) {
-                4 << 10
-            } else {
-                16 << 10
-            };
-            return small.min(self.page_size);
+            return small_page(ext, crate::read_advice::for_extension(ext)).min(self.page_size);
         }
         self.page_size
     }
@@ -164,7 +182,11 @@ impl PagedFsConfig {
     pub fn pins(&self, name: &str, len: u64, budget: u64) -> bool {
         let ext = extension(name);
         self.pinned_extensions.iter().any(|p| p == ext)
-            || (self.adaptive && SEARCH_STRUCTURE_EXTENSIONS.contains(&ext) && len <= budget / 8)
+            || (self.adaptive
+                && len <= budget / 8
+                && (SEARCH_STRUCTURE_EXTENSIONS.contains(&ext)
+                    || crate::read_advice::for_extension(ext)
+                        == crate::read_advice::ReadAdvice::WillNeed))
     }
 }
 

@@ -136,6 +136,8 @@ fn undecodable_message(e: &Error) -> Option<String> {
 
 /// Runs of faults a file tracks for read-ahead at once.
 const STREAM_SLOTS: usize = 8;
+/// How many of a file's slots hold candidate runs rather than confirmed ones.
+const CANDIDATE_SLOTS: usize = 4;
 
 const UFFD_API: u64 = 0xAA;
 const UFFD_USER_MODE_ONLY: libc::c_int = 1;
@@ -364,8 +366,10 @@ struct File {
     /// `fill_ahead`). Several readers scanning one file at different places
     /// keep a run each.
     streams: [AtomicU64; STREAM_SLOTS],
-    /// Which slot a fault that continues no run takes over next.
+    /// Which candidate slot a fault that continues no run takes over next.
     next_stream: AtomicUsize,
+    /// Which confirmed slot a newly confirmed run takes over next.
+    next_run: AtomicUsize,
     /// When eviction last released each page, on the pager's eviction
     /// clock (0: never).
     evicted_at: Vec<AtomicU32>,
@@ -1082,6 +1086,7 @@ impl Pager {
             readahead_max: readahead_max.max(1),
             streams: std::array::from_fn(|_| AtomicU64::new(u64::MAX)),
             next_stream: AtomicUsize::new(0),
+            next_run: AtomicUsize::new(0),
             evicted_at: (0..pages).map(|_| AtomicU32::new(0)).collect(),
             inflight: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             live_count: AtomicUsize::new(0),
@@ -1461,19 +1466,39 @@ impl Pager {
     /// `false` leaves `index` to the single-page path, which retries.
     fn fill_ahead(&self, file: &Arc<File>, index: usize) -> bool {
         // A slot packs the previous window's next page (high 40 bits) and
-        // its size in pages (low 24 bits); a fault continues the run whose
-        // window ended right before it.
+        // its size in pages (low 24 bits). The first slots hold candidates:
+        // the page after each fault that continued no run, replaced in turn
+        // by every such fault, so readers at random places churn through
+        // them. The rest hold confirmed runs, which only another confirmed
+        // run replaces: a fault that continues a candidate confirms it, and
+        // reads no more than the faulting page, so a read straddling a page
+        // boundary starts no window; one that continues a confirmed run
+        // doubles its window.
         let found = file.streams.iter().enumerate().find_map(|(slot, s)| {
             let prev = s.load(Ordering::Relaxed);
             ((prev != u64::MAX) && ((prev >> 24) as usize == index)).then_some((slot, prev))
         });
         let (slot, window) = match found {
-            Some((slot, prev)) => {
+            Some((slot, prev)) if slot >= CANDIDATE_SLOTS => {
                 let size = (prev & 0xFF_FFFF) as usize;
                 (slot, size.saturating_mul(2).clamp(2, file.readahead_max))
             }
+            Some((slot, _)) => {
+                file.streams[slot].store(u64::MAX, Ordering::Relaxed);
+                let runs = STREAM_SLOTS.saturating_sub(CANDIDATE_SLOTS).max(1);
+                let run = CANDIDATE_SLOTS.saturating_add(
+                    file.next_run
+                        .fetch_add(1, Ordering::Relaxed)
+                        .checked_rem(runs)
+                        .unwrap_or(0),
+                );
+                (run, 1)
+            }
             None => (
-                file.next_stream.fetch_add(1, Ordering::Relaxed) % STREAM_SLOTS,
+                file.next_stream
+                    .fetch_add(1, Ordering::Relaxed)
+                    .checked_rem(CANDIDATE_SLOTS)
+                    .unwrap_or(0),
                 1,
             ),
         };
