@@ -58,7 +58,7 @@ import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
 /**
- * The Lucene leaves that used to run on Lucene over the bridge, in {@link NativeSelfTest}: any
+ * The Lucene leaves that run natively, in {@link NativeSelfTest}: any
  * {@code AutomatonQuery} and {@code FuzzyQuery} under the constant-score and doc-values rewrites
  * (regexp flags and {@code case_insensitive}, wildcard escapes), the doc-values-only queries,
  * {@code CoveringQuery} with OpenSearch's {@code minimum_should_match_field} source, the two

@@ -800,8 +800,8 @@ impl DocValuesConsumer for Lucene90DocValuesConsumer<'_> {
         Ok(())
     }
 }
-// The measured native-open probe spent 1.21 us/open in validation's temporary
-// Vec<Value> reconstruction. Validate the existing slices without copying.
+// Validates the existing slices without copying them into a temporary
+// Vec<Value>.
 fn validate_column(column: &Column, max_doc: i32) -> Result<()> {
     // Preserve the old column_rows failure priority: check the complete shape
     // before dictionary, document or value order, even for mixed defects.

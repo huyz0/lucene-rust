@@ -16,9 +16,8 @@
 //!
 //! ## Encode side scope
 //!
-//! [`for_encode`]/[`pfor_encode`] are the production encoders (promoted from
-//! a `#[cfg(test)]`-only helper that used to exist solely to exercise
-//! [`for_decode`]'s round trip). [`pfor_encode`] is a full port of
+//! [`for_encode`]/[`pfor_encode`] are the production encoders; [`for_decode`]'s
+//! round trip is tested against them. [`pfor_encode`] is a full port of
 //! `PForUtil.encode`, including the patched-exception selection loop
 //! (histogram of required bit widths, prefer the smallest `bitsPerValue` in
 //! `[maxBitsRequired - 8, maxBitsRequired]` that keeps the exception count at

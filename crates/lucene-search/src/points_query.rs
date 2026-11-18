@@ -11,10 +11,9 @@
 //! [`lucene_codecs::points::PointsReader::range_query`] -- i.e. the real
 //! `PointValues.intersect`/`BKDReader.BKDPointTree` pruning walk, with
 //! `CELL_INSIDE_QUERY`/`CELL_OUTSIDE_QUERY`/`CELL_CROSSES_QUERY` dispatch,
-//! plus the sort+dedup fold Java's `DocIdSetBuilder` performs. (Both this
-//! module and that one predate that traversal and used to decode every point
-//! via `decode_all_points` and filter in memory; the switch to the pruning
-//! walk measured **577x** faster on a 200k-point tree -- see
+//! plus the sort+dedup fold Java's `DocIdSetBuilder` performs. (Decoding every point
+//! via `decode_all_points` and filtering in memory is what the pruning
+//! walk replaces; it measured **577x** faster on a 200k-point tree -- see
 //! `crates/lucene-codecs/benches/hot_paths.rs`'s
 //! `points/range_query_selective_200k` vs
 //! `points/decode_all_then_filter_selective_200k`.)

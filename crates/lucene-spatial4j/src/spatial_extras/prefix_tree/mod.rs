@@ -36,7 +36,7 @@
 //!   `RectangleImpl` is reset to each cell's bounds and related, where
 //!   Java makes a `QuadCell` and its rectangle per cell. [`Cell::rect_bounds`]
 //!   gives a cell's rectangle as bounds, for a heatmap that only reads them.
-//!   Same relations and bounds, bit for bit (stage 3 of the port).
+//!   Same relations and bounds, bit for bit.
 //! - `QuadPrefixTree.buildNotRobustly`/`checkBattenbergNotRobustly` and
 //!   `printInfo`, which nothing in the module calls, are not ported.
 

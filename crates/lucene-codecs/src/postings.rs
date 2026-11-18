@@ -78,7 +78,7 @@
 //!
 //! ## Per-term metadata (`decodeTerm`)
 //!
-//! The blocktree term dictionary's per-term metadata bytes (previously skipped
+//! The blocktree term dictionary's per-term metadata bytes (skipped
 //! by `blocktree.rs`, see its module doc) encode `Lucene104PostingsReader.decodeTerm`
 //! (`Lucene104PostingsReader.java:213-251`), scoped here to the no-positions
 //! case: one vlong whose low bit selects between an absolute-ish `docStartFP`

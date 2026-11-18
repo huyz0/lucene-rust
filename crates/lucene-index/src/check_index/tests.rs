@@ -1528,8 +1528,7 @@ fn corrupted_vector_ord_to_doc_mapping_is_caught() {
 /// Negative control for the vector-values pass: corrupting the `.vec`
 /// payload must be reported, and the vectors reader's own whole-file
 /// checksum is what reports it (`vectors.open`) -- the point of the test
-/// is that the vectors are opened and read at all, which before this
-/// batch they were not.
+/// is that the vectors are opened and read at all.
 #[test]
 fn corrupted_vector_data_is_caught() {
     let dst = copy_fixture("vectors_index");

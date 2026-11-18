@@ -137,9 +137,9 @@ fn lane_ones(primitive: u32, word_bits: u32) -> u64 {
 ///
 /// The packed words are read in one call (`in.readLongs(tmp, 0, numLongs)`)
 /// and every lane mask is one multiply of a precomputed replication constant
-/// (`lane_ones`), where the first cut read word by word and rebuilt each
-/// mask lane by lane inside the tail loop. Same bits either way; see
-/// `for_decode_matches_encode_for_every_width` and the `bwc` fixtures.
+/// (`lane_ones`) rather than word by word and lane by lane. The bits match
+/// the scalar form; see `for_decode_matches_encode_for_every_width` and the
+/// `bwc` fixtures.
 pub fn for_decode<R: DataInput>(
     r: &mut R,
     bits_per_value: u32,

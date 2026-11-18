@@ -23,7 +23,7 @@
 //! `LowercaseAsciiCompression.compress` (see `blocktree.rs`'s
 //! `decompress_lowercase_ascii_matches_real_lucene_compress_output` unit
 //! test) -- real Lucene *bytes*, just not embedded in an actual on-disk
-//! segment. Stated here plainly per this task's honesty requirement.
+//! segment.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // the gate exists for values read off disk in production decode paths, not
 // for a fixture builder's own index arithmetic. See
