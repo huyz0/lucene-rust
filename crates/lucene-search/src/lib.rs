@@ -1124,8 +1124,7 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
 /// live-filtered doc-ID list — the recursive core that lets [`matched_boolean_docs`]
 /// treat a `Clause::Term` and a `Clause::Boolean` identically once resolved.
 ///
-/// - `Clause::Term`: delegates straight to [`term_doc_ids`], same as before this
-///   task's `Clause` generalization.
+/// - `Clause::Term`: delegates straight to [`term_doc_ids`].
 /// - `Clause::Boolean`: recursively calls [`matched_boolean_docs`] on the nested
 ///   query, which independently resolves *that* query's own
 ///   `must`/`should`/`must_not`/`minimum_should_match` (its own call to this same
@@ -1882,8 +1881,7 @@ pub mod test_only_maxscore_block_skip_counter {
 /// [`resolve_clause_docs`] used by [`search_boolean_query_scored`]:
 ///
 /// - `Clause::Term`: this clause's own BM25 score per matching, live doc (via
-///   [`term_doc_scores`]), keyed by `query.field` in `norms` same as before this
-///   task's `Clause` generalization.
+///   [`term_doc_scores`]), keyed by `query.field` in `norms`.
 /// - `Clause::Boolean`: real Lucene sums a nested `BooleanQuery`'s own internal
 ///   score — itself the sum of *its* matching `must`/`should` sub-clauses' scores
 ///   — as one contribution to the parent's total. Implemented here by first

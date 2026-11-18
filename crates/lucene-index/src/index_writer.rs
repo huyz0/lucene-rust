@@ -5,8 +5,8 @@
 //!
 //! # What this is
 //!
-//! Every write-side capability this facade exposes already existed as a
-//! standalone primitive before this module:
+//! Every write-side capability this facade exposes is built on a
+//! standalone primitive:
 //! - [`crate::segment_writer::flush_stored_only_segment`] -- flush a batch
 //!   of buffered documents to a new segment.
 //! - [`crate::update_document::update_document`] -- atomic delete-by-term +
@@ -60,7 +60,7 @@
 //! [`crate::merge_policy::find_merges`] call, and
 //! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents_by_term`]
 //! do not trigger this check (only [`IndexWriter::commit`] does, matching where
-//! this port's flush/commit work already lived before this feature).
+//! this port's flush/commit work lives).
 //!
 //! # `IndexOptions::DocsAndCustomFreqs` postings
 //!
@@ -6066,7 +6066,7 @@ impl<'d> IndexWriter<'d> {
     /// [`lucene_codecs::field_infos::FieldInfo::check_consistency`]
     /// invariant that a non-indexed field can never set that flag. `None`
     /// (the default a freshly [`IndexWriter::open`]ed writer starts with)
-    /// turns this back off entirely.
+    /// turns this back off entirely -- `commit()` then writes no vectors.
     /// A later flush rejects a vector flag that differs from an existing
     /// indexed segment; restore the setting to retry the buffered documents.
     ///
@@ -6208,8 +6208,7 @@ impl<'d> IndexWriter<'d> {
     /// `.dvm` holding one meta entry per field, in field order.
     ///
     /// This is what makes a **multi-field index sort** expressible: an index
-    /// sort's second tier is a second doc-values column, and before this the
-    /// writer could only write one.
+    /// sort's second tier is a second doc-values column.
     pub fn add_doc_values_field(&mut self, field_name: &str) -> Result<()> {
         self.write_pending_try_changes()?;
         let info = self
@@ -6657,8 +6656,8 @@ impl<'d> IndexWriter<'d> {
     /// [`crate::merge_policy::find_merges`] with `config` after writing its
     /// own commit, and execute/fold in whatever it proposes. `None` (the
     /// default a freshly [`IndexWriter::open`]ed writer starts with) turns
-    /// this back off -- `commit()` then behaves exactly as it did before
-    /// this feature existed.
+    /// this back off -- `commit()` then does no
+    /// merge-policy consultation.
     pub fn set_merge_policy(&mut self, config: Option<MergePolicyConfig>) {
         self.merge_policy = config;
     }

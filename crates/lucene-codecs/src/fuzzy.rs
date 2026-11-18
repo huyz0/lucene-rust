@@ -11,8 +11,8 @@
 //! runs it. This module computes the distance directly with a banded DP
 //! instead. Same accept/reject decision, different machine.
 //!
-//! The **semantics** are Lucene's exactly, and each of these is a rule this
-//! port used to get wrong:
+//! The **semantics** are Lucene's exactly, and each of these is a rule that is easy
+//! to get wrong:
 //!
 //! - **Codepoints, not bytes.** `FuzzyAutomatonBuilder` decodes the term to
 //!   `int[]` codepoints (`stringToUTF32`) and builds the automaton over

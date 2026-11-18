@@ -61,8 +61,7 @@
 //! dictionary and a postings reader): exact term, term prefix, term range,
 //! match-all, and boolean composition of those. `lucene-search`/`lucene-ffi`
 //! can lower their richer `Query` onto it. Anything outside that set is a
-//! caller-side resolution today, exactly as it was before this module
-//! existed.
+//! caller-side resolution today.
 
 use std::collections::HashMap;
 use std::sync::Arc;

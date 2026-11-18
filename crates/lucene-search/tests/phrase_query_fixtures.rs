@@ -21,9 +21,9 @@
 //! it adds one more doc (doc7, `alpha`@0 / `beta`@3, a real non-adjacent gap of
 //! 2 "moves") plus a `field.pos.sloppyGap.realLuceneSlopResults` manifest key
 //! recorded by *actually running* `IndexSearcher.search` with a real
-//! `PhraseQuery.setSlop(n)` against that doc at generation time, so the
-//! sloppy-matching formula is checked against real Lucene's slop semantics for
-//! a known non-adjacent gap, not only against hand-computed values.
+//! `PhraseQuery.setSlop(n)` against that doc at generation time -- so the
+//! sloppy-matching formula is checked against real Lucene's slop semantics
+//! for a known non-adjacent gap, not only against itself.
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;

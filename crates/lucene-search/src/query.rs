@@ -314,7 +314,7 @@ impl RegexpQuery {
 /// `PointRangeQuery`-equivalent (`org.apache.lucene.search.PointRangeQuery`):
 /// a field plus an inclusive `[min, max]` `i64` range --
 /// this port's [`crate::query_parser`] produces this from `field:[min TO
-/// max]` syntax. **Parsing-only for now**: nothing in this crate resolves a
+/// max]` syntax. **Parsing-only**: nothing in this crate resolves a
 /// `PointsRange` clause against an actual segment yet (see
 /// [`crate::resolve_clause_docs`]'s doc comment and `docs/parity.md` for the
 /// exact deferred scope) -- unlike every other leaf `Clause` variant, there

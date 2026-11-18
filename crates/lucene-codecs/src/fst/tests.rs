@@ -594,8 +594,7 @@ fn an_all_zero_presence_table_is_rejected_by_the_last_arc_path_too() {
 /// that holds the arc. A body whose targets do not strictly decrease is
 /// cyclic, and the enum's descent then never terminates: it grows `arcs`,
 /// `outputs` and `labels` one level per step until the OOM killer stops
-/// the process. Reproduced from the byte-flip sweep, which took a SIGKILL
-/// before this check existed.
+/// the process. The byte-flip sweep found it as a SIGKILL.
 #[test]
 fn a_cyclic_arc_target_is_rejected_rather_than_descended_forever() {
     // One node, one arc labelled 'a', whose explicit target is the node

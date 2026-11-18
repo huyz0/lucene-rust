@@ -2905,7 +2905,7 @@ fn find_segment_file_name(
 /// `is_compound_file`. Returns `Ok(None)` when the segment simply doesn't
 /// have that file (e.g. a stored-fields-only segment has no `.tim`/`.tip`/
 /// `.tmd`/`.doc`/`.pos`/`.pay`), the same "missing is not an error" contract
-/// every call site wants.
+/// every call site relies on.
 fn open_segment_file(
     dir: &dyn Directory,
     compound: Option<&CompoundArchive>,

@@ -177,8 +177,9 @@ fn documents_added_via_index_writer_have_readable_term_vectors() {
         .is_none());
 }
 
-/// A writer that never calls `set_term_vector_field` writes no term vector
-/// files at all: no `.tvd`/`.tvx`/`.tvm`.
+/// Backward compatibility: a writer that never calls
+/// `set_term_vector_field` must produce an index with no
+/// term-vector files -- no `.tvd`/`.tvx`/`.tvm` files at all.
 #[test]
 fn commit_with_no_term_vector_field_configured_writes_no_term_vector_files() {
     let tmp = tempdir("no-tv-field");
