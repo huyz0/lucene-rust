@@ -102,6 +102,26 @@ pub(crate) fn write(
     ]))
 }
 
+/// [`write`] for a merge: first waits, with the merges already running, for
+/// room under the process bound for the node records and their adjacency
+/// (about 1.7 times the vectors, measured on 300k x 128-d).
+///
+/// # Errors
+/// As [`write`].
+pub(crate) fn write_merged(
+    format: KnnVectorsFormat,
+    fields: &[DiskField<'_>],
+    segment_id: &[u8; ID_LENGTH],
+    suffix: &str,
+) -> Result<Option<Files>> {
+    let floats: usize = fields.iter().map(|f| f.vectors.len()).sum();
+    let _admitted = lucene_util::memory::admit(
+        floats.saturating_mul(4).saturating_mul(17) / 10,
+        lucene_util::memory::ADMIT_WAIT,
+    );
+    write(format, fields, segment_id, suffix)
+}
+
 /// Opens an instance's disk files.
 ///
 /// # Errors
