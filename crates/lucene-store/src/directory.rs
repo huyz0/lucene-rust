@@ -507,6 +507,26 @@ pub trait Directory: Send + Sync {
         self.open(name)
     }
 
+    /// One member of a compound file as an input of its own: `len` bytes
+    /// of `container` from `offset`, a file `member` of the segment (the
+    /// name the compound file's entries use). `None` leaves the caller to
+    /// slice the opened container ([`Input::slice_of`]), which every
+    /// directory but a paging one does. A directory that chooses how to read
+    /// a file by its kind (page size, residency, whether it is read at all)
+    /// answers for the member, so a vector file in a compound segment is
+    /// read as it would be as a file of its own. `offset` starts a member
+    /// the format placed on a page ([`crate::alignment::ALIGN_BASE`]).
+    fn open_member(
+        &self,
+        container: &str,
+        offset: u64,
+        len: u64,
+        member: &str,
+    ) -> Result<Option<Input>> {
+        let _ = (container, offset, len, member);
+        Ok(None)
+    }
+
     /// Port of `Directory.fileLength(name)`. The default reads the file,
     /// which is correct for any implementation; the real ones override it.
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -708,6 +728,15 @@ macro_rules! forward_directory {
             }
             fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
                 (**self).open_aligned(name, alignment)
+            }
+            fn open_member(
+                &self,
+                container: &str,
+                offset: u64,
+                len: u64,
+                member: &str,
+            ) -> Result<Option<Input>> {
+                (**self).open_member(container, offset, len, member)
             }
             fn file_length(&self, name: &str) -> Result<u64> {
                 (**self).file_length(name)

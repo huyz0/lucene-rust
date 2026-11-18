@@ -38,7 +38,7 @@
 //! primary cluster; every vector has one primary entry and at most one
 //! spilled one.
 //!
-//! `.ivv`, from the field's vectors offset (4-byte aligned): every vector
+//! `.ivv`, from the field's vectors offset (page aligned, [`VECTORS_ALIGNMENT`]): every vector
 //! (`VectorEncoding::vector_bytes(dimension)` bytes in the field's
 //! encoding, int8 relative to its primary cluster's centroid; `f32` LE
 //! before `VERSION_VECTOR_ENCODING`) in primary-cluster order, then
@@ -312,9 +312,11 @@ fn checked_clustering(
     ))
 }
 
-/// Zero-pads `out` to a multiple of four bytes.
-fn align4(out: &mut Vec<u8>) {
-    let aligned = out.len().next_multiple_of(4);
+/// Where a field's rerank vectors start in `.ivv`: a page boundary
+/// ([`crate::VECTORS_ALIGNMENT`]), so a vector that divides a page never
+/// straddles two.
+fn align_vectors(out: &mut Vec<u8>) {
+    let aligned = out.len().next_multiple_of(crate::VECTORS_ALIGNMENT);
     out.resize(aligned, 0);
 }
 
@@ -779,7 +781,7 @@ impl IvfWriter {
         self.postings.extend_from_slice(&postings);
         drop(postings);
 
-        align4(&mut self.vectors);
+        align_vectors(&mut self.vectors);
         let vectors_offset = self.vectors.len();
         for &i in &order {
             let i = i as usize;
