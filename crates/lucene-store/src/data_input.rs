@@ -124,8 +124,8 @@ pub trait DataInput {
     /// is that a backend able to do better can. `MemorySegmentIndexInput`
     /// overrides it with a bulk copy, and [`SliceInput`] does the same, which
     /// matters because `ForUtil`'s decode kernel reads up to 128 words per
-    /// 256-value block and paid one bounds check and one `Result` per word
-    /// before this existed.
+    /// 256-value block and would pay one bounds check and one `Result` per word
+    /// without it.
     #[inline]
     fn read_u32s_le(&mut self, dst: &mut [u32]) -> Result<()> {
         for v in dst.iter_mut() {

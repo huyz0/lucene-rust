@@ -368,8 +368,7 @@ fn lazy_conjunction_matches_the_general_path_exactly() {
 /// `.doc` bytes, so `lazy_postings` cannot open a cursor for it. Both lazy
 /// paths must hand such a query to the general path rather than erroring.
 ///
-/// Regression: the first cut of the lazy conjunction did not guard this and
-/// would have propagated `Unsupported("docFreq <= 1")` to the caller. The
+/// Regression: an unguarded lazy conjunction would have propagated `Unsupported("docFreq <= 1")` to the caller. The
 /// disjunction's version of the same bug is what the existing maxscore
 /// singleton test caught; nothing covered the conjunction, hence this.
 #[test]

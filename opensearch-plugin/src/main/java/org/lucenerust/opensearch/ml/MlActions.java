@@ -239,7 +239,17 @@ public final class MlActions {
         }
 
         static Response of(Object value) {
-            return new Response(MlCommons.json(value).getBytes(StandardCharsets.UTF_8));
+            return new Response(jsonBytes(value));
+        }
+
+        /** {@code value} as JSON bytes, written once: no intermediate string. */
+        private static byte[] jsonBytes(Object value) {
+            try (XContentBuilder b = JsonXContent.contentBuilder()) {
+                b.value(value);
+                return org.opensearch.core.common.bytes.BytesReference.toBytes(org.opensearch.core.common.bytes.BytesReference.bytes(b));
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
         }
 
         static Response of(ToXContent value) {
@@ -251,7 +261,7 @@ public final class MlActions {
                 } else {
                     value.toXContent(b, ToXContent.EMPTY_PARAMS);
                 }
-                return new Response(b.toString().getBytes(StandardCharsets.UTF_8));
+                return new Response(org.opensearch.core.common.bytes.BytesReference.toBytes(org.opensearch.core.common.bytes.BytesReference.bytes(b)));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }

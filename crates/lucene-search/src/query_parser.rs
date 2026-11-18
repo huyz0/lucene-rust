@@ -98,8 +98,7 @@
 //! **Phrase slop**: `"a b"~N` sets the phrase's slop, real
 //! `QueryParserBase.handleQuotedTerm`'s `(int) Float.parseFloat(...)` --
 //! so a fractional `~1.7` truncates to `1` and a bare `~` leaves the default
-//! slop of `0`. (This module used to reject `"a b"~N` outright, since `~` was
-//! only ever a fuzzy marker.)
+//! slop of `0`.
 //!
 //! **Boost and slop in either order**: `term^2~1` and `term~1^2` both parse,
 //! matching real Lucene's `[ <CARAT> boost [ fuzzySlop ] | fuzzySlop

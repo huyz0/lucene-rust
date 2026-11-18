@@ -65,10 +65,9 @@
 //! - **MIDDLE_MIN/MIDDLE_MAX selectors.** Real Lucene's `SortedSetSelector`
 //!   also offers "the lower/upper of the two middle values" for even value
 //!   counts — a niche median-ish reduction with no numeric-field equivalent.
-//!   MIN/MAX cover the common range/sort use cases; MIDDLE_* would be a small
-//!   follow-up (`values[(len - 1) / 2]` / `values[len / 2]` on a sorted
-//!   `values`, which [`ValueSelector::reduce`] doesn't need to sort for since
-//!   MIN/MAX only ever need one pass) if a caller needs it.
+//!   MIN/MAX cover the common range/sort use cases; MIDDLE_* would be
+//!   `values[(len - 1) / 2]` / `values[len / 2]` on a sorted `values`, which
+//!   [`ValueSelector::reduce`] does not sort since MIN/MAX need one pass.
 //! - **Multiple sort fields / secondary sort keys** beyond the single
 //!   documented tie-break (ascending doc ID). Real `Sort` composes multiple
 //!   `SortField`s; [`sort_by_numeric_doc_value`]/[`sort_top_n_by_numeric_doc_value`]
@@ -78,8 +77,8 @@
 //! - **A DISI-driven range scorer for [`search_sorted_ord_range`] /
 //!   [`search_multi_valued_range`].** [`search_numeric_range_with_skip_index`]
 //!   covers the NUMERIC case; the SORTED/SORTED_NUMERIC/SORTED_SET range
-//!   queries above still only offer the full `[0, max_doc)` sweep — a future
-//!   follow-up if a skip index is ever recorded for those doc-values types.
+//!   queries above still only offer the full `[0, max_doc)` sweep — a skip index would
+//!   be needed for those doc-values types.
 
 use lucene_codecs::doc_values::{
     self, BinaryEntry, DocValuesMeta, NumericEntry, SortedEntry, SortedNumericEntry,

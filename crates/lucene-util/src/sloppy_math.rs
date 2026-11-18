@@ -55,7 +55,7 @@ const ASIN_QS4: f64 = f64::from_bits(0x3fb3_b8c5_b12e_9282);
 /// `Math.PI / 2D`.
 const PIO2: f64 = std::f64::consts::PI / 2.0;
 
-/// Java's seven parallel arrays, interleaved (stage 3, see `cos`): one
+/// Java's seven parallel arrays, interleaved: one
 /// `(cos, sin)` pair and one `(asin, der1..der4)` row per index, so a lookup
 /// touches one cache line, and fixed-size so the masked `cos` index needs no
 /// bounds check.

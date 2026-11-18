@@ -3,7 +3,7 @@
 //! (actually merge them): proves `find_merges`' output -- a chosen group of
 //! segment names -- can be fed straight into the real merge-execution
 //! machinery without any shape mismatch. Not a full automatic
-//! merge-triggering pipeline (out of scope per this task's brief), just the
+//! merge-triggering pipeline (out of scope here), just the
 //! "decide, then execute" handoff.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // the gate exists for values read off disk in production decode paths, not

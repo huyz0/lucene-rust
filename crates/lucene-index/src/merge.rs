@@ -81,9 +81,8 @@
 //! [`lucene_codecs::doc_values::write_dense_fields`], which is the real
 //! on-disk shape of a `Lucene90DocValuesFormat` segment (`numFields`
 //! interleaved meta entries over shared data). A **multi-tier index sort**
-//! needs exactly that: a second sort tier is a second NUMERIC column, and
-//! before this the merge could carry only one field per type and only one
-//! type per call.
+//! needs exactly that: a second sort tier is a second NUMERIC column, so the
+//! merge carries several fields per type and several types per call.
 //!
 //! **Norms have no per-merge field limit either**: every merged norms
 //! field goes into one `.nvm`/`.nvd` pair through
@@ -728,8 +727,7 @@ pub struct SourcePoints<'a> {
 /// `reader.max_doc()` is live", matching a segment whose `SegmentCommitInfo`
 /// has `del_gen == -1`), and optional per-field doc-values/norms/
 /// term-vectors data (all empty/`None` by default -- a source with none of
-/// these contributes only stored fields, same as before this module gained
-/// them).
+/// these contributes only stored fields, same as a plain stored-fields merge).
 pub struct MergeSource<'a> {
     pub field_infos: &'a [FieldInfo],
     pub reader: &'a lucene_codecs::stored_fields::StoredFieldsReader<'a>,

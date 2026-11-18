@@ -2116,9 +2116,8 @@ impl<'a> PostingsWriter<'a> {
 }
 
 /// Validates one field's structural invariants (sortedness, `docFreq`/
-/// `totalTermFreq` bounds, positions shape) — the exact same checks
-/// `write_single_field` ran inline before this became a per-field helper
-/// shared by [`write_fields`]'s loop.
+/// `totalTermFreq` bounds, positions shape) — the checks
+/// [`write_fields`]'s loop runs per field.
 fn validate_field<'a, T: TermSource>(input: &FieldPostingsInput<'a, T>) -> Result<FieldStats<'a>> {
     if !matches!(
         input.index_options,

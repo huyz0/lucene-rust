@@ -16,11 +16,10 @@
 //! A SORTED_SET field's ordinals are **per segment**: each segment's terms
 //! dictionary numbers its own terms 0..n, so ordinal 3 in segment 0 and
 //! ordinal 3 in segment 1 are, in general, different terms. Summing raw
-//! per-segment facet counts therefore conflates unrelated terms — this is the
-//! defect `lucene_facet`' module doc used to warn callers about and work
-//! around by merging on the resolved label instead.
+//! per-segment facet counts therefore conflates unrelated terms — the usual workaround is merging on the
+//! resolved label instead.
 //!
-//! `OrdinalMap` removes the workaround: it merge-sorts every segment's terms
+//! `OrdinalMap` removes that need: it merge-sorts every segment's terms
 //! into one global, still-sorted dictionary and records, for each segment,
 //! `segmentOrd -> globalOrd`. Counting then becomes
 //! `global[map.global_ord(seg, local)] += local_count`, which is exactly
@@ -57,7 +56,7 @@
 //!
 //!   **Measured** (`examples/ordinal_map_memory.rs`, 17-byte terms, Linux
 //!   RSS with the allocation totals agreeing to within the allocator's own
-//!   slack), before this change:
+//!   slack), for the materialized-input form:
 //!
 //!   | shape | materialized input | the map itself | peak |
 //!   |---|---|---|---|

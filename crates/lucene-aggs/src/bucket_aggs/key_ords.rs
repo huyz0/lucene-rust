@@ -286,8 +286,7 @@ impl KeyOrds {
     /// Whether owner 0's keys `0..keys` should be looked up in a dense array
     /// rather than the table: a lookup is 2-3x cheaper and holds 4 bytes a
     /// key rather than 16 a slot (at most five eighths full), which pays
-    /// once the matches reach about one key in eight
-    /// (`perf/memory-bounds/raw/followup`); past that the table, sized by
+    /// once the matches reach about one key in eight; past that the table, sized by
     /// the buckets made, holds less.
     pub(super) fn dense_pays(keys: usize, matches: u64) -> bool {
         keys > 0 && (keys as u64) <= matches.saturating_mul(8)
