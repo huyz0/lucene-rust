@@ -277,7 +277,14 @@ public final class NativeSelfTest {
         int bwcCompared = 0;
         for (Path fixture : fixtureIndexes(FIXTURES)) {
             boolean old = fixture.getParent().getFileName().toString().startsWith("bwc");
-            boolean ok = fixture(fixture);
+            boolean ok;
+            try {
+                ok = fixture(fixture);
+            } catch (org.apache.lucene.index.IndexFormatTooNewException e) {
+                // Written by a newer Lucene than the node runs (the fixtures follow the Rust pin).
+                System.out.println("fixture " + fixture.getFileName() + ": newer than the node's Lucene, skipped");
+                continue;
+            }
             compared += ok ? 1 : 0;
             bwc += old ? 1 : 0;
             bwcCompared += old && ok ? 1 : 0;
@@ -2489,7 +2496,7 @@ public final class NativeSelfTest {
                 } else if (p.getFileName().toString().startsWith("bwc")) {
                     try (Stream<Path> versions = Files.list(p)) {
                         for (Path v : versions.sorted().toList()) {
-                            if (Files.isDirectory(v) && isIndex(v)) {
+                            if (Files.isDirectory(v) && isIndex(v) && writtenByHostOrOlder(v)) {
                                 out.add(v);
                             }
                         }
@@ -2498,6 +2505,15 @@ public final class NativeSelfTest {
             }
         }
         return out;
+    }
+
+    /** A bwc fixture directory is named for the Lucene that wrote it; the node's Lucene cannot read a newer one. */
+    private static boolean writtenByHostOrOlder(Path versionDir) {
+        String[] v = versionDir.getFileName().toString().split("\\.");
+        int major = Integer.parseInt(v[0]);
+        int minor = Integer.parseInt(v[1]);
+        return major < org.apache.lucene.util.Version.LATEST.major
+            || (major == org.apache.lucene.util.Version.LATEST.major && minor <= org.apache.lucene.util.Version.LATEST.minor);
     }
 
     private static boolean isIndex(Path dir) throws Exception {
