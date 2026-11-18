@@ -206,6 +206,27 @@ fn sequential_faults_read_ahead_and_random_ones_do_not() {
 }
 
 #[test]
+fn a_scan_backwards_reads_ahead_below_the_faulting_page() {
+    let Some(pager) = Pager::global() else {
+        return;
+    };
+    let page = 16 * 1024;
+    let len = 64 * page;
+    let seq = pattern(len, page);
+    let input = pager
+        .open_with_readahead(len, page, seq.clone(), "backwards", 8)
+        .unwrap();
+    let bytes = input.bytes();
+    for p in (0..64).rev() {
+        let at = p * page + 7;
+        assert_eq!(bytes[at], byte(at));
+    }
+    let calls = seq.calls.load(Ordering::Relaxed);
+    assert!(calls <= 14, "{calls} fills for 64 pages read backwards");
+    assert_eq!(seq.fills.load(Ordering::Relaxed), 64);
+}
+
+#[test]
 fn interleaved_scans_of_one_file_each_read_ahead() {
     let Some(pager) = Pager::global() else {
         return;
