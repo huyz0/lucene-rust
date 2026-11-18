@@ -16,11 +16,10 @@
 //! A SORTED_SET field's ordinals are **per segment**: each segment's terms
 //! dictionary numbers its own terms 0..n, so ordinal 3 in segment 0 and
 //! ordinal 3 in segment 1 are, in general, different terms. Summing raw
-//! per-segment facet counts therefore conflates unrelated terms — this is the
-//! defect `lucene_facet`' module doc used to warn callers about and work
-//! around by merging on the resolved label instead.
+//! per-segment facet counts therefore conflates unrelated terms, unless the
+//! counts are merged on the resolved label.
 //!
-//! `OrdinalMap` removes the workaround: it merge-sorts every segment's terms
+//! `OrdinalMap` avoids that: it merge-sorts every segment's terms
 //! into one global, still-sorted dictionary and records, for each segment,
 //! `segmentOrd -> globalOrd`. Counting then becomes
 //! `global[map.global_ord(seg, local)] += local_count`, which is exactly
@@ -52,12 +51,12 @@
 //!   [`OrdinalMap::build_streaming`], over any [`TermCursor`] --
 //!   [`lucene_codecs::terms_dict::TermsCursor`] being the one that reads a
 //!   real SORTED/SORTED_SET dictionary. [`OrdinalMap::build`] still takes
-//!   materialized lists, for a caller that has them anyway, and now runs the
-//!   same merge over a slice-backed cursor rather than a second algorithm.
+//!   materialized lists, for a caller that has them anyway, and runs the same
+//!   merge over a slice-backed cursor.
 //!
 //!   **Measured** (`examples/ordinal_map_memory.rs`, 17-byte terms, Linux
 //!   RSS with the allocation totals agreeing to within the allocator's own
-//!   slack), before this change:
+//!   slack), for the materialized input:
 //!
 //!   | shape | materialized input | the map itself | peak |
 //!   |---|---|---|---|
@@ -65,9 +64,9 @@
 //!   | 10 x 200 k, 380 k global | 107 MB | 20 MB | 127 MB |
 //!   | 20 x 50 k, 161 k global | 53 MB | 10 MB | 63 MB |
 //!
-//!   So the input was **~5x the map** and ~84% of the peak. Streaming it
-//!   removes that column outright: what `build_streaming` holds is one reused
-//!   term buffer per segment plus the map. The `Vec<i64>`-rather-than-
+//!   So the input is **~5x the map** and ~84% of the peak. Streaming removes
+//!   that column outright: `build_streaming` holds one reused term buffer per
+//!   segment plus the map. The `Vec<i64>`-rather-than-
 //!   `PackedLongValues` divergence above is the 51 MB column, i.e. what is
 //!   left once the larger half is gone.
 //! - **No `IndexReader.CacheKey` owner.** Java carries one so

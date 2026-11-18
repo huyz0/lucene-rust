@@ -240,9 +240,8 @@ fn fuzzy_max_expansions_default_is_unaffected_when_matches_are_few() {
 /// `FuzzyTermsEnum` boost first -- not term-dictionary order. Against `cat`
 /// the three matches score `cat` = 1.0 (exact), `dog` = 1 - 3/min(3,3) = 0.0
 /// and `bird` = 1 - 4/min(4,3) = -0.33, so the single surviving term is
-/// `cat`, whose postings are {0, 2}. Under the old "first N in sorted term
-/// order" policy this test expected `bird`'s {1, 4}, which is the selection
-/// Lucene makes *last*, not first.
+/// `cat`, whose postings are {0, 2}. Keeping the first N in sorted term order
+/// would give `bird`'s {1, 4}, the selection Lucene makes *last*, not first.
 #[test]
 fn fuzzy_max_expansions_keeps_the_highest_boost_term_not_the_first_in_order() {
     let (fields, doc, id, suffix) = open_segment();

@@ -3493,10 +3493,8 @@ fn a_non_indexed_field_with_indexed_only_flags_still_writes_a_reopenable_fnm() {
 
 #[test]
 fn commit_with_no_postings_field_configured_stays_stored_only() {
-    // Backward compatibility: a writer that never calls
-    // `set_postings_field` must produce exactly the same on-disk shape
-    // as before this feature existed -- no `.doc`/`.tim`/`.tip`/`.tmd`
-    // files at all.
+    // A writer that never calls `set_postings_field` writes no
+    // `.doc`/`.tim`/`.tip`/`.tmd` files at all.
     let tmp = tempdir("no-postings-field");
     let dir = FsDirectory::open(&tmp);
     let fields = vec![stored_only_field("id", 0), body_field(1)];
@@ -4300,10 +4298,8 @@ fn commit_with_term_vector_field_writes_readable_term_vectors_for_multiple_docs_
 
 #[test]
 fn commit_with_no_term_vector_field_configured_stays_stored_only() {
-    // Backward compatibility: a writer that never calls
-    // `set_term_vector_field` must produce exactly the same on-disk
-    // shape as before this feature existed -- no `.tvd`/`.tvx`/`.tvm`
-    // files at all.
+    // A writer that never calls `set_term_vector_field` writes no
+    // `.tvd`/`.tvx`/`.tvm` files at all.
     let tmp = tempdir("no-tv-field");
     let dir = FsDirectory::open(&tmp);
     let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
@@ -5538,10 +5534,8 @@ fn commit_with_doc_values_field_accepts_int_values_not_just_long() {
 
 #[test]
 fn commit_with_no_doc_values_field_configured_stays_stored_only() {
-    // Backward compatibility: a writer that never calls
-    // `set_doc_values_field` must produce exactly the same on-disk shape
-    // as before this feature existed -- no `.dvm`/`.dvd`/`.dvs` files at
-    // all.
+    // A writer that never calls `set_doc_values_field` writes no
+    // `.dvm`/`.dvd`/`.dvs` files at all.
     let tmp = tempdir("no-dv-field");
     let dir = FsDirectory::open(&tmp);
     let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];

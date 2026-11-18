@@ -34,9 +34,8 @@
 //!   `max_fragments` are kept, and only then are the survivors re-sorted into
 //!   document order for rendering -- `FieldHighlighter.
 //!   highlightOffsetsEnums`'s priority queue followed by its
-//!   `passageSortComparator` sort. (This module used to truncate in plain
-//!   document order, which silently discarded the best passages whenever they
-//!   sat late in the text.)
+//!   `passageSortComparator` sort, so the best passages survive wherever they
+//!   sit in the text.
 //! - **Rendering is Java's** `DefaultPassageFormatter`: overlapping matches
 //!   coalesce into one `pre`/`post`-wrapped span rather than nesting markers,
 //!   the content is optionally HTML-escaped (`FragmentConfig::escape`) while
@@ -65,11 +64,10 @@
 //! - A fragment's start snaps to the start of the sentence containing its
 //!   cluster's earliest match; its end snaps to the end of the sentence
 //!   containing its cluster's latest match (trailing whitespace trimmed).
-//!   `window_chars` still governs which nearby matches get merged into one
-//!   cluster, but no longer bounds the rendered fragment's size once
-//!   sentence-snapped -- a fragment can be shorter *or* longer than the fixed
-//!   window it would have used, since it's exactly the sentence(s), not a
-//!   char count.
+//!   `window_chars` governs which nearby matches get merged into one
+//!   cluster, but does not bound the rendered fragment's size once
+//!   sentence-snapped -- a fragment can be shorter *or* longer than the
+//!   window, since it is exactly the sentence(s), not a char count.
 //! - If the text has no sentence terminator at all, the whole text is one
 //!   sentence: the fragment still comes out sensible, never empty or
 //!   panicking.

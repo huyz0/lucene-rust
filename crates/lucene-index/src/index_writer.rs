@@ -42,8 +42,7 @@
 //! proposes nothing further; each merge strictly reduces the total segment
 //! count by at least one, so this loop is guaranteed to terminate. By
 //! default (no [`MergePolicyConfig`] set), `commit()` behaves exactly as
-//! before: no merge-policy consultation at all, matching every existing
-//! caller of `commit()` from before this feature existed.
+//! before: no merge-policy consultation at all.
 //!
 //! This is deliberately synchronous, inside `commit()` itself -- this port
 //! has no background-thread/`ConcurrentMergeScheduler`-equivalent
@@ -5797,8 +5796,7 @@ impl<'d> IndexWriter<'d> {
     /// are not wired up here yet (`has_payloads` is always `false`; see
     /// `docs/parity.md`). `None` (the default a freshly [`IndexWriter::open`]ed
     /// writer starts with) turns this back off entirely -- `commit()` then
-    /// behaves exactly as it did before this feature existed (stored fields
-    /// only, matching every pre-existing caller).
+    /// writes stored fields only.
     ///
     /// Only [`FieldValue::String`] values contribute indexable text for an
     /// opted-in field -- a document with no value, or a non-`String` value,
@@ -6068,8 +6066,7 @@ impl<'d> IndexWriter<'d> {
     /// [`lucene_codecs::field_infos::FieldInfo::check_consistency`]
     /// invariant that a non-indexed field can never set that flag. `None`
     /// (the default a freshly [`IndexWriter::open`]ed writer starts with)
-    /// turns this back off entirely -- `commit()` then behaves exactly as it
-    /// did before this feature existed.
+    /// turns this back off entirely.
     /// A later flush rejects a vector flag that differs from an existing
     /// indexed segment; restore the setting to retry the buffered documents.
     ///

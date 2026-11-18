@@ -5,11 +5,11 @@ import org.opensearch.index.IndexSettings;
 import org.opensearch.search.fetch.subphase.highlight.FieldHighlightContext;
 
 /**
- * Whether the highlighters also take the cases OpenSearch's highlighters used to keep: a hit on a
+ * Whether the highlighters also take the cases OpenSearch's highlighters keep: a hit on a
  * realtime view, a derived field, a text with an unpaired surrogate, a Thai locale, a request or
  * hit OpenSearch refuses (its exceptions are then thrown from the native side), a
  * {@code more_like_this} or a {@code bool} whose clauses are not in the extractor's order. Off,
- * those run on OpenSearch's highlighters, as they did before they were ported.
+ * those run on OpenSearch's highlighters, as stock does.
  */
 public final class ExtendedHighlighting {
     public static final Setting<Boolean> ENABLED = Setting.boolSetting(

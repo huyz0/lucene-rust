@@ -62,6 +62,7 @@ public final class LocalModels {
     private final RemoteModels remote;
     private final Path cacheDir;
     private final Path runtimeLibrary;
+    private final MlLimits memory;
     private final Map<String, Deployed> models = new ConcurrentHashMap<>();
     private final Map<String, RateLimit> limits = new ConcurrentHashMap<>();
     /** The listeners of each deploy in flight here, by model id; guarded by itself. */
@@ -71,7 +72,8 @@ public final class LocalModels {
     /** Guards loading libtorch, apart from this object so its download holds up no ONNX deploy. */
     private final Object torchLock = new Object();
 
-    LocalModels(Client client, RemoteModels remote, Path cacheDir, Path runtimeLibrary) {
+    LocalModels(Client client, RemoteModels remote, Path cacheDir, Path runtimeLibrary, MlLimits memory) {
+        this.memory = memory;
         this.client = client;
         this.remote = remote;
         this.cacheDir = cacheDir;
@@ -170,7 +172,12 @@ public final class LocalModels {
             Map<String, Object> model = r.getSourceAsMap();
             String function = String.valueOf(model.get("algorithm"));
             String format = String.valueOf(model.get("model_format"));
-            if ("REMOTE".equals(function)) {
+            boolean isRemote = "REMOTE".equals(function);
+            if (isRemote == false) {
+                memory.checkBreakers();
+            }
+            memory.checkModelCount(isRemote, models.values().stream().filter(d -> "REMOTE".equals(d.functionName()) == isRemote).count());
+            if (isRemote) {
                 remote.open(model, ActionListener.wrap(handle -> {
                     put(modelId, new Deployed(handle, function, model));
                     all.onResponse(null);
