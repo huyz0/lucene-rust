@@ -30,7 +30,7 @@ import java.util.TreeMap;
  * <p>{@code allowFixedLengthArcs(false)} is passed so the compiler never
  * emits fixed-length-arc (binary search / direct addressing / continuous)
  * nodes -- this port's reader only supports variable-length ("list") arc
- * nodes in this slice (see {@code lucene-codecs/src/fst.rs}'s module docs),
+ * nodes (see {@code lucene-codecs/src/fst.rs}'s module docs),
  * and a handful of keys wouldn't trigger those encodings anyway, but
  * disabling them explicitly documents and guarantees the fixture stays in
  * scope for what's actually been ported.

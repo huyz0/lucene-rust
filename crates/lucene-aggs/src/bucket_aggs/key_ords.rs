@@ -1,4 +1,223 @@
-//! `LongKeyedBucketOrds`' hash table, split out of the parent module.
+//! Bucket-ordinal tables for the keyed bucket aggregations: the date grid, the key cache and the key-to-ordinal map.
+
+use super::*;
+
+/// The bucket of each date of a rounding whose buckets all have one width
+/// (a fixed interval, or a second, minute, hour, day or week in a fixed
+/// zone), found without rounding it: the date's position on the grid is one
+/// multiplication by the width's reciprocal, and a direct-mapped table of
+/// recent positions gives the bucket. Dates in any order cost the same,
+/// where [`DateRounding::bucket`] and the key map cost a division and a
+/// probe for each date outside the last one's bucket.
+pub(super) struct DateGrid {
+    /// A bucket start well before the first date seen: positions count from here.
+    pub(super) anchor: i64,
+    pub(super) width: i64,
+    /// `ceil(2^128 / width)`: `d / width` is the top 64 bits of the 192-bit
+    /// product `d * recip`, for every `d`.
+    pub(super) recip: u128,
+    /// The position held by each slot (`u64::MAX`: none) and its bucket.
+    pub(super) tags: Vec<u64>,
+    pub(super) ords: Vec<u32>,
+}
+
+/// Grid positions below the first date's, so earlier dates still have one.
+pub(super) const GRID_HEADROOM: i64 = 1 << 20;
+pub(super) const GRID_SLOTS: usize = 4096;
+
+impl DateGrid {
+    /// The grid of `rounding`, through the bucket of `v`; `None` for a
+    /// rounding whose buckets differ in width.
+    pub(super) fn new(rounding: &DateRounding, v: i64) -> Option<Box<Self>> {
+        match rounding.kind {
+            RoundingKind::Interval(_)
+            | RoundingKind::Unit(
+                DateUnit::Week
+                | DateUnit::Day
+                | DateUnit::Hour
+                | DateUnit::Minute
+                | DateUnit::Second,
+            ) => {}
+            RoundingKind::Unit(_) => return None,
+        }
+        let (from, to) = rounding.bucket(v)?;
+        let width = to.checked_sub(from)?;
+        if width < 2 {
+            return None;
+        }
+        let anchor = from.checked_sub(width.checked_mul(GRID_HEADROOM)?)?;
+        let recip = u128::MAX / u128::from(width as u64) + 1;
+        Some(Box::new(DateGrid {
+            anchor,
+            width,
+            recip,
+            tags: vec![u64::MAX; GRID_SLOTS],
+            ords: vec![0; GRID_SLOTS],
+        }))
+    }
+
+    /// The position of `v`, `None` for a date before the grid's anchor.
+    #[inline(always)]
+    pub(super) fn position(&self, v: i64) -> Option<u64> {
+        if v < self.anchor {
+            return None;
+        }
+        let d = u128::from(v.wrapping_sub(self.anchor) as u64);
+        let (hi, lo) = ((self.recip >> 64), self.recip & u128::from(u64::MAX));
+        Some(((d * hi + ((d * lo) >> 64)) >> 64) as u64)
+    }
+
+    /// The first value of position `p`'s bucket.
+    #[inline(always)]
+    pub(super) fn start(&self, p: u64) -> i64 {
+        self.anchor
+            .wrapping_add((p as i64).wrapping_mul(self.width))
+    }
+
+    #[inline(always)]
+    pub(super) fn find(&self, p: u64) -> Option<u32> {
+        let at = p as usize & (GRID_SLOTS - 1);
+        (self.tags.get(at) == Some(&p)).then(|| self.ords.get(at).copied().unwrap_or(0))
+    }
+
+    #[inline(always)]
+    pub(super) fn put(&mut self, p: u64, ord: u32) {
+        let at = p as usize & (GRID_SLOTS - 1);
+        if let (Some(t), Some(o)) = (self.tags.get_mut(at), self.ords.get_mut(at)) {
+            *t = p;
+            *o = ord;
+        }
+    }
+}
+
+/// A direct-mapped cache in front of [`keyed_ord`]'s map: the bucket of
+/// each of the last `(owning, key)`s placed, one per slot, allocated at
+/// first use. A bucket aggregation over few keys (a histogram's) then finds
+/// its bucket without hashing into the map; one over many keys, which
+/// misses more often than not, turns the cache off.
+#[derive(Default)]
+pub(super) struct KeyCache {
+    pub(super) slots: Vec<(u32, i64, u32)>,
+    pub(super) lookups: u32,
+    pub(super) misses: u32,
+    pub(super) off: bool,
+    /// Owner 0's bucket of each small key, by its index below
+    /// [`SMALL_KEYS`] (`u32::MAX` until placed): [`small_key_ord`]'s table,
+    /// allocated at its first use (16 KB, as `slots`).
+    pub(super) small: Vec<u32>,
+}
+
+/// Small keys [`small_key_ord`] places without hashing: a code, a count,
+/// a status, a few thousand histogram buckets.
+pub(super) const SMALL_KEYS: usize = 4096;
+/// The bits of `SMALL_KEYS as f64`.
+#[allow(clippy::cast_precision_loss)]
+pub(super) const SMALL_KEYS_F64_BITS: u64 = (SMALL_KEYS as f64).to_bits();
+
+/// The bucket of `key` under `owning`: a key of owner 0 whose `index` is
+/// below [`SMALL_KEYS`] is found by that index in a table, with neither a
+/// hash nor a compare; any other through [`keyed_ord_cached`] when `CACHED`,
+/// else [`keyed_ord`]. `index` is a function of the key, the same for the
+/// same key and different for different ones.
+#[inline(always)]
+pub(super) fn small_key_ord<const CACHED: bool>(
+    cache: &mut KeyCache,
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    index: u64,
+    key: i64,
+) -> u32 {
+    if owning == 0 && index < SMALL_KEYS as u64 {
+        if let Some(&s) = cache.small.get(index as usize) {
+            if s != u32::MAX {
+                return s;
+            }
+        }
+    }
+    small_key_miss::<CACHED>(cache, ords, keys, owning, index, key)
+}
+
+/// [`small_key_ord`] for a key not in its table yet: placed in the map, and
+/// in the table when small (allocated at its first use).
+#[cold]
+#[inline(never)]
+pub(super) fn small_key_miss<const CACHED: bool>(
+    cache: &mut KeyCache,
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    index: u64,
+    key: i64,
+) -> u32 {
+    if owning == 0 && index < SMALL_KEYS as u64 {
+        if cache.small.is_empty() {
+            cache.small = vec![u32::MAX; SMALL_KEYS];
+        }
+        if let Some(s) = cache.small.get_mut(index as usize) {
+            *s = keyed_ord(ords, keys, 0, key);
+            return *s;
+        }
+    }
+    if CACHED {
+        keyed_ord_cached(cache, ords, keys, owning, key)
+    } else {
+        keyed_ord(ords, keys, owning, key)
+    }
+}
+
+pub(super) const KEY_CACHE_SLOTS: usize = 1024;
+/// Lookups before [`KeyCache`] judges its hit rate.
+pub(super) const KEY_CACHE_TRIAL: u32 = 8192;
+
+/// [`keyed_ord`] through `cache`: the same bucket, new or not.
+#[inline]
+pub(super) fn keyed_ord_cached(
+    cache: &mut KeyCache,
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    key: i64,
+) -> u32 {
+    if cache.off {
+        return keyed_ord(ords, keys, owning, key);
+    }
+    if cache.slots.is_empty() {
+        cache.slots = vec![(u32::MAX, 0, u32::MAX); KEY_CACHE_SLOTS];
+    }
+    let mixed = (key as u64 ^ (u64::from(owning) << 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let at = (mixed >> 54) as usize & (KEY_CACHE_SLOTS - 1);
+    let Some(slot) = cache.slots.get_mut(at) else {
+        return keyed_ord(ords, keys, owning, key);
+    };
+    cache.lookups += 1;
+    let ord = if slot.0 == owning && slot.1 == key && slot.2 != u32::MAX {
+        slot.2
+    } else {
+        let ord = keyed_ord(ords, keys, owning, key);
+        *slot = (owning, key, ord);
+        cache.misses += 1;
+        ord
+    };
+    if cache.lookups >= KEY_CACHE_TRIAL {
+        // More than one miss in eight: the map alone is cheaper.
+        cache.off = cache.misses.saturating_mul(8) > cache.lookups;
+        cache.lookups = 0;
+        cache.misses = 0;
+    }
+    ord
+}
+
+/// `LongKeyedBucketOrds.add`: the bucket of `(owning, key)`, new or not.
+#[inline]
+pub(super) fn keyed_ord(
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    key: i64,
+) -> u32 {
+    ords.ord(keys, owning, key)
+}
 
 /// `LongKeyedBucketOrds`' hash table: open addressing over `(owning, key)`
 /// and its bucket ordinal (the caller's `keys` lists the keys in ordinal
@@ -21,15 +240,15 @@ pub(super) struct KeyOrds {
 
 #[derive(Clone, Copy)]
 pub(super) struct KeySlot {
-    key: i64,
-    owning: u32,
-    ord: u32,
+    pub(super) key: i64,
+    pub(super) owning: u32,
+    pub(super) ord: u32,
 }
 
 impl KeyOrds {
-    pub(super) const EMPTY: u32 = u32::MAX;
-    pub(super) const MIN_SLOTS: usize = 256;
-    pub(super) const FREE: KeySlot = KeySlot {
+    const EMPTY: u32 = u32::MAX;
+    const MIN_SLOTS: usize = 256;
+    const FREE: KeySlot = KeySlot {
         key: 0,
         owning: 0,
         ord: Self::EMPTY,
@@ -139,7 +358,7 @@ impl KeyOrds {
     /// Doubles the table, its slots placed again from `keys` (the old table
     /// freed first).
     #[cold]
-    fn grow(&mut self, keys: &[(u32, i64)]) {
+    pub(super) fn grow(&mut self, keys: &[(u32, i64)]) {
         let len = self.slots.len().saturating_mul(2).max(Self::MIN_SLOTS);
         self.slots = Vec::new();
         self.slots = vec![Self::FREE; len];
@@ -166,6 +385,26 @@ impl KeyOrds {
                     ord: ord as u32,
                 };
             }
+        }
+    }
+}
+
+/// The double of a sortable long ([`numeric_terms_key`] of a double).
+#[inline]
+pub(super) fn sortable_double(k: i64) -> f64 {
+    f64::from_bits((k ^ ((k >> 63) & i64::MAX)) as u64)
+}
+
+/// The bucket key of a numeric `terms` value: a long as it is; a double or
+/// float as `NumericUtils.doubleToSortableLong` of its double, as
+/// `FieldData.toSortableLongBits` hands `NumericTermsAggregator` its values.
+#[inline(always)]
+pub(super) fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
+    match kind {
+        ValueKind::Long => v,
+        k => {
+            let bits = java_double_bits(metric_aggs::to_double(k, v));
+            bits ^ ((bits >> 63) & i64::MAX)
         }
     }
 }

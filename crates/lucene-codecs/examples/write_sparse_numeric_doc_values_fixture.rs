@@ -6,7 +6,7 @@
 //! division of labor as `write_doc_values_fixture.rs`: `fixtures/src/
 //! VerifySparseNumericDocValues.java` opens the result through real Lucene's
 //! `Lucene90DocValuesFormat` with a hand-built `SegmentInfo`/`FieldInfos`, so
-//! this slice doesn't also need a `.si`/`.fnm` writer.
+//! the fixture doesn't also need a `.si`/`.fnm` writer.
 //!
 //! `write_single_sparse_numeric_field` was previously only checked against
 //! this port's own reader (see `doc_values.rs`'s
