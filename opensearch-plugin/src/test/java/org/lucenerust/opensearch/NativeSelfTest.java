@@ -138,6 +138,10 @@ public final class NativeSelfTest {
     public static void loadNative() throws Exception {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
+        // The node's Lucene, as the plugin tells the library at start: behaviour that differs between releases
+        // (compound subword types, Thai stop words, join score precision, ...) is then the one this Lucene has.
+        org.apache.lucene.util.Version host = org.apache.lucene.util.Version.LATEST;
+        check(NativeAnalysis.setHostLucene(host.major, host.minor, host.bugfix) == NativeBridge.OK, "host Lucene version");
         assertNoFailuresSince(0);
     }
 

@@ -8,6 +8,7 @@ use crate::attributes::{AttributeSource, State};
 use crate::graph_token_filter::GraphTokenFilter;
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::AnalysisError;
+use lucene_util::version::Version;
 
 /// `ShingleFilter.DEFAULT_FILLER_TOKEN`.
 pub const DEFAULT_FILLER_TOKEN: &str = "_";
@@ -454,7 +455,7 @@ impl<I: TokenStream> FixedShingleFilter<I> {
             filler_token: filler.to_string(),
             buffer: String::new(),
             pending_pos_inc: 0,
-            carry_skipped_increments: false,
+            carry_skipped_increments: Version::host().on_or_after(Version::LUCENE_10_5_2),
         })
     }
 }
@@ -462,9 +463,16 @@ impl<I: TokenStream> FixedShingleFilter<I> {
 impl<I> FixedShingleFilter<I> {
     /// Hands a base token that starts no shingle's position increment to the
     /// next shingle, and to `end()` when none follows (Lucene's GITHUB#16577).
-    /// Lucene 10.5.1, which OpenSearch 3.9 bundles, drops it: the default.
+    /// Lucene 10.5.1, which OpenSearch 3.9 bundles, drops it.
     pub fn with_carried_increments(mut self) -> Self {
         self.carry_skipped_increments = true;
+        self
+    }
+
+    /// Behaves as the Lucene `host` does: carries the increments from 10.5.2
+    /// (GITHUB#16577), drops them before. A new filter takes [`Version::host`].
+    pub fn for_lucene(mut self, host: Version) -> Self {
+        self.carry_skipped_increments = host.on_or_after(Version::LUCENE_10_5_2);
         self
     }
 }
@@ -779,18 +787,29 @@ mod tests {
         assert_eq!(render(&mut f), "Wi Fi:0:5:1:1|0|1");
     }
 
-    /// Lucene 10.5.1, the default: the skipped base token's increment is
-    /// dropped and `end()` adds nothing.
+    /// Lucene 10.5.1: the skipped base token's increment is dropped and
+    /// `end()` adds nothing.
     #[test]
     fn fixed_shingle_drops_the_increment_of_a_skipped_base_token() {
         let mut f = FixedShingleFilter::new(
             Canned::parse("Secure:0:6:1:1 Wi-Fi:7:12:1:2 Wi:7:9:0:1 Fi:10:12:1:1|12|0"),
             2,
         )
-        .unwrap();
+        .unwrap()
+        .for_lucene(Version::LUCENE_10_5_1);
         assert_eq!(
             render(&mut f),
             "Secure Wi-Fi:0:12:1:1 Secure Wi:0:9:0:1 Wi Fi:7:12:0:1|12|0"
+        );
+        let mut f = FixedShingleFilter::new(
+            Canned::parse("Secure:0:6:1:1 Wi-Fi:7:12:1:2 Wi:7:9:0:1 Fi:10:12:1:1|12|0"),
+            2,
+        )
+        .unwrap()
+        .for_lucene(Version::LUCENE_10_5_2);
+        assert_eq!(
+            render(&mut f),
+            "Secure Wi-Fi:0:12:1:1 Secure Wi:0:9:0:1 Wi Fi:7:12:1:1|12|1"
         );
     }
 

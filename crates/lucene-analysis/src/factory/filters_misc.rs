@@ -1017,7 +1017,12 @@ impl FactoryClass for FixedShingleFilterFactory {
         let shingle_size = args::get_int(args, "shingleSize", 2)?;
         let token_separator = args::get_or(args, "tokenSeparator", " ");
         let filler_token = args::get_or(args, "fillerToken", "_");
-        let carry = args::get_boolean(args, "carrySkippedIncrements", false);
+        // The default follows the Lucene of the host node: 10.5.2 added the carry.
+        let carry = args::get_boolean(
+            args,
+            "carrySkippedIncrements",
+            Version::host().on_or_after(Version::LUCENE_10_5_2),
+        );
         Ok(FixedShingleFilterFactory {
             base,
             shingle_size,
@@ -1036,11 +1041,11 @@ impl TokenFilterFactory for FixedShingleFilterFactory {
             &self.token_separator,
             &self.filler_token,
         )?;
-        Ok(Box::new(if self.carry {
-            filter.with_carried_increments()
+        Ok(Box::new(filter.for_lucene(if self.carry {
+            Version::LUCENE_10_5_2
         } else {
-            filter
-        }))
+            Version::LUCENE_10_5_1
+        })))
     }
 }
 

@@ -35,6 +35,7 @@ public final class NativeAnalysis {
     private NativeAnalysis() {}
 
     private static final class H {
+        static final MethodHandle SET_HOST_LUCENE = bind("ffi_set_host_lucene_version", FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
         static final MethodHandle THAI_SET_BREAK_UPCALL = bind("ffi_thai_set_break_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle HIGHLIGHT_UNIFIED = bind(
             "ffi_jvm_highlight_unified_alloc",
@@ -59,6 +60,18 @@ public final class NativeAnalysis {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle HIGHLIGHT_SET_THAI_UPCALL = bind("ffi_jvm_highlight_set_thai_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    }
+
+    /**
+     * Tells the native side which Lucene release this node runs, so that analysis, scoring and join
+     * behaviour that differs between releases is the node's own ({@code abi.rs}).
+     */
+    public static int setHostLucene(int major, int minor, int bugfix) {
+        try {
+            return (int) H.SET_HOST_LUCENE.invokeExact(major, minor, bugfix);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
     }
 
     /** Registers the JVM's Thai word-break upcall ({@code thai_break.rs}); only the first counts. */
