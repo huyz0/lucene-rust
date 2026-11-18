@@ -19,13 +19,12 @@
 //! not reproduce fixed-length arc nodes or output pushing. See that section's
 //! doc comment for the precise list of what's reproduced and what's deferred.
 //!
-//! ## Scope of this slice
+//! ## What is ported
 //!
-//! - **On-heap only.** Real Lucene's `FST` can be backed by an off-heap
-//!   (mmap'd) `OffHeapFSTStore` or an on-heap `OnHeapFSTStore`. Only the
-//!   on-heap representation is ported: the FST body is a plain `Vec<u8>`
-//!   (`OnHeapFSTStore` with `bytesArray != null` writes/reads the body as one
-//!   contiguous forward byte array — see `OnHeapFSTStore.java`).
+//! - **Heap or mapped body.** Real Lucene's `FST` is backed by an off-heap
+//!   (mmap'd) `OffHeapFSTStore` or an on-heap `OnHeapFSTStore`. Here the body is
+//!   a plain `Vec<u8>` (`Fst::read`) or a borrowed slice of a mapped input
+//!   (`Fst::read_borrowed`, see "On off-heap storage" below).
 //! - **Single output type on the wire: `BytesRef`-shaped
 //!   (`ByteSequenceOutputs`).** This is the output type real Lucene uses for
 //!   the term index FST (`Lucene90BlockTreeTermsReader`'s `.tip` FST maps
@@ -3140,7 +3139,7 @@ impl Iterator for FstEnum<'_, '_> {
 //    (which this generalizes to a full trie with branching) for the
 //    address-ordering contract those functions rely on.
 //
-// Deliberately **not** done, all deferred to a future slice along with real
+// Deliberately **not** done, all left to real
 // `FSTCompiler` itself:
 // - **Incremental/streaming construction.** Real `FSTCompiler` consumes keys
 //   one at a time and only ever holds the current key's path of
@@ -3570,7 +3569,7 @@ fn read_vlong_forward(bytes: &[u8]) -> Result<(i64, usize)> {
 /// Port of `PositiveIntOutputs`: an FST output type whose value is a single
 /// non-negative `i64` (real Lucene rejects negative values; this port
 /// mirrors that with a `debug_assert`, since silently wrapping/rejecting in
-/// release builds isn't this slice's concern and every current caller is a
+/// release builds is not needed, since every caller is a
 /// test). `NO_OUTPUT` is `0`, matching real Lucene, which is why it encodes
 /// to the empty byte sequence (see `Outputs::zero`'s doc comment).
 pub struct PositiveIntOutputs;

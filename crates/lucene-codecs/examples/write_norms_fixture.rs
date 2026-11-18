@@ -5,7 +5,7 @@
 //! division of labor as `write_doc_values_fixture.rs`: `fixtures/src/
 //! VerifyNorms.java` opens the result through real Lucene's
 //! `Lucene90NormsFormat` with a hand-built `SegmentInfo`/`FieldInfos`, so
-//! this slice doesn't also need a `.si`/`.fnm` writer.
+//! the fixture doesn't also need a `.si`/`.fnm` writer.
 //!
 //! One segment per shape `Lucene90NormsConsumer.addNormsField` can produce:
 //! all five `numBytesPerValue` widths (constant, 1, 2, 4, 8 bytes per doc),

@@ -1,6 +1,5 @@
 //! Minimal `DocIdSetIterator`-shaped merge combinators (`org.apache.lucene.search.
-//! DocIdSetIterator`/`ConjunctionDISI`/`DisjunctionDISIApproximation`), pared down to
-//! this slice's scope: given several already-materialized, ascending, duplicate-free
+//! DocIdSetIterator`/`ConjunctionDISI`/`DisjunctionDISIApproximation`): given several already-materialized, ascending, duplicate-free
 //! doc-ID sequences (one per clause), merge them into the AND (conjunction), OR
 //! (disjunction), or AND-NOT (exclusion) result, still ascending and duplicate-free.
 //!
@@ -22,11 +21,9 @@
 //! "monomorphize per-doc loops" guidance is aimed at *scorers/DISIs* on the hot
 //! single-query-type path; a boxed trait object at the clause-merge boundary (one
 //! virtual call per doc per clause, not per byte) is the same tradeoff real Lucene's
-//! own `Scorer`-hierarchy conjunctions make, and is the right place to pay it. This is
-//! also explicitly a first cut ("correctness first, not final perf" per the task that
-//! introduced it) — the merge algorithms below are the simple standard ones
-//! (leapfrog conjunction, min-scan disjunction), not the skip-list-driven versions a
-//! later performance pass would swap in.
+//! own `Scorer`-hierarchy conjunctions make, and is the right place to pay it. The merge
+//! algorithms below are the simple standard ones (leapfrog conjunction,
+//! min-scan disjunction); the hot paths use the skip-driven scorers elsewhere.
 //!
 //! Every doc-ID sequence handed to these combinators is expected to already be
 //! **ascending and duplicate-free** — [`crate::term_doc_ids`] (or any other producer)

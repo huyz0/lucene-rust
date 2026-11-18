@@ -310,7 +310,7 @@ public class GenBlockTree {
         // at least one of those prefix groups (some leading-byte groups have
         // 40 terms sharing that prefix, past maxItemsInBlock=48 once you
         // include the shared "term0" prefix's own bookkeeping) -- exercising
-        // both new decode paths blocktree.rs added this slice, against real
+        // both new decode paths blocktree.rs added, against real
         // Lucene bytes rather than only this port's own hand-built encoders.
         int manyCount = 400;
         String[] manyLookups = new String[manyCount];

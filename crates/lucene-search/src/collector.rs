@@ -1,50 +1,22 @@
-//! `Collector`/`LeafCollector`-equivalent, pared down to this slice's scope:
-//! a plain callback trait invoked once per matching (live) doc ID, in
-//! ascending order. Real Lucene's `Collector`/`LeafCollector` split exists to
-//! let a collector rebind per-segment state (e.g. a `Scorer` reference) when
-//! `IndexSearcher` moves to the next leaf; that split has no work to do yet
-//! since this slice never federates more than one segment (see `lib.rs`'s
-//! module doc), so a single flat trait stands in for both.
+//! `Collector`/`LeafCollector`-equivalent: a plain callback trait invoked once
+//! per matching (live) doc ID, in ascending order, with a scoring sibling
+//! ([`ScoringCollector`]) that also receives the score.
 //!
-//! `search_term_query` (`lib.rs`) is generic over `C: Collector` rather than
-//! taking `&mut dyn Collector`, per the `rust-performance` skill's
-//! "monomorphize per-doc loops, `dyn` only at Query/Weight level" rule — the
-//! per-doc `collect()` call in the hot loop is a direct (inlinable) call, not
-//! a vtable dispatch.
+//! Lucene's `Collector`/`LeafCollector` split exists to let a collector rebind
+//! per-segment state when `IndexSearcher` moves to the next leaf; here the
+//! per-segment search functions of `lib.rs` take one collector per segment, so a
+//! single flat trait stands in for both. The search functions are generic over
+//! `C: Collector` rather than taking `&mut dyn Collector`: the per-doc
+//! `collect()` call in the hot loop is a direct, inlinable call, not a vtable
+//! dispatch.
 //!
-//! ## `ScoringCollector` — a new trait, not a breaking
-//! change to `Collector`
+//! ## `ScoringCollector` is a separate trait
 //!
-//! `lib.rs`'s module doc, written when this file only had unscored matching,
-//! already flagged that relevance scoring would need `Collector::collect` to
-//! grow a `score: f32` parameter, and called that "a breaking signature
-//! change, every existing `Collector` impl's signature changes". Having now
-//! reached that point, this port takes the **non-breaking path instead**: a
-//! separate [`ScoringCollector`] trait with its own `collect(doc_id, score)`
-//! method, rather than editing [`Collector`] in place. Reasoning:
-//!
-//! - **Not every caller needs a score.** `CountCollector`/`VecCollector` (and
-//!   `search_term_query`/`search_boolean_query`, which only ever determine
-//!   matching, not ranking) have no use for a `score: f32` parameter — real
-//!   Lucene's own `Collector`/`LeafCollector` doesn't force `TotalHitCountCollector`
-//!   to touch a `Scorer` either (`LeafCollector.setScorer` is a no-op there).
-//!   Forcing a score parameter onto every collector would make the two
-//!   existing, already-shipped, already-tested unscored collectors either grow
-//!   a dummy parameter or get deleted for no correctness reason.
-//! - **A trait per shape, not one trait doing double duty.** `Collector` and
-//!   `ScoringCollector` are different contracts (`fn(i32)` vs `fn(i32, f32)`);
-//!   giving them different trait names (as opposed to one trait with both
-//!   methods, one of them defaulted to a no-op) keeps each collector's impl
-//!   exactly as small as the contract it actually fulfills, and keeps
-//!   [`crate::search_term_query`]/[`crate::search_boolean_query`]'s existing generic bound
-//!   (`C: Collector`) untouched — no existing caller's code breaks.
-//! - **The cost is one more trait, not a hierarchy.** With exactly two shapes
-//!   (unscored / scored) and no third on the horizon, this is the same
-//!   "don't build the trait hierarchy until a second real shape needs it"
-//!   call `lib.rs`'s module doc already made for `Weight`/`Scorer` — here the
-//!   second shape *has* arrived, so it gets its own trait, but no further
-//!   speculative generality (no shared supertrait, no `Collector: ScoringCollector`
-//!   blanket impl) is introduced beyond that.
+//! `CountCollector`/`VecCollector` and the functions that only determine
+//! matching have no use for a `score: f32` parameter (Lucene's
+//! `TotalHitCountCollector` ignores `setScorer` too), so scoring is a second
+//! trait with `collect(doc_id, score)` rather than a parameter every collector
+//! must accept. The two stay independent: no shared supertrait, no blanket impl.
 
 use std::sync::{Arc, OnceLock};
 
@@ -145,9 +117,8 @@ impl std::fmt::Display for TotalHits {
     }
 }
 
-/// Called once per matching, live doc ID, in ascending order — the entire
-/// contract a collector needs for this slice (no scores, no per-segment
-/// rebinding, no early-termination signal yet; see module doc).
+/// Called once per matching, live doc ID, in ascending order: the whole
+/// contract of an unscored collector (see [`ScoringCollector`] for scores).
 pub trait Collector {
     fn collect(&mut self, doc_id: i32);
 }

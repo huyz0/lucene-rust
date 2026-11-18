@@ -30,7 +30,7 @@
 //! list): NRT/reopen (`DirectoryReader.openIfChanged`), soft deletes, and
 //! norms/term vectors (irrelevant here: [`OpenSegment`] itself has no fields
 //! for them -- `crate::field_norms`/term-vectors query functions still take
-//! their own already-opened readers directly, unchanged by this task).
+//! their own already-opened readers directly).
 //! **Doc-values are now wired in** (see the "NRT reopen after sparse
 //! doc-values commits" entry in `docs/parity.md`): [`SegmentReader::open`]
 //! also opens a segment's `.dvm`/`.dvd` when present (together or not at
