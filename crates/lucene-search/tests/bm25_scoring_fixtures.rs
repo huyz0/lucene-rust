@@ -404,7 +404,7 @@ fn sloppy_phrase_scores_match_real_lucene_bit_for_bit() {
 /// index, so a match is a *window* over the shifted positions and phrase order
 /// is not a constraint at all. Queried backwards, `pos:"beta alpha"` shifts doc
 /// 8555 (`alpha`@0 `beta`@1) to `beta = 1`, `alpha = -1`: a window of width 2.
-/// The old in-order matcher could not produce a match at any slop.
+/// An in-order matcher cannot produce a match at any slop.
 ///
 /// The three slop values are the whole claim: **not** at 1 (so the port cannot
 /// pass by matching everything), at 2 with `matchLength == 2` (so the weight is

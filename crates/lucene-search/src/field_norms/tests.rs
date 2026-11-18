@@ -100,8 +100,8 @@ fn from_field_stats_empty_field_falls_back_to_unnormed() {
     assert_eq!(n.avg_field_length, crate::similarity::UNNORMED_FIELD_LENGTH);
 }
 
-/// Why the old averaging approach was wrong, pinned as a test rather than
-/// left as prose.
+/// Why averaging quantized norms is wrong, pinned as a test rather than left
+/// as prose.
 ///
 /// Norms are `SmallFloat`-quantized to one byte. Below 25 the encoding is
 /// exact, so averaging decoded norms and dividing exact counters agree --
@@ -155,7 +155,7 @@ fn unnormed_field_scores_at_length_one_against_the_real_avgdl() {
     }
     // Past the segment is an error, as for any dense norms.
     assert!(norms.field_length(10).is_err());
-    // At avgdl 1 it is exactly the old unnormed constant.
+    // At avgdl 1 it is exactly the unnormed constant.
     let one = FieldNorms::unnormed(1, 1.0);
     assert_eq!(
         one.cursor().norm_inverse(0).unwrap(),

@@ -118,6 +118,7 @@ public final class MlCommons {
     private final Path cacheDir;
     private final AtomicInteger roundRobin = new AtomicInteger();
     private final MlStats stats = new MlStats();
+    private final MlLimits limits;
     /** The tasks this node created that have not finished, for the profile API. */
     private final Map<String, Map<String, Object>> activeTasks = new java.util.concurrent.ConcurrentHashMap<>();
     /** The function of each register task in flight, for the stats' failure counts. */
@@ -137,7 +138,8 @@ public final class MlCommons {
         this.threadPool = threadPool;
         this.indices = new MlIndices(client, clusterService);
         this.remote = new RemoteModels(client, clusterService, indices, scripts);
-        this.local = new LocalModels(client, remote, cacheDir, runtimeLibrary);
+        this.limits = MlLimits.of(this::setting, stats.breakerTrips);
+        this.local = new LocalModels(client, remote, cacheDir, runtimeLibrary, limits);
         this.cacheDir = cacheDir;
     }
 
@@ -1395,6 +1397,7 @@ public final class MlCommons {
 
     /** Downloads the zip, checks its hash, stores it as base64 chunks and marks the model registered. */
     private void downloadAndChunk(String modelId, Map<String, Object> model, String url) throws Exception {
+        limits.checkBreakers();
         Path dir = cacheDir.resolve("register");
         Files.createDirectories(dir);
         Path tmp = Files.createTempFile(dir, modelId + "-", ".zip");
@@ -1611,73 +1614,6 @@ public final class MlCommons {
 
     // ---- Prediction ------------------------------------------------------------------------
 
-    /** The texts of a {@code text_docs} predict input. */
-    @SuppressWarnings("unchecked")
-    static List<String> textDocs(Map<String, Object> body) {
-        Object docs = body.get("text_docs");
-        if (docs == null && body.get("parameters") instanceof Map<?, ?> p) {
-            docs = ((Map<String, Object>) p).get("texts");
-        }
-        if (docs == null || docs instanceof List<?> l && l.isEmpty()) {
-            throw new IllegalArgumentException("Empty text docs");
-        }
-        if (docs instanceof List<?> list) {
-            List<String> texts = new ArrayList<>(list.size());
-            for (Object o : list) {
-                texts.add(o == null ? null : String.valueOf(o));
-            }
-            return texts;
-        }
-        throw new IllegalArgumentException("input data set should not be null");
-    }
-
-    /**
-     * {@code TextSimilarityMLInput}: the query and the documents of a {@code text_similarity}
-     * predict input.
-     */
-    @SuppressWarnings("unchecked")
-    static Map.Entry<String, List<String>> similarityInput(Map<String, Object> body) {
-        List<String> docs = new ArrayList<>();
-        if (body.get("text_docs") instanceof List<?> list) {
-            for (Object o : list) {
-                docs.add(String.valueOf(o));
-            }
-        }
-        if (docs.isEmpty()) {
-            throw new IllegalArgumentException("No text documents were provided");
-        }
-        Object query = body.get("query_text");
-        if (query == null) {
-            throw new IllegalArgumentException("No query text was provided");
-        }
-        return Map.entry(String.valueOf(query), docs);
-    }
-
-    /**
-     * {@code QuestionAnsweringInput}: the question and context of a {@code question_answering} predict
-     * input. A value that is not text, a number or a boolean leaves stock's parser with no input at all; an absent
-     * or empty one is refused as not provided.
-     */
-    static Map.Entry<String, String> questionAnsweringInput(Map<String, Object> body) {
-        for (String key : List.of("question", "context")) {
-            if (body.containsKey(key) && (body.get(key) instanceof String || body.get(key) instanceof Number || body.get(key) instanceof Boolean) == false) {
-                throw new OpenSearchStatusException(
-                    "Cannot invoke \"org.opensearch.ml.common.input.MLInput.setAlgorithm(org.opensearch.ml.common.FunctionName)\" because \"mlInput\" is null",
-                    RestStatus.INTERNAL_SERVER_ERROR
-                );
-            }
-        }
-        String question = body.get("question") == null ? "" : String.valueOf(body.get("question"));
-        String context = body.get("context") == null ? "" : String.valueOf(body.get("context"));
-        if (question.isEmpty()) {
-            throw new IllegalArgumentException("Question is not provided");
-        }
-        if (context.isEmpty()) {
-            throw new IllegalArgumentException("Context is not provided");
-        }
-        return Map.entry(question, context);
-    }
-
     /**
      * {@code POST _plugins/_ml/_predict/<algorithm>/<model_id>} and {@code models/<id>/_predict}: run
      * where the model is deployed, here if possible.
@@ -1771,11 +1707,11 @@ public final class MlCommons {
             return;
         }
         if ("TEXT_SIMILARITY".equals(function)) {
-            similarityInput(body);
+            MlInputs.similarityInput(body);
         } else if ("QUESTION_ANSWERING".equals(function)) {
-            questionAnsweringInput(body);
+            MlInputs.questionAnsweringInput(body);
         } else {
-            textDocs(body);
+            MlInputs.textDocs(body);
         }
     }
 
@@ -1787,6 +1723,9 @@ public final class MlCommons {
     private Map<String, Object> predictLocal(String route, String modelId, Map<String, Object> body) {
         local.admit(modelId);
         String function = String.valueOf(local.function(modelId));
+        if ("REMOTE".equals(function) == false) {
+            limits.checkBreakers(MlLimits.answerHeap(body, local.model(modelId)));
+        }
         stats.request(function, modelId, "predict");
         long start = System.nanoTime();
         try {
@@ -1815,16 +1754,16 @@ public final class MlCommons {
             if ("QUESTION_ANSWERING".equals(function) == false || (route != null && "QUESTION_ANSWERING".equals(route) == false)) {
                 throw new MLException("Failed to inference " + function + " model: " + modelId);
             }
-            return highlight(modelId, questionAnsweringInput(body));
+            return highlight(modelId, MlInputs.questionAnsweringInput(body));
         }
         boolean similarity = "TEXT_SIMILARITY".equals(function);
         if (route != null && "TEXT_SIMILARITY".equals(route) != similarity) {
             throw new MLException("Failed to inference " + function + " model: " + modelId);
         }
         if (similarity) {
-            return similarity(modelId, similarityInput(body));
+            return similarity(modelId, MlInputs.similarityInput(body));
         }
-        List<String> texts = textDocs(body);
+        List<String> texts = MlInputs.textDocs(body);
         Map<String, String> params = embeddingParameters(body);
         try {
             if (texts.contains(null)) {
@@ -2225,7 +2164,7 @@ public final class MlCommons {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> body = (Map<String, Object>) call.get("body");
                 Map<String, Object> result = predictLocal((String) call.get("route"), modelId, body);
-                return json(result).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                return MlActions.Response.of(result).json;
             }
             case UPDATE -> {
                 local.refresh(modelId, parse(payload));
