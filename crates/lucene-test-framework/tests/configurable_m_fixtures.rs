@@ -315,6 +315,7 @@ fn read_state<'a>(infos: &'a FieldInfos, max_doc: i32, files: Files<'a>) -> Read
 
 #[test]
 fn all_four_native_files_equal_java_and_every_value_arc_search_bit_and_visit_matches() {
+    lucene_codecs::vectors::use_stock_vector_data_alignment();
     let infos = fields();
     for fixture in &FIXTURES {
         let max_doc = fixture.count * 2;
