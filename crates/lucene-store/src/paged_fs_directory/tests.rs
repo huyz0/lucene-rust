@@ -121,6 +121,23 @@ fn opens_of_one_file_share_its_pages() {
 }
 
 #[test]
+fn a_file_too_large_to_stay_resident_gets_a_page_from_its_advice() {
+    use crate::read_advice::ReadAdvice;
+    assert_eq!(super::small_page("xyz", ReadAdvice::Random), 4 << 10);
+    assert_eq!(super::small_page("xyz", ReadAdvice::Normal), 16 << 10);
+    assert_eq!(super::small_page("xyz", ReadAdvice::Auto), 16 << 10);
+    assert_eq!(super::small_page("xyz", ReadAdvice::WillNeed), 16 << 10);
+    // Vector data stays small when no advice says so.
+    assert_eq!(super::small_page("vec", ReadAdvice::Normal), 4 << 10);
+    // A scan keeps the large page: the caller takes the smaller of this and
+    // the configured page.
+    assert_eq!(super::small_page("doc", ReadAdvice::Sequential), usize::MAX);
+    // The default advice table makes the graph and quantized vectors random.
+    let c = PagedFsConfig::default();
+    assert_eq!(c.page_size_for("_0_X_0.vex", 60 << 20, 100 << 20), 4 << 10);
+}
+
+#[test]
 fn adaptive_pages_and_pins_follow_the_budget() {
     let c = PagedFsConfig::default();
     let budget = 100 << 20;

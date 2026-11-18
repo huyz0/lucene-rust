@@ -232,6 +232,48 @@ fn interleaved_scans_of_one_file_each_read_ahead() {
 }
 
 #[test]
+fn a_scan_keeps_its_window_among_readers_at_random_places() {
+    let Some(pager) = Pager::global() else {
+        return;
+    };
+    let page = 16 * 1024;
+    let len = 4096 * page;
+    // A scan of the first 256 pages and, after every four of its pages, twelve reads at
+    // places far apart in the rest of the file; the same random reads alone
+    // on a second file say what they cost by themselves.
+    let run = |label: &str, scan: bool| {
+        let p = pattern(len, page);
+        let input = pager
+            .open_with_readahead(len, page, p.clone(), label, 8)
+            .unwrap();
+        let bytes = input.bytes();
+        let mut x = 12_345usize;
+        for burst in 0..64 {
+            if scan {
+                for page_no in burst * 4..burst * 4 + 4 {
+                    assert_eq!(bytes[page_no * page], byte(page_no * page));
+                }
+            }
+            for _ in 0..12 {
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let q = 256 + (x >> 33) % 3840;
+                assert_eq!(bytes[q * page + 9], byte(q * page + 9));
+            }
+        }
+        p.calls.load(Ordering::Relaxed)
+    };
+    let alone = run("random-alone", false);
+    let with_scan = run("scan-among-random", true);
+    // The scan's own windows add a few dozen fills, not one per page.
+    assert!(
+        with_scan <= alone + 40,
+        "{with_scan} fills with a 256-page scan, {alone} for the random reads alone"
+    );
+}
+
+#[test]
 fn background_read_ahead_reads_each_page_once() {
     let Some(pager) = Pager::global() else {
         return;
