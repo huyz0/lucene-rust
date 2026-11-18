@@ -38,7 +38,7 @@
 //! primary cluster; every vector has one primary entry and at most one
 //! spilled one.
 //!
-//! `.ivv`, from the field's vectors offset (page aligned, [`VECTORS_ALIGNMENT`]): every vector
+//! `.ivv`, from the field's vectors offset (page aligned, [`crate::VECTORS_ALIGNMENT`]): every vector
 //! (`VectorEncoding::vector_bytes(dimension)` bytes in the field's
 //! encoding, int8 relative to its primary cluster's centroid; `f32` LE
 //! before `VERSION_VECTOR_ENCODING`) in primary-cluster order, then

@@ -11,7 +11,7 @@ search/join/DiversifyingNearestChildrenKnnCollector	ported	crates/lucene-search/
 search/join/DiversifyingNearestChildrenKnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::diversified_leaf_results
 search/join/DocValuesTermsCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsCollector
 search/join/GenericTermsCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsWithScoreCollector
-search/join/GlobalOrdinalsCollector	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsCollector
+search/join/GlobalOrdinalsCollectorManager	partial	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsCollector -- M14: the per-slice CollectorManager is not ported; the collector it makes is
 search/join/GlobalOrdinalsQuery	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsQuery
 search/join/GlobalOrdinalsWithScoreCollector	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsWithScoreCollector
 search/join/GlobalOrdinalsWithScoreQuery	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsWithScoreQuery

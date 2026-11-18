@@ -120,12 +120,14 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_PATTERN_PHRASE"): ("pattern_phrase.rs", "NODE_PATTERN_PHRASE"),
     ("ExtendedEncoder.java", "NODE_JOIN"): ("queries.rs", "NODE_JOIN"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
-    ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
+    ("IndexFormatSettings.java", "FORMAT_105"): ("writer_ops.rs", "INDEX_FORMAT_105"),
+    ("IndexFormatSettings.java", "FORMAT_106"): ("writer_ops.rs", "INDEX_FORMAT_106"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
 }
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): "the padding of the Java-side half-float flat writer; the native writer starts vector data on a page (VECTOR_DATA_ALIGNMENT) and readers follow the recorded offset",
     ("MoreLikeThisEncoder.java", "DEFAULT_MAX_NUM_TOKENS_PARSED"): "stock's default max_num_tokens_parsed of more_like_this, applied in Java when the query is encoded",
     ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
     ("JsScripts.java", "CACHE_LIMIT"): "the plugin's cache of js check results, in Java only",
