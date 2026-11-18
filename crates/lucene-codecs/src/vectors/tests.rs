@@ -576,7 +576,7 @@ fn half_float_fields_round_trip_and_need_their_similarity() {
     let mut reader = open_half(&meta, &data).unwrap();
     assert!(reader.stores_half_floats());
     let entry = reader.field(3).unwrap();
-    assert_eq!(entry.vector_data_offset % 64, 0);
+    assert_eq!(entry.vector_data_offset % 4096, 0);
     assert_eq!(entry.vector_data_length, 3 * 4 * 2);
     assert!(reader.float_vector_values(3).is_err());
     reader
@@ -1271,7 +1271,7 @@ fn a_flushed_field_and_a_merged_field_share_one_file_pair() {
     assert_eq!(bytes.ord_to_doc(1).unwrap(), 3);
     // The merged field's region is still 64-byte aligned, and the byte
     // field's 4-byte aligned, exactly as a flush would leave them.
-    assert_eq!(reader.field(0).unwrap().vector_data_offset % 64, 0);
+    assert_eq!(reader.field(0).unwrap().vector_data_offset % 4096, 0);
     assert_eq!(reader.field(1).unwrap().vector_data_offset % 4, 0);
 }
 

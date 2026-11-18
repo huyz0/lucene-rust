@@ -210,7 +210,9 @@ pub fn open_input<'d>(
 ///   differ. Nothing in the format depends on it -- `.cfe` maps names to
 ///   `(offset, length)` and the reader looks up by name.
 /// - Each sub-file's start offset in `.cfs` is padded up to a 64-byte
-///   boundary ([`ALIGNMENT_BYTES`]).
+///   boundary ([`ALIGNMENT_BYTES`]); flat vector data of a page or more
+///   starts on a page instead ([`VECTOR_DATA_PAGE`]), and readers use the
+///   recorded offset either way.
 /// - Java "verifies and copies" each sub-file's header (checking its object
 ///   id matches `segment_id`) and re-derives its footer from the verified
 ///   checksum rather than copying the footer bytes directly -- but since that
@@ -262,8 +264,14 @@ pub fn write(
     Ok((cfs, cfe))
 }
 
+/// Flat vector data starts on a page of its own within `.cfs`: the data
+/// inside the file starts on a page ([`crate::vectors::VECTOR_DATA_ALIGNMENT`]),
+/// and a member that began anywhere else in the archive would lose that.
+const VECTOR_DATA_PAGE: usize = crate::vectors::VECTOR_DATA_ALIGNMENT;
+
 /// Where a sub-file appended at `pos` starts in `.cfs`: the next
-/// [`ALIGNMENT_BYTES`] boundary, except that paged zstd stored fields, whose
+/// [`ALIGNMENT_BYTES`] boundary, except that flat vector data starts on a
+/// page ([`VECTOR_DATA_PAGE`]) and paged zstd stored fields, whose
 /// chunks are packed into pages counted from the file's start
 /// ([`crate::stored_fields::ZSTD_PAGED_PAGE_SIZE`]), never straddle a page
 /// they need not. One that fits in what is left of the current page stays
@@ -273,11 +281,19 @@ pub fn write(
 fn entry_start(pos: usize, bytes: &[u8]) -> usize {
     let start = pos.next_multiple_of(ALIGNMENT_BYTES);
     let mut input = SliceInput::new(bytes);
-    let paged = input.read_be_u32().is_ok()
-        && input
-            .read_string()
-            .is_ok_and(|codec| codec == crate::stored_fields::DATA_CODEC_ZSTD_PAGED);
-    if !paged {
+    let codec = input
+        .read_be_u32()
+        .ok()
+        .and_then(|_| input.read_string().ok());
+    if bytes.len() >= VECTOR_DATA_PAGE
+        && matches!(
+            codec.as_deref(),
+            Some(crate::vectors::DATA_CODEC | crate::vectors::HALF_FLOAT_DATA_CODEC)
+        )
+    {
+        return pos.next_multiple_of(VECTOR_DATA_PAGE);
+    }
+    if codec.as_deref() != Some(crate::stored_fields::DATA_CODEC_ZSTD_PAGED) {
         return start;
     }
     let page = crate::stored_fields::ZSTD_PAGED_PAGE_SIZE;

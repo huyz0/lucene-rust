@@ -50,7 +50,8 @@
     16788,
     16849,
     16855,
-    16893
+    16893,
+    16771
   ],
   "skipped_prs": {
     "16669": "measured 2-17x slower in the port",
@@ -66,7 +67,7 @@
     "16370": "no analogue: the dense conjunction bulk scorer takes term legs only, no two-phase clauses",
     "16146": "no analogue: no cached-filter conjunction batching in this port",
     "16721": "needs BreakIterator isBoundary/following/last, which the installed JVM and ICU Thai breakers do not provide; no OpenSearch surface",
-    "16627": "deferred, not declined: upstream measured copy+repair 97.5 s -> 17.4 s (cohere-1024, 500k, 35% deletes, forceMerge(1), 8 workers); worth a bench of our merge path with heavy deletes before porting (657 lines of Java)",
+    "16627": "not ported, replaced by a cheaper change: benched (crates/lucene-codecs/examples/hnsw_merge_repair_bench.rs, 100k x 128, 4 workers) serial repair costs 9.5 s at 5% deleted and 59 s at 20-35%, a parallel rebuild 12-19 s, so the concurrent merge now reuses a base graph only up to 40/workers percent deleted (10% on 4 workers). Upstream's own total with parallel repair (96 s) barely beats its rebuild (102 s)",
     "16418": "overlays: default off in 10.6.0 (DEFAULT_MAX_DOC_VALUES_OVERLAYS = 0) and OpenSearch does not enable it; the reader refuses a commit that carries them (UnsupportedDocValuesOverlays) rather than read stale values; serving them is the open item if OpenSearch ever enables it",
     "16554": "overlays: default off in 10.6.0 (DEFAULT_MAX_DOC_VALUES_OVERLAYS = 0) and OpenSearch does not enable it; the reader refuses a commit that carries them (UnsupportedDocValuesOverlays) rather than read stale values; serving them is the open item if OpenSearch ever enables it",
     "16570": "overlays: default off in 10.6.0 (DEFAULT_MAX_DOC_VALUES_OVERLAYS = 0) and OpenSearch does not enable it; the reader refuses a commit that carries them (UnsupportedDocValuesOverlays) rather than read stale values; serving them is the open item if OpenSearch ever enables it",
@@ -76,7 +77,22 @@
     "16506": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)",
     "16594": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)",
     "16706": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)",
-    "16710": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)"
+    "16710": "sandbox dedup vector format: upstream states no on-disk compatibility promise, no OpenSearch surface; revisit only when it leaves the sandbox (upstream plans a LuceneXX version)",
+    "16682": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16684": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16749": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16796": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16883": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16905": "no analogue: a merge opens its own unadvised mapping and the search mapping keeps its advice; SEQUENTIAL on the merge input measured equal to the OS default (49 MiB scan under a 125 MB/s cap: 0.30-0.39 s both)",
+    "16705": "already in: IVF rerank vectors and HNSW scorers prefetch candidate rows (prefetch_ranges, read_ahead)",
+    "16628": "already in: same prefetch paths serve fp16 rows",
+    "16145": "no analogue: the port has no power-of-two prefetch back-off; advise_will_need checks residency with mincore",
+    "16945": "no analogue: Java shared-arena grouping and arena closing; the port maps each file once",
+    "16931": "no analogue: Java shared-arena grouping and arena closing; the port maps each file once",
+    "16970": "no analogue: Java shared-arena grouping and arena closing; the port maps each file once",
+    "16619": "no analogue: no direct-IO directory",
+    "16898": "no analogue: Java IOContext hint API",
+    "16932": "no analogue: no dedup vector format (the flat format took #16771)"
   },
   "notes": "ported_prs lists upstream PR numbers from 10.5.2..10.6.0 that the port took by hand before the pin moved, plus the ReqExclBulkScorer window rewrite (#16715) taken with it; skipped_prs have a measured reason. scripts/lucene-upstream-diff.py reads both and also treats a PR number mentioned anywhere in the repo as 'referenced'. Update this file in the same PR that ports or rejects a change; bump base when the pin moves."
 }

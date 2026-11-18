@@ -180,8 +180,20 @@ final class DocumentEncoder {
      */
     private int bytesPerDocument = 256;
 
+    /** A thread keeps its blob if it has not grown past this; a larger one is dropped for a small one. */
+    private static final int KEEP_BLOB_BYTES = 8 << 20;
+
+    /**
+     * The calling thread's blob, emptied: valid until the thread's next operation is encoded, which
+     * is after the writer applied this one (the native call copies what it is given).
+     */
     private Blob blob(int docs, int extra) {
-        return new Blob((int) Math.min((long) bytesPerDocument * docs + extra, 1 << 20));
+        Workspace ws = WORKSPACE.get();
+        Blob b = ws.blob;
+        if (b == null || b.capacity() > KEEP_BLOB_BYTES) {
+            b = ws.blob = new Blob(256);
+        }
+        return b.reset((int) Math.min((long) bytesPerDocument * docs + extra, 1 << 20));
     }
 
     private Blob sized(Blob b, int docs) {
@@ -323,6 +335,10 @@ final class DocumentEncoder {
         final List<long[]> numericDv = new ArrayList<>();
         final List<Object[]> binaryDv = new ArrayList<>();
         final List<Object[]> points = new ArrayList<>();
+        /** The operation's buffer, emptied per operation. */
+        Blob blob;
+        /** The last stream an untokenized field gave, reused for the next one (as Lucene's IndexingChain does). */
+        TokenStream untokenized;
 
         /** The document's state for field {@code name}, taken on its first instance. */
         PerField perField(String name) {
@@ -557,7 +573,12 @@ final class DocumentEncoder {
         }
         IndexableFieldType type = field.fieldType();
         boolean analyzed = type.tokenized() && analyzer != null;
-        try (TokenStream stream = field.tokenStream(analyzer, null)) {
+        Workspace ws = WORKSPACE.get();
+        TokenStream stream = field.tokenStream(analyzer, type.tokenized() ? null : ws.untokenized);
+        if (type.tokenized() == false) {
+            ws.untokenized = stream;
+        }
+        try {
             stream.reset();
             TermToBytesRefAttribute termAtt = stream.getAttribute(TermToBytesRefAttribute.class);
             PositionIncrementAttribute posIncrAtt = stream.addAttribute(PositionIncrementAttribute.class);
@@ -630,6 +651,8 @@ final class DocumentEncoder {
             stream.end();
             inv.position += posIncrAtt.getPositionIncrement();
             inv.offset += offsetAtt.endOffset();
+        } finally {
+            stream.close();
         }
         if (analyzed) {
             inv.position += analyzer.getPositionIncrementGap(inv.name);
