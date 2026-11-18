@@ -124,16 +124,16 @@ final class LiveSearchers {
     private OpenSearchDirectoryReader open(OpenSearchDirectoryReader reader) {
         long version = AcceleratedReaderManager.version(reader);
         // A search on this segment list asks: the buffers older lists lacked can go.
-        writer.releaseLive(version);
-        AcceleratedIndexWriter.LiveViewHandle handle = writer.openLiveView(version);
+        writer.live().release(version);
+        LiveSearchState.ViewHandle handle = writer.live().openView(version);
         if (handle == null) {
             return null;
         }
         // Under a staleness bound searches share a view, by one handle: the reader over it is
         // shared too.
-        boolean shared = writer.liveStalenessNanos() > 0;
+        boolean shared = writer.live().stalenessNanos() > 0;
         if (shared) {
-            OpenSearchDirectoryReader kept = writer.sharedLive().take(handle.id(), reader);
+            OpenSearchDirectoryReader kept = writer.live().sharedLive().take(handle.id(), reader);
             if (kept != null) {
                 // This open's count of the handle: the kept reader's view holds its own.
                 NativeLive.liveViewClose(handle.id());
@@ -142,7 +142,7 @@ final class LiveSearchers {
         }
         LiveView view = LiveView.of(handle.id(), handle.blob());
         // After the view: every field of its documents is registered by now.
-        FieldInfos infos = writer.liveFieldInfos();
+        FieldInfos infos = writer.live().fieldInfos();
         if (view.maxDoc() == 0 || infos == null) {
             view.close();
             return null;
@@ -154,7 +154,7 @@ final class LiveSearchers {
             throw new UncheckedIOException(e);
         }
         if (shared) {
-            release(writer.sharedLive().keep(handle.id(), reader, wrapped));
+            release(writer.live().sharedLive().keep(handle.id(), reader, wrapped));
         }
         return wrapped;
     }

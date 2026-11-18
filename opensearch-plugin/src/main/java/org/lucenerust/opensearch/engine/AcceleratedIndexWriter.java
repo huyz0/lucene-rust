@@ -25,8 +25,6 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
 import org.lucenerust.opensearch.NativeWriter;
-import org.lucenerust.opensearch.NativeLive;
-import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.engine.DocumentIndexWriter;
@@ -116,20 +114,9 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
-    /** Whether searches read the buffered documents ({@code index.search.realtime.enabled}). */
-    private boolean liveSearch;
-    /** How old a view of the buffers a search may read ({@code index.search.realtime.max_staleness}). */
-    private volatile long liveStalenessNanos;
-    /** The reader over the view searches share under {@link #liveStalenessNanos}, kept until a refresh. */
-    private final SharedLiveReader sharedLive = new SharedLiveReader();
+    private final LiveSearchState live = new LiveSearchState(this);
     /** The field whose value is a document's partition ({@code index.segment_partition.field}), or null. */
     private String partitionField;
-    /** The newest segment list version whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
-    private long liveReleased = -1;
-    private final Object liveLock = new Object();
-    /** The leaf's field infos and the registry size they were built at; under {@link #liveLock}. */
-    private org.apache.lucene.index.FieldInfos liveInfos;
-    private int liveInfosSize = -1;
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
@@ -266,7 +253,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
             w.minRetainedSeqNo = minRetainedSeqNo;
             w.breaker = breaker;
             w.faultInjection = faultInjection;
-            w.liveSearch = liveSearch;
+            w.live.enable(liveSearch);
             w.partitionField = partitionField;
             if (indexSort != null) {
                 w.config.setIndexSort(indexSort);
@@ -303,14 +290,14 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     }
 
     /** Runs one native setter on the open writer under the writer lock and checks its status. */
-    private void locked(java.util.function.IntSupplier call, String what) throws IOException {
+    void locked(java.util.function.IntSupplier call, String what) throws IOException {
         synchronized (lock) {
             ensureOpen();
             check(call.getAsInt(), what);
         }
     }
 
-    private void check(int status, String what) throws IOException {
+    void check(int status, String what) throws IOException {
         if (status == NativeBridge.OK) {
             return;
         }
@@ -486,79 +473,8 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         apply(encoder.add(List.of(doc)), 1);
     }
 
-    /**
-     * The partition of a block of documents: the value of the partition field on its root document,
-     * which OpenSearch puts last (nested documents before their parent). A keyword's value is its
-     * doc-values bytes (UTF-8, or {@code 0x} and hex for bytes that are not, such as an ip's); a
-     * numeric's or date's is its long; with several values, the smallest. Null -- the shard's default
-     * partition -- without a partition field or a value. A value the field holds only as analyzed
-     * text is refused: a partition is one exact value.
-     */
     String partition(List<? extends Iterable<? extends IndexableField>> docs) {
-        if (partitionField == null || docs.isEmpty()) {
-            return null;
-        }
-        BytesRef bytes = null;
-        boolean numeric = false;
-        long number = Long.MAX_VALUE;
-        BytesRef indexed = null;
-        boolean text = false;
-        for (IndexableField f : docs.get(docs.size() - 1)) {
-            if (f.name().equals(partitionField) == false) {
-                continue;
-            }
-            switch (f.fieldType().docValuesType()) {
-                case SORTED, SORTED_SET -> {
-                    BytesRef v = f.binaryValue();
-                    if (bytes == null || v.compareTo(bytes) < 0) {
-                        bytes = v;
-                    }
-                }
-                case NUMERIC, SORTED_NUMERIC -> {
-                    numeric = true;
-                    number = Math.min(number, f.numericValue().longValue());
-                }
-                default -> {
-                    if (f.fieldType().indexOptions() == org.apache.lucene.index.IndexOptions.NONE) {
-                        continue;
-                    }
-                    if (f.fieldType().tokenized()) {
-                        text = true;
-                    } else if (f.binaryValue() != null && (indexed == null || f.binaryValue().compareTo(indexed) < 0)) {
-                        // A keyword without doc values: its indexed term.
-                        indexed = f.binaryValue();
-                    }
-                }
-            }
-        }
-        if (bytes != null) {
-            return partitionString(bytes);
-        }
-        if (numeric) {
-            return Long.toString(number);
-        }
-        if (indexed != null) {
-            return partitionString(indexed);
-        }
-        if (text) {
-            throw new IllegalArgumentException(
-                "the partition field [" + partitionField + "] must be a keyword, numeric, date or ip field, not text"
-            );
-        }
-        return null;
-    }
-
-    /** A partition value's bytes as the string the segment records: UTF-8, or {@code 0x} and hex. */
-    private static String partitionString(BytesRef v) {
-        try {
-            return StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
-                .decode(java.nio.ByteBuffer.wrap(v.bytes, v.offset, v.length))
-                .toString();
-        } catch (java.nio.charset.CharacterCodingException e) {
-            return "0x" + java.util.HexFormat.of().formatHex(v.bytes, v.offset, v.offset + v.length);
-        }
+        return PartitionKey.of(partitionField, docs);
     }
 
     @Override
@@ -571,7 +487,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        apply(encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
     }
 
     @Override
@@ -580,7 +496,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         ensureOpen();
         maybeInjectFault(doc);
         List<ParseContext.Document> docs = List.of(doc);
-        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
+        apply(encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
     }
 
     @Override
@@ -1011,12 +927,12 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
 
     /** Whether searches read the buffered documents. */
     boolean liveSearch() {
-        return liveSearch;
+        return live.enabled();
     }
 
-    /** How long, at most, a write takes to show in a search: zero when every search sees every write before it. */
-    long liveStalenessNanos() {
-        return liveStalenessNanos;
+    /** The realtime search state: the views of the buffers searches read. */
+    LiveSearchState live() {
+        return live;
     }
 
     /**
@@ -1035,150 +951,6 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
             check(NativeWriter.writerAdaptiveChoice(handle, out), "reading the adaptive doc values choice");
         }
         return out[0] < 0 ? null : out[0] == 1;
-    }
-
-    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeLive#writerSetLiveStaleness}). */
-    void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
-        if (liveSearch == false || max.millis() == 0) {
-            return;
-        }
-        locked(() -> NativeLive.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
-        liveStalenessNanos = max.nanos();
-    }
-
-    /**
-     * Makes every later search read a view of the buffers opened from now on; false when it could not
-     * (the writer busy with a force merge, or closed), to be tried again.
-     */
-    boolean refreshLiveShared() throws IOException {
-        if (indexing.readLock().tryLock() == false) {
-            return false;
-        }
-        try {
-            if (closed || nativeClosed) {
-                return false;
-            }
-            check(NativeLive.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
-            return true;
-        } finally {
-            indexing.readLock().unlock();
-        }
-    }
-
-    /**
-     * A view of the documents a reader of the segment list at {@code version} lacks: its handle and blob ({@link
-     * NativeLive#liveViewOpen}), or null when the buffers cannot be read for that list (they were
-     * let go, a delete by query reached them, the writer is closed); the reader is then searched
-     * alone.
-     */
-    LiveViewHandle openLiveView(long version) {
-        if (liveSearch == false || indexing.readLock().tryLock() == false) {
-            return null;
-        }
-        try {
-            if (closed || nativeClosed) {
-                return null;
-            }
-            long[] view = new long[1];
-            byte[][] blob = new byte[1][];
-            if (NativeLive.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("accelerated-search: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
-                }
-                return null;
-            }
-            return new LiveViewHandle(view[0], blob[0]);
-        } finally {
-            indexing.readLock().unlock();
-        }
-    }
-
-    /** An open view: {@link NativeLive#liveViewClose} it once nothing reads it. */
-    record LiveViewHandle(long id, byte[] blob) {}
-
-    /** The reader over the view searches share, kept until the next refresh. */
-    SharedLiveReader sharedLive() {
-        return sharedLive;
-    }
-
-    /**
-     * Lets the kept reader over the shared view go, on a refresh or, with {@code close}, for good
-     * when the writer closes.
-     */
-    private void releaseSharedLive(boolean close) {
-        OpenSearchDirectoryReader old = sharedLive.clear(close);
-        if (old != null) {
-            try {
-                old.decRef();
-            } catch (IOException e) {
-                LOGGER.warn("accelerated-search: closing a realtime search's view failed", e);
-            }
-        }
-    }
-
-    /**
-     * Lets go of the buffered documents a reader of the segment list at {@code version} already has,
-     * once no view reads them: every new search reads that list or a newer one.
-     */
-    void releaseLive(long version) {
-        synchronized (liveLock) {
-            if (liveSearch == false || version <= liveReleased) {
-                return;
-            }
-            indexing.readLock().lock();
-            try {
-                if (nativeClosed == false && NativeLive.writerReleaseLive(handle, version) == NativeBridge.OK) {
-                    liveReleased = version;
-                }
-            } finally {
-                indexing.readLock().unlock();
-            }
-        }
-    }
-
-    /**
-     * The registered fields as Lucene field infos, for the leaf of buffered documents: the schema
-     * every segment writes, so the leaf agrees with the segments' field infos.
-     */
-    org.apache.lucene.index.FieldInfos liveFieldInfos() {
-        synchronized (liveLock) {
-            int size = registry.size();
-            if (size != liveInfosSize) {
-                liveInfos = buildLiveFieldInfos();
-                liveInfosSize = size;
-            }
-            return liveInfos;
-        }
-    }
-
-    private org.apache.lucene.index.FieldInfos buildLiveFieldInfos() {
-        List<org.apache.lucene.index.FieldInfo> list = new ArrayList<>();
-        for (FieldRegistry.Entry e : registry.entries()) {
-            FieldSchema f = e.schema();
-            list.add(
-                new org.apache.lucene.index.FieldInfo(
-                    f.name,
-                    e.number(),
-                    f.storeTermVectors,
-                    f.omitNorms,
-                    false,
-                    f.indexOptions,
-                    f.docValuesType,
-                    f.skipIndex,
-                    -1,
-                    new HashMap<>(f.attributes),
-                    f.pointDimensionCount,
-                    f.pointIndexDimensionCount,
-                    f.pointNumBytes,
-                    f.vectorDimension,
-                    f.vectorEncoding,
-                    f.vectorSimilarity,
-                    f.softDeletes,
-                    false
-                )
-            );
-        }
-        return new org.apache.lucene.index.FieldInfos(list.toArray(new org.apache.lucene.index.FieldInfo[0]));
     }
 
     void releaseHold(long hold) {
@@ -1295,6 +1067,23 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     }
 
     /** The native writer's handle. */
+    ReentrantReadWriteLock indexingLock() {
+        return indexing;
+    }
+
+    /** Whether the writer, or its native handle, is closed. */
+    boolean closedOrNative() {
+        return closed || nativeClosed;
+    }
+
+    boolean nativeClosed() {
+        return nativeClosed;
+    }
+
+    FieldRegistry registry() {
+        return registry;
+    }
+
     long handle() {
         return handle;
     }
@@ -1368,7 +1157,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         synchronized (lock) {
             closed = true;
             // After closed: a search opening a view now keeps no reader of it.
-            releaseSharedLive(true);
+            live.releaseShared(true);
             indexing.writeLock().lock();
             try {
                 if (nativeClosed == false) {
@@ -1418,7 +1207,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     @Override
     public void afterRefresh(boolean didRefresh) {
         if (didRefresh) {
-            releaseSharedLive(false);
+            live.releaseShared(false);
         }
     }
 
@@ -1435,7 +1224,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
             @Override
             public void afterRefresh(boolean didRefresh) {
                 if (didRefresh) {
-                    releaseSharedLive(false);
+                    live.releaseShared(false);
                 }
             }
         };
