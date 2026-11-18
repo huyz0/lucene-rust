@@ -100,9 +100,14 @@ public final class NativeAggregations {
     /** Every bucket in {@code aggs}, their sub-aggregations' too. */
     static long countBuckets(InternalAggregations aggs) {
         long n = 0;
-        for (org.opensearch.search.aggregations.Aggregation a : aggs) {
+        // Indexed, not iterated: `Aggregations.iterator()` streams the list, a pipeline of objects per level.
+        java.util.List<org.opensearch.search.aggregations.Aggregation> list = aggs.asList();
+        for (int i = 0; i < list.size(); i++) {
+            org.opensearch.search.aggregations.Aggregation a = list.get(i);
             if (a instanceof org.opensearch.search.aggregations.InternalMultiBucketAggregation<?, ?> m) {
-                for (Object b : m.getBuckets()) {
+                java.util.List<?> buckets = m.getBuckets();
+                for (int j = 0; j < buckets.size(); j++) {
+                    Object b = buckets.get(j);
                     n++;
                     if (b instanceof org.opensearch.search.aggregations.InternalMultiBucketAggregation.InternalBucket ib
                         && ib.getAggregations() instanceof InternalAggregations sub) {
