@@ -80,6 +80,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::multi_segment::OpenSegment;
 
+mod live_masks;
 mod simpletext;
 mod simpletext_search;
 
@@ -4736,6 +4737,26 @@ mod tests {
         let reader = DirectoryReader::open_at_reusing(&dir, segment_infos, &reusable).unwrap();
         assert_eq!(reader.segment_readers()[1].doc_base, reusable[0].max_doc);
         assert_eq!(i64::from(reader.max_doc()), limit / 2 * 2);
+    }
+
+    /// A mask per segment replaces that segment's live docs; `None` keeps them,
+    /// and a mask of another length than the segment is refused.
+    #[test]
+    fn live_docs_masks_replace_a_segments_live_docs() {
+        let dir = FsDirectory::open(fixture_dir());
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let seg = &reader.segment_readers()[0];
+        let mut live = FixedBitSet::new(seg.max_doc as usize);
+        live.set(0);
+        let masked = reader.with_live_docs_masks(vec![Some(live)]).unwrap();
+        assert_eq!(masked.segment_readers()[0].num_docs(), 1);
+        assert_eq!(masked.max_doc(), seg.max_doc);
+        assert_eq!(reader.segment_readers()[0].num_docs(), seg.max_doc);
+        let kept = reader.with_live_docs_masks(vec![None]).unwrap();
+        assert_eq!(kept.segment_readers()[0].num_docs(), seg.max_doc);
+        let short = FixedBitSet::new(1);
+        assert!(seg.max_doc == 1 || reader.with_live_docs_masks(vec![Some(short)]).is_err());
+        assert!(reader.with_live_docs_masks(Vec::new()).is_err());
     }
 
     /// `num_docs` is counted once, when the live docs are set, and follows
