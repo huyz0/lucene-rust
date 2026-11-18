@@ -274,3 +274,36 @@ fn spl_distribution_never_scores_negative() {
         }
     }
 }
+
+/// Lucene 10.5 (OpenSearch 3.9's) has no clamp: some inputs score `-0.0`
+/// (or below zero), which 10.6 turns into `0.0`.
+#[test]
+fn spl_before_10_6_can_score_below_zero() {
+    let mut below = 0;
+    for lambda in [
+        0.99,
+        0.999,
+        0.9999,
+        0.99999,
+        0.999999,
+        1.0f64.next_down(),
+        1.0f64.next_up(),
+        1.001,
+        1.01,
+        1.1,
+    ] {
+        for tfn in [1e-10, 1e-5, 0.1, 1.0, 10.0, 1e6, 1e10, 1e15] {
+            let raw = spl_score(tfn, lambda, false);
+            let clamped = spl_score(tfn, lambda, true);
+            if raw.is_nan() {
+                assert!(clamped.is_nan());
+            } else if raw.is_sign_negative() || raw < 0.0 {
+                below += 1;
+                assert_eq!(clamped.to_bits(), 0.0f64.to_bits());
+            } else {
+                assert_eq!(clamped.to_bits(), raw.to_bits());
+            }
+        }
+    }
+    assert!(below > 0, "the grid must hit a rounding case");
+}

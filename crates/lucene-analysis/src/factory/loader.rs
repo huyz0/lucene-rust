@@ -40,6 +40,8 @@ macro_rules! vendored {
     };
 }
 
+const THAI_STOPWORDS_RESOURCE: &str = "org/apache/lucene/analysis/th/stopwords.txt";
+
 /// The jar resources this crate vendors, by jar path.
 const VENDORED: &[(&str, &[u8])] = vendored! {
     "org/apache/lucene/analysis/ar/stopwords.txt" => "ar_stopwords.txt",
@@ -101,6 +103,14 @@ impl ClasspathResourceLoader {
 impl ResourceLoader for ClasspathResourceLoader {
     // Java: ClasspathResourceLoader.openResource
     fn open_resource(&self, resource: &str) -> Result<Vec<u8>, FactoryError> {
+        // Lucene 10.6 curated the Thai stop words (#16718); a host running an
+        // older Lucene serves its own list.
+        if resource == THAI_STOPWORDS_RESOURCE
+            && !lucene_util::version::Version::host()
+                .on_or_after(lucene_util::version::Version::LUCENE_10_6_0)
+        {
+            return Ok(include_bytes!("../lang/stopwords/th_stopwords_10_5.txt").to_vec());
+        }
         VENDORED
             .iter()
             .find(|(path, _)| *path == resource)

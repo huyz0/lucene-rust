@@ -248,6 +248,7 @@ fn collected_ordinals_match_and_score() {
     *occurrences.get_mut(0).unwrap() = 3;
     let mut c = CollectedOrdinals {
         score_mode: ScoreMode::Avg,
+        double: true,
         collected: FixedBitSet::new(4),
         scores,
         occurrences,
@@ -415,6 +416,7 @@ fn queries_compare_and_print() {
     let w = GlobalOrdinalsWithScoreQuery {
         collected: Arc::new(CollectedOrdinals {
             score_mode: ScoreMode::None,
+            double: true,
             collected: FixedBitSet::new(2),
             scores: Blocks::new(0, 0.0),
             occurrences: Blocks::new(0, 0),
@@ -450,4 +452,45 @@ fn numeric_join_totals_do_not_depend_on_document_order() {
         backward.add(7, s);
     }
     assert_eq!(forward.into_sorted(), backward.into_sorted());
+}
+
+/// Before Lucene 10.6 (OpenSearch 3.9's 10.5.1) the totals add up in `float`,
+/// one rounding per document: exactly the `f32` running sum, in document order.
+#[test]
+fn numeric_join_totals_add_in_float_before_10_6() {
+    let scores = [1.0e8f32, 1.0, 1.0, -1.0e8, 0.1, 0.2];
+    let host = Version::LUCENE_10_5_1;
+    let mut forward = NumericJoinCollector::new("f", false, ScoreMode::Total).for_lucene(host);
+    let mut backward = NumericJoinCollector::new("f", false, ScoreMode::Total).for_lucene(host);
+    for &s in &scores {
+        forward.add(7, s);
+    }
+    for &s in scores.iter().rev() {
+        backward.add(7, s);
+    }
+    let float_sum = scores[1..].iter().fold(scores[0], |a, &b| a + b);
+    assert_eq!(forward.into_sorted(), vec![(7, float_sum)]);
+    assert_ne!(
+        backward.into_sorted()[0].1.to_bits(),
+        float_sum.to_bits(),
+        "float addition is order dependent"
+    );
+}
+
+/// `Avg` divides in float before 10.6 too.
+#[test]
+fn numeric_join_averages_divide_in_float_before_10_6() {
+    let scores = [0.1f32, 0.2, 0.7];
+    let mut old =
+        NumericJoinCollector::new("f", false, ScoreMode::Avg).for_lucene(Version::LUCENE_10_5_1);
+    let mut new =
+        NumericJoinCollector::new("f", false, ScoreMode::Avg).for_lucene(Version::LUCENE_10_6_0);
+    for &s in &scores {
+        old.add(1, s);
+        new.add(1, s);
+    }
+    let float_avg = scores[1..].iter().fold(scores[0], |a, &b| a + b) / 3.0f32;
+    let double_avg = ((f64::from(0.1f32) + f64::from(0.2f32) + f64::from(0.7f32)) / 3.0) as f32;
+    assert_eq!(old.into_sorted(), vec![(1, float_avg)]);
+    assert_eq!(new.into_sorted(), vec![(1, double_avg)]);
 }

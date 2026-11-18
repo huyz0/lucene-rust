@@ -37,6 +37,7 @@ use crate::token_stream::{TokenFilter, TokenStream};
 use crate::util::stemmer_util::delete;
 use crate::util::{Segmenter, SegmentingBase, SegmentingTokenizer};
 use crate::{AnalysisError, CharArraySet, LowerCaseFilter};
+use lucene_util::version::Version;
 
 use super::{comment_set, CharStemmer, StemFilter};
 
@@ -91,9 +92,23 @@ pub fn dbbi_available() -> bool {
 /// The message of `ThaiTokenizer`'s `UnsupportedOperationException`.
 pub const UNSUPPORTED: &str = "This JRE does not have support for Thai segmentation";
 
-/// `ThaiAnalyzer.getDefaultStopSet()` (`stopwords.txt`).
+/// `ThaiAnalyzer.getDefaultStopSet()` (`stopwords.txt`) of Lucene 10.6, which
+/// curated it (#16718).
 pub static DEFAULT_STOP_SET: LazyLock<Arc<CharArraySet>> =
     LazyLock::new(|| comment_set(include_str!("stopwords/th_stopwords.txt")));
+
+/// `ThaiAnalyzer.getDefaultStopSet()` of Lucene 10.5.
+pub static DEFAULT_STOP_SET_10_5: LazyLock<Arc<CharArraySet>> =
+    LazyLock::new(|| comment_set(include_str!("stopwords/th_stopwords_10_5.txt")));
+
+/// The default stop set of the Lucene `host`.
+pub fn default_stop_set(host: Version) -> &'static Arc<CharArraySet> {
+    if host.on_or_after(Version::LUCENE_10_6_0) {
+        &DEFAULT_STOP_SET
+    } else {
+        &DEFAULT_STOP_SET_10_5
+    }
+}
 
 /// The `ThaiTokenizer` half of `SegmentingTokenizerBase`: each sentence's
 /// words from the installed [`ThaiWordBreaker`], those not starting with a
@@ -211,20 +226,32 @@ fn thai_tokenizer_with(slot: &RwLock<Option<NewBreaker>>) -> Result<ThaiTokenize
 #[derive(Debug, Clone)]
 pub struct ThaiAnalyzer {
     stopwords: Arc<CharArraySet>,
+    /// Lucene 10.6's chain (char filter, normalization, repeat); 10.5's is the
+    /// tokenizer, lower case, digits and stop words only.
+    chain_10_6: bool,
 }
 
 impl Default for ThaiAnalyzer {
-    /// `new ThaiAnalyzer()`: the default stop set.
+    /// `new ThaiAnalyzer()`: the default stop set, of the host's Lucene.
     fn default() -> Self {
-        Self::new(&DEFAULT_STOP_SET)
+        Self::for_lucene(Version::host())
     }
 }
 
 impl ThaiAnalyzer {
-    /// `new ThaiAnalyzer(CharArraySet stopwords)`.
+    /// `new ThaiAnalyzer(CharArraySet stopwords)`, with the chain of the host's Lucene.
     pub fn new(stopwords: &CharArraySet) -> Self {
         ThaiAnalyzer {
             stopwords: super::copy_set(stopwords),
+            chain_10_6: Version::host().on_or_after(Version::LUCENE_10_6_0),
+        }
+    }
+
+    /// `new ThaiAnalyzer()` as the Lucene `host` has it: its chain and default stop set.
+    pub fn for_lucene(host: Version) -> Self {
+        ThaiAnalyzer {
+            stopwords: super::copy_set(default_stop_set(host)),
+            chain_10_6: host.on_or_after(Version::LUCENE_10_6_0),
         }
     }
 
@@ -240,7 +267,12 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         _field: &str,
     ) -> Result<crate::analyzer::TokenStreamComponents, AnalysisError> {
         let result = DecimalDigitFilter::new(LowerCaseFilter::new(thai_tokenizer()?));
-        let result = ThaiRepeatFilter::new(ThaiNormalizationFilter::new(result));
+        if self.chain_10_6 {
+            let result = ThaiRepeatFilter::new(ThaiNormalizationFilter::new(result));
+            return Ok(crate::analyzer::TokenStreamComponents::new(
+                crate::StopFilter::new(result, Arc::clone(&self.stopwords)),
+            ));
+        }
         Ok(crate::analyzer::TokenStreamComponents::new(
             crate::StopFilter::new(result, Arc::clone(&self.stopwords)),
         ))
@@ -251,13 +283,20 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         _field: &str,
         input: Box<dyn crate::token_stream::TokenStream>,
     ) -> Box<dyn crate::token_stream::TokenStream> {
-        Box::new(ThaiNormalizationFilter::new(DecimalDigitFilter::new(
-            LowerCaseFilter::new(input),
-        )))
+        let result = DecimalDigitFilter::new(LowerCaseFilter::new(input));
+        if self.chain_10_6 {
+            Box::new(ThaiNormalizationFilter::new(result))
+        } else {
+            Box::new(result)
+        }
     }
 
     fn init_reader(&self, _field: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
-        Box::new(ThaiCharFilter::new(reader))
+        if self.chain_10_6 {
+            Box::new(ThaiCharFilter::new(reader))
+        } else {
+            reader
+        }
     }
 
     fn init_reader_for_normalization(
@@ -265,7 +304,11 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         _field: &str,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
-        Box::new(ThaiCharFilter::new(reader))
+        if self.chain_10_6 {
+            Box::new(ThaiCharFilter::new(reader))
+        } else {
+            reader
+        }
     }
 }
 

@@ -284,6 +284,10 @@ public class AcceleratedSearchPlugin extends Plugin implements
     public AcceleratedSearchPlugin(Settings settings, Path configPath) {
         this.nodeSettings = settings;
         this.libraryPath = NativeLibrary.load(pluginDir());
+        org.apache.lucene.util.Version host = org.apache.lucene.util.Version.LATEST;
+        if (NativeAnalysis.setHostLucene(host.major, host.minor, host.bugfix) != NativeBridge.OK) {
+            throw new IllegalStateException("could not tell the native library the node's Lucene version [" + host + "]");
+        }
         this.stockKnn = stockKnnInstalled();
         this.stockMl = MlCommons.stockInstalled(pluginDir());
         if (stockKnn) {
