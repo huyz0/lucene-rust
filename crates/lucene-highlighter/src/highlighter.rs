@@ -34,9 +34,8 @@
 //!   `max_fragments` are kept, and only then are the survivors re-sorted into
 //!   document order for rendering -- `FieldHighlighter.
 //!   highlightOffsetsEnums`'s priority queue followed by its
-//!   `passageSortComparator` sort. (This module used to truncate in plain
-//!   document order, which silently discarded the best passages whenever they
-//!   sat late in the text.)
+//!   `passageSortComparator` sort. Truncating in plain document order
+//!   would discard the best passages whenever they sit late in the text.
 //! - **Rendering is Java's** `DefaultPassageFormatter`: overlapping matches
 //!   coalesce into one `pre`/`post`-wrapped span rather than nesting markers,
 //!   the content is optionally HTML-escaped (`FragmentConfig::escape`) while

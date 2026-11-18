@@ -68,7 +68,7 @@
 //! # Not (yet) here
 //!
 //! Two-phase commit, and soft deletes of native documents, are single-writer
-//! features for now -- [`ConcurrentIndexWriter::into_writer`] hands the
+//! features -- [`ConcurrentIndexWriter::into_writer`] hands the
 //! writer back for them. Explicit documents take soft updates here
 //! ([`ConcurrentIndexWriter::soft_update_explicit_documents`]); a field they
 //! use is registered through [`ConcurrentIndexWriter::register_field`], and

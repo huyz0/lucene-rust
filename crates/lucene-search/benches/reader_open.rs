@@ -1,5 +1,5 @@
 //! What opening and polling a many-segment index costs, and two per-call
-//! reader paths that used to redo open-time work:
+//! reader paths that must not redo open-time work:
 //!
 //! - `open` -- `DirectoryReader::open` over a 30-segment index with deletes
 //!   (segments opened, `.liv` files parsed, doc bases assigned).

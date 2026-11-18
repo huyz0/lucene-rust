@@ -12,7 +12,7 @@
 //! `org.apache.lucene.search.RegexpQuery`s (exact literal, the
 //! whole-term-match convention -- the single most important case, since
 //! it's the exact "looks right in isolation, subtly wrong vs real regex
-//! conventions" bug this task called out -- `.`/`*`/`+`/`?` quantifiers,
+//! conventions" bug -- `.`/`*`/`+`/`?` quantifiers,
 //! `{n}`/`{n,}`/`{n,m}` bounded repetition, `[...]` classes, `|` alternation
 //! across two and three terms, a no-match case, and a missing-field case)
 //! through a real `IndexSearcher`, recording
