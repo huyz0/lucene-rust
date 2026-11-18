@@ -32,6 +32,22 @@ final class Blob {
         return this;
     }
 
+    /** Drops a buffer larger than {@code max} bytes, so one huge operation does not stay allocated. */
+    Blob trim(int max) {
+        if (buf.length > max) {
+            buf = new byte[Math.max(16, max / 16)];
+        }
+        return this;
+    }
+
+    /** {@code other}'s bytes, appended. */
+    Blob append(Blob other) {
+        ensure(other.len);
+        System.arraycopy(other.buf, 0, buf, len, other.len);
+        len += other.len;
+        return this;
+    }
+
     int capacity() {
         return buf.length;
     }

@@ -7,6 +7,7 @@ analysis/Analyzer	ported	crates/lucene-analysis/src/analyzer.rs::Analyzer
 analysis/AnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::AnalyzerWrapper
 analysis/AutomatonToTokenStream	ported	crates/lucene-analysis/src/automaton.rs::automaton_to_token_stream
 analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::CachingTokenFilter
+analysis/CaseFoldingFilter	ported	crates/lucene-analysis/src/core_analysis/case_folding_filter.rs::CaseFoldingFilter
 analysis/CharArrayMap	not-needed	char[]-keyed map that exists to avoid String allocation on the JVM; its only core use is backing CharArraySet, and Rust's HashMap<String,_> covers it.
 analysis/CharArraySet	ported	crates/lucene-analysis/src/char_array_set.rs::CharArraySet
 analysis/CharFilter	ported	crates/lucene-analysis/src/reader.rs::CharFilter
@@ -336,12 +337,14 @@ index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs
 index/ConcurrentApproximatePriorityQueue	not-needed	lock-striped variant of ApproximatePriorityQueue inside the DWPT pool; Rust slot selection needs no such queue (no user-visible behaviour).
 index/ConcurrentMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::ConcurrentMergeScheduler
 index/CorruptIndexException	ported	crates/lucene-store/src/error.rs::Corrupted
+index/CorruptSegmentInfoException	ported	crates/lucene-index/src/check_index.rs::is_segment_info_corruption
 index/DirectoryReader	ported	crates/lucene-search/src/directory_reader.rs::DirectoryReader
 index/DocIDMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
 index/DocValues	ported	crates/lucene-search/src/directory_reader.rs::doc_values_for_field
 index/DocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
 index/DocValuesIterator	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
 index/DocValuesLeafReader	not-needed	internal adapter exposing in-RAM DocValuesWriters to IndexSorter at flush; Rust reads sort keys straight from the buffered documents (segment_writer::sort_permutation).
+index/DocValuesOverlayMerger	not-supported	crates/lucene-index/src/segment_infos.rs::UnsupportedDocValuesOverlays -- Lucene 10.6's doc-values overlay layer (IndexWriterConfig.setMaxDocValuesOverlays); a commit that lists overlays is refused rather than read with stale values
 index/DocValuesSkipIndexType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesSkipIndexType
 index/DocValuesSkipper	ported	crates/lucene-codecs/src/doc_values.rs::DocValuesSkipper
 index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesType
@@ -440,6 +443,9 @@ index/NumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::bui
 index/OneMergeWrappingMergePolicy	ported	crates/lucene-index/src/merge_policy/filter.rs::OneMergeWrappingMergePolicy
 index/OrdTermState	ported	crates/lucene-codecs/src/terms_dict.rs::lookup_ord
 index/OrdinalMap	ported	crates/lucene-search/src/ordinal_map.rs::OrdinalMap
+index/OverlayBinaryDocValues	not-supported	crates/lucene-index/src/segment_infos.rs::UnsupportedDocValuesOverlays -- Lucene 10.6's doc-values overlay layer (IndexWriterConfig.setMaxDocValuesOverlays); a commit that lists overlays is refused rather than read with stale values
+index/OverlayNumericDocValues	not-supported	crates/lucene-index/src/segment_infos.rs::UnsupportedDocValuesOverlays -- Lucene 10.6's doc-values overlay layer (IndexWriterConfig.setMaxDocValuesOverlays); a commit that lists overlays is refused rather than read with stale values
+index/OverlaySortedNumericDocValues	not-supported	crates/lucene-index/src/segment_infos.rs::UnsupportedDocValuesOverlays -- Lucene 10.6's doc-values overlay layer (IndexWriterConfig.setMaxDocValuesOverlays); a commit that lists overlays is refused rather than read with stale values
 index/ParallelCompositeReader	ported	crates/lucene-search/src/reader/parallel.rs::ParallelCompositeReader
 index/ParallelLeafReader	ported	crates/lucene-search/src/reader/parallel.rs::ParallelLeafReader
 index/ParallelPostingsArray	ported	crates/lucene-index/src/inverter.rs::FieldInverter
@@ -600,6 +606,7 @@ search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ByteVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::ByteVectorSimilarityQuery
 search/ByteVectorSimilarityValuesSource	ported	crates/lucene-search/src/values_source.rs::byte_vector_similarity
 search/CachingCollector	ported	crates/lucene-search/src/collectors.rs::CachingCollector
+search/CachingCollectorManager	deferred:M14	CollectorManager that caches hits so CachingCollector can replay them across slices of a concurrent search (Lucene 10.6, #16247); not ported yet
 search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
 search/CollectionStatistics	ported	crates/lucene-search/src/similarities.rs::CollectionStatistics
 search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
@@ -852,6 +859,7 @@ search/similarities/PerFieldSimilarityWrapper	ported	crates/lucene-search/src/si
 search/similarities/RawTFSimilarity	ported	crates/lucene-search/src/similarities.rs::RawTfSimilarity
 search/similarities/Similarity	ported	crates/lucene-search/src/similarities.rs::Similarity
 search/similarities/SimilarityBase	ported	crates/lucene-search/src/similarities.rs::base_scorer
+search/similarities/StableTflSimilarity	ported	crates/lucene-search/src/similarities/stable_tfl.rs::StableTflSimilarity
 search/similarities/TFIDFSimilarity	ported	crates/lucene-search/src/similarities.rs::ClassicSimilarity
 store/AlreadyClosedException	not-needed	Use-after-close exception; Rust ownership makes use-after-close unrepresentable, and the FFI reports a closed handle as FfiStatus::InvalidHandle.
 store/BaseDirectory	ported	crates/lucene-store/src/directory.rs::BaseDirectory
@@ -901,6 +909,7 @@ store/NRTCachingDirectory	ported	crates/lucene-store/src/nrt_caching_directory.r
 store/NativeAccess	not-needed	madvise/posix_madvise glue behind ReadAdvice; the Rust mmap backend (memmap2) issues no advice, which only affects paging performance.
 store/NativeFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::NativeFsLockFactory
 store/NoLockFactory	ported	crates/lucene-store/src/lock.rs::NoLockFactory
+store/NoReuseHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
 store/OutputStreamDataOutput	not-needed	Adapter onto java.io.OutputStream; Rust DataOutput is implemented directly on Vec<u8> and FsIndexOutput.
 store/OutputStreamIndexOutput	ported	crates/lucene-store/src/index_output.rs::FsIndexOutput
 store/PosixNativeAccess	not-needed	POSIX madvise implementation of NativeAccess via Panama FFI; the Rust mmap backend issues no advice (performance only).
@@ -1011,6 +1020,7 @@ util/SameThreadExecutorService	not-needed	JVM ExecutorService running tasks inli
 util/Selector	not-needed	generic selection framework; Rust slice::select_nth_unstable(_by)
 util/SentinelIntSet	not-needed	open-addressing int set; Rust HashSet<i32>
 util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
+util/SimpleCaseFolding	ported	crates/lucene-analysis/src/core_analysis/case_folding_filter.rs::simple_case_fold
 util/SloppyMath	ported	crates/lucene-util/src/sloppy_math.rs::haversin_sort_key
 util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
@@ -1039,7 +1049,7 @@ util/automaton/Automaton	ported	crates/lucene-util/src/automaton/automaton.rs::A
 util/automaton/AutomatonProvider	ported	crates/lucene-util/src/automaton/regexp.rs::AutomatonProvider
 util/automaton/ByteRunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::ByteRunAutomaton
 util/automaton/ByteRunnable	ported	crates/lucene-util/src/automaton/run_automaton.rs::ByteRunnable
-util/automaton/CaseFolding	ported	crates/lucene-util/src/automaton/case_folding.rs::expand
+util/automaton/CaseExpansion	ported	crates/lucene-util/src/automaton/case_folding.rs::expand
 util/automaton/CharacterRunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::CharacterRunAutomaton
 util/automaton/CompiledAutomaton	ported	crates/lucene-util/src/automaton/compiled_automaton.rs::CompiledAutomaton
 util/automaton/FiniteStringsIterator	ported	crates/lucene-util/src/automaton/finite_strings.rs::FiniteStringsIterator

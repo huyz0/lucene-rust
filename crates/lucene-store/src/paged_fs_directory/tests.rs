@@ -453,3 +453,88 @@ fn a_bad_unit_fails_reads_with_an_error_not_an_abort() {
     drop(input);
     assert!(cleared(&root));
 }
+
+/// A container of three members: filler, a vector file starting on a page,
+/// and a vector file starting off one.
+fn container(dir: &dyn Directory) -> (Vec<u8>, u64, u64) {
+    let vectors = pattern(300 << 10);
+    let mut bytes = pattern(5000);
+    bytes.resize(8192, 0);
+    let vec_at = bytes.len() as u64;
+    bytes.extend_from_slice(&vectors);
+    write(dir, "_0.cfs", &bytes);
+    (vectors, vec_at, vectors_len())
+}
+
+fn vectors_len() -> u64 {
+    300 << 10
+}
+
+#[test]
+fn a_vector_member_is_read_as_a_file_of_its_own() {
+    let tmp = TempDir::new("paged-fs-member");
+    let dir = PagedFsDirectory::with_config(tmp.path(), PagedFsConfig::vectors_only());
+    let (vectors, at, len) = container(&dir);
+    let whole = dir.open("_0.cfs").unwrap();
+    // The archive itself is mapped under `vectors_only`; its vector member
+    // is paged on its own, with the bytes the archive holds there.
+    assert!(matches!(whole, Input::Mapped(_)));
+    let member = dir.open_member("_0.cfs", at, len, "_0_X_0.vec").unwrap();
+    if dir.is_paged() {
+        let member = member.expect("a vector member is paged");
+        assert!(crate::is_prefetchable(&member));
+        assert_eq!(member.len() as u64, len);
+        assert_eq!(&member[..], &vectors[..]);
+        // The same member opened again shares its pages.
+        let again = dir
+            .open_member("_0.cfs", at, len, "_0_X_1.vec")
+            .unwrap()
+            .unwrap();
+        assert_eq!(&again[10..20], &vectors[10..20]);
+    } else {
+        assert!(member.is_none());
+    }
+    // Not a vector file, not on a page, or not inside the container: the
+    // caller slices the archive (or, inside it, is refused).
+    assert!(dir
+        .open_member("_0.cfs", at, len, "_0.fdt")
+        .unwrap()
+        .is_none());
+    assert!(dir
+        .open_member("_0.cfs", at + 1, len - 1, "_0_X_0.vec")
+        .unwrap()
+        .is_none());
+    assert!(dir
+        .open_member("_0.cfs", at, 0, "_0_X_0.vec")
+        .unwrap()
+        .is_none());
+    if dir.is_paged() {
+        assert!(dir
+            .open_member("_0.cfs", at, len + 4096, "_0_X_0.vec")
+            .is_err());
+    }
+}
+
+#[test]
+fn a_member_gets_the_page_size_and_residency_of_its_kind() {
+    let tmp = TempDir::new("paged-fs-member-kind");
+    let dir = PagedFsDirectory::open(tmp.path());
+    let (vectors, at, len) = container(&dir);
+    if !dir.is_paged() {
+        return;
+    }
+    // A graph member small against the budget is read whole, as a loose
+    // `.vex` is; the same bytes as a `.vec` are demand paged.
+    let budget = crate::paged_input::Pager::global().unwrap().budget();
+    assert!(dir.config.pins("_0.vex", len, budget) || len > budget / 8);
+    let vec = dir
+        .open_member("_0.cfs", at, len, "_0_X_0.vec")
+        .unwrap()
+        .unwrap();
+    assert_eq!(&vec[..], &vectors[..]);
+    let vex = dir
+        .open_member("_0.cfs", at, len, "_0_X_0.vex")
+        .unwrap()
+        .unwrap();
+    assert_eq!(&vex[..], &vectors[..]);
+}

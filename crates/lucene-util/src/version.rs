@@ -78,11 +78,12 @@ versions! {
     LUCENE_10_5_0 = 10, 5, 0;
     LUCENE_10_5_1 = 10, 5, 1;
     LUCENE_10_5_2 = 10, 5, 2;
+    LUCENE_10_6_0 = 10, 6, 0;
 }
 
 impl Version {
     /// `Version.LATEST`.
-    pub const LATEST: Version = Version::LUCENE_10_5_2;
+    pub const LATEST: Version = Version::LUCENE_10_6_0;
     /// `Version.LUCENE_CURRENT`.
     pub const LUCENE_CURRENT: Version = Version::LATEST;
     /// `Version.MIN_SUPPORTED_MAJOR`.
@@ -289,22 +290,19 @@ mod tests {
 
     #[test]
     fn constants_and_order() {
-        assert_eq!(Version::LATEST.to_string(), "10.5.2");
+        assert_eq!(Version::LATEST.to_string(), "10.6.0");
         assert_eq!(Version::MIN_SUPPORTED_MAJOR, 9);
         assert!(Version::LATEST.on_or_after(Version::LUCENE_9_12_4));
         assert!(!Version::LUCENE_9_0_0.on_or_after(Version::LUCENE_9_1_0));
         assert_eq!(Version::LUCENE_CURRENT, Version::LATEST);
-        assert_eq!(Version::from_bits(10, 5, 2), Ok(Version::LATEST));
-        assert_eq!(
-            Version::LATEST.encoded_value(),
-            (10 << 18) | (5 << 10) | (2 << 2)
-        );
+        assert_eq!(Version::from_bits(10, 6, 0), Ok(Version::LATEST));
+        assert_eq!(Version::LATEST.encoded_value(), (10 << 18) | (6 << 10));
         assert_eq!(Version::LUCENE_9_12_4.prerelease(), 0);
     }
 
     #[test]
     fn parse_accepts_and_rejects_like_java() {
-        assert_eq!(Version::parse("10.5.2"), Ok(Version::LATEST));
+        assert_eq!(Version::parse("10.6.0"), Ok(Version::LATEST));
         assert_eq!(Version::parse("10.5"), Ok(Version::LUCENE_10_5_0));
         assert_eq!(Version::parse("+10.5"), Ok(Version::LUCENE_10_5_0));
         let pre = Version::parse("11.0.0.2").unwrap();
@@ -382,7 +380,8 @@ mod tests {
         assert_eq!(ok("LUCENE_CURRENT"), Version::LATEST);
         assert_eq!(ok("lucene_10_5_0"), Version::LUCENE_10_5_0);
         assert_eq!(ok("LUCENE_10_5"), Version::LUCENE_10_5_0);
-        assert_eq!(ok("lucene_10_5_2"), Version::LATEST);
+        assert_eq!(ok("lucene_10_6_0"), Version::LATEST);
+        assert_eq!(ok("lucene_10_5_2"), Version::LUCENE_10_5_2);
         assert_eq!(ok("LUCENE_95").to_string(), "9.5.0");
         assert_eq!(ok("9.12.4"), Version::LUCENE_9_12_4);
         let e = Version::parse_leniently("LUCENE_1_2_3_4").unwrap_err().0;

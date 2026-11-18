@@ -14,7 +14,7 @@ import org.apache.lucene.util.*;
 public class GenCrankyDocValues {
   static final byte[] ID={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
   static final int DOCS=12;
-  static final String[] EXTENSIONS={"dvm","dvd","dvs"};
+  static final String[] EXTENSIONS={"dvm","dvd","dvs","dvp"};
   static final DocValuesFormat NATIVE=new Lucene90DocValuesFormat(4);
   static DocValuesFormat wrap(DocValuesFormat delegate,Random random) throws Exception {
     var constructor=Class.forName("org.apache.lucene.tests.codecs.cranky.CrankyDocValuesFormat").getDeclaredConstructor(DocValuesFormat.class,Random.class);

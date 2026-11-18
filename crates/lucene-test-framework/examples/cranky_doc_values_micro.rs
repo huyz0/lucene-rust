@@ -20,7 +20,7 @@ fn data(name: &str) -> Vec<u8> {
     .unwrap()
 }
 fn files(prefix: &str) -> Files {
-    ["dvm", "dvd", "dvs"]
+    ["dvm", "dvd", "dvs", "dvp"]
         .into_iter()
         .map(|extension| (extension.to_owned(), data(&format!("{prefix}.{extension}"))))
         .collect()
@@ -183,7 +183,7 @@ fn batch(
                 consumer.merge(&merges[case - 2]).unwrap();
             }
             consumer.close().unwrap();
-            for extension in ["dvm", "dvd", "dvs"] {
+            for extension in ["dvm", "dvd", "dvs", "dvp"] {
                 digest = bytes(digest, &consumer.delegate().output().unwrap()[extension]);
             }
         }

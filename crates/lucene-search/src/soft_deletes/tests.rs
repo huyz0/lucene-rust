@@ -64,8 +64,12 @@ fn load_sparse_fixture() -> SparseFixture {
         })
         .expect("sparse field missing from field_numbers");
 
-    let (_, parsed) =
+    let (version, mut parsed) =
         doc_values::parse_meta(&meta, &segment_id, &suffix, &field_infos).expect("parse .dvm");
+    if doc_values::has_disi_file(version) {
+        let dvp = std::fs::read(format!("{dir}{}", dvm_name.replace(".dvm", ".dvp"))).unwrap();
+        parsed.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(dvp)));
+    }
     let entry = parsed.numeric_entry(field_number).unwrap().clone();
     SparseFixture { data, entry }
 }

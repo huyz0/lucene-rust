@@ -167,7 +167,13 @@ fn open_segments(m: &Manifest) -> Vec<Segment> {
                 .and_then(|s| s.strip_suffix(".dvm"))
                 .unwrap()
                 .to_string();
-            let (_, meta) = doc_values::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+            let (version, mut meta) =
+                doc_values::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+            if doc_values::has_disi_file(version) {
+                let dvp =
+                    std::fs::read(format!("{d}{}", dvm_name.replace(".dvm", ".dvp"))).unwrap();
+                meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(dvp)));
+            }
             let field_numbers = m
                 .get(&format!("segment.{i}.field_numbers"))
                 .split(',')

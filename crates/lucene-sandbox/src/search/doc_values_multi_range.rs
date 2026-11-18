@@ -314,14 +314,11 @@ impl DocumentQuery for SortedNumericDocValuesMultiRangeQuery {
                 (e.numeric.is_dense(), i64::from(e.num_docs_with_field))
             }
         };
-        // `SkipBlockRangeIterator.cost()` is `NO_MORE_DOCS`; the column's is
-        // its documents.
-        let cost = if skip.is_some() {
-            i64::from(i32::MAX)
-        } else {
-            docs_with_field
-        };
-        let mut bulk = Bulk::new(collector.score_mode().needs_scores(), max_doc, cost);
+        // `SkipBlockRangeIterator.cost()` is the skipper's `docCount()`; the
+        // column's is its documents.
+        let cost = skip.map_or(docs_with_field, |s| i64::from(s.doc_count));
+        let mut bulk =
+            Bulk::new(collector.score_mode().needs_scores(), max_doc, cost).with_leap_frog(cost);
         let mut forward = Forward::new(data, column);
         let mut values = Vec::new();
         let Some(s) = skip else {

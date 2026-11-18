@@ -1,6 +1,6 @@
 //! Lucene 10.6 (`branch_10_6`, #16423): `JavascriptCompiler`'s nesting
 //! guard. Every row of [`JAVA`] is what Java's compiler of that branch
-//! (compiled against the 10.5.2 jars) answers; `TestJavascriptCompiler`'s
+//! (compiled against the 10.6.0 jars) answers; `TestJavascriptCompiler`'s
 //! `testRecursionDepth*` follow, with where this port answers otherwise.
 
 use lucene_expressions::{
@@ -10,7 +10,7 @@ use lucene_expressions::{
 
 /// `(maxNestingDepth, source, outcome)`: Java's, each row printed by
 /// `JavascriptCompiler.compile(source, DEFAULT_FUNCTIONS, maxNestingDepth)`
-/// of `branch_10_6` (#16423) run over the 10.5.2 jars: `None` compiles,
+/// of `branch_10_6` (#16423) run over the 10.6.0 jars: `None` compiles,
 /// `Some((offset, limit))` is the nesting `ParseException` (`limit` is what
 /// its message prints: `maxNestingDepth + 1` from the parser's listener,
 /// `maxNestingDepth` from the compiler's), `Some((offset, -1))` the arity one.

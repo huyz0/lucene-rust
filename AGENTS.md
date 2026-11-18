@@ -9,8 +9,9 @@ its topic — fix the drift.
 
 A Rust port of Apache Lucene, exposed over an FFI (C ABI, reached from the JVM through Panama FFM) boundary
 so OpenSearch (JVM) can use it as a native search engine. Pinned Lucene
-version: **10.5.2** (OpenSearch `main`'s `gradle/libs.versions.toml`; index
-formats are those of 10.5.0/10.5.1 -- see `docs/parity.md`). The Java source of truth lives at `/home/tuong/work/lucene`;
+version: **10.6.0** (OpenSearch `main`'s `gradle/libs.versions.toml`; the writer
+defaults to the 10.5 index format and writes 10.6's on request -- see
+`docs/parity.md` and `docs/lucene-port-anchor.md`). The Java source of truth lives at `/home/tuong/work/lucene`;
 the OpenSearch checkout at `/home/tuong/work/OpenSearch`.
 
 The port of Lucene's modules is delivered and OpenSearch serves search and

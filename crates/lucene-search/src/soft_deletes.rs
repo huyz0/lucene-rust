@@ -135,9 +135,14 @@ fn present_docs(field: &SoftDeletesField<'_>, max_doc: usize) -> Result<PresentD
         .get(start..start.saturating_add(len))
         .ok_or_else(|| {
             corrupt(&format!(
-                "presence region {start}..{} runs past the end of the {}-byte .dvd",
+                "presence region {start}..{} runs past the end of the {}-byte {}",
                 start.saturating_add(len),
-                field.data.len()
+                entry.disi.backing(field.data).len(),
+                if entry.disi.is_separate() {
+                    ".dvp"
+                } else {
+                    ".dvd"
+                }
             ))
         })?;
     // Bounded by the segment as it decodes, so a corrupt region cannot

@@ -71,6 +71,10 @@ use crate::field_infos::FieldInfos;
 use crate::indexed_disi;
 use crate::lz4;
 use crate::terms_dict::{self, TermsDictEntry};
+mod numeric_body;
+use numeric_body::write_numeric_values_body;
+mod write_terms;
+use write_terms::write_terms_dict;
 
 const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
 const DATA_META_CODEC: &str = "Lucene90DocValuesData";
@@ -4052,6 +4056,16 @@ pub fn write_no_fields(
     (meta, data.buf, skip_index)
 }
 
+/// [`write_no_fields`] as `format` writes it: the files of a consumer closed
+/// without a field, `.dvp` included for a format that writes one.
+pub fn write_no_fields_files(
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    format: Lucene90DocValuesFormat,
+) -> DocValuesFiles {
+    FieldsWriter::new(&[], 0, segment_id, segment_suffix, format).close_files()
+}
+
 /// [`write_fields_with_skip_indexes`] as `format` writes it -- its skip
 /// indexes close an interval after `format`'s `skipIndexIntervalSize`
 /// documents.
@@ -4255,10 +4269,14 @@ impl<'f> FieldsWriter<'f> {
     }
 
     /// The finished files, `.dvp` included when the format writes one.
-    pub fn finish_files(mut self) -> WriteResult<DocValuesFiles> {
+    pub fn finish_files(self) -> WriteResult<DocValuesFiles> {
         if self.written.is_empty() {
             return Err(WriteError::EmptyFieldList);
         }
+        Ok(self.close_files())
+    }
+
+    fn close_files(mut self) -> DocValuesFiles {
         self.meta.write_i32(-1); // field list terminator
         codec_util::write_footer(&mut self.meta);
         codec_util::write_footer(&mut self.data.buf);
@@ -4267,12 +4285,12 @@ impl<'f> FieldsWriter<'f> {
             codec_util::write_footer(&mut dvp);
             dvp
         });
-        Ok(DocValuesFiles {
+        DocValuesFiles {
             dvm: self.meta,
             dvd: self.data.buf,
             dvs: self.skip_index,
             dvp,
-        })
+        }
     }
 }
 
@@ -5450,188 +5468,6 @@ fn compute_gcd(values: &[i64]) -> i64 {
     gcd
 }
 
-/// Shared tail of a NUMERIC entry body -- everything after the
-/// docs-with-field header, common to both the dense and sparse shapes:
-/// `numValues`, the constant/table/GCD-delta encoding choice, and the
-/// bit-packed (or absent, for the constant case) value array itself.
-///
-/// Port of `Lucene90DocValuesConsumer.writeValues`'s encoding-choice logic,
-/// including its `doBlocks` varying-bits-per-value split
-/// ([`write_values_multiple_blocks`]): computes a running GCD of every value's difference
-/// from the first value (mirrors `MathUtil.gcd` accumulation, including
-/// Java's overflow guard: values outside `[i64::MIN/2, i64::MAX/2]` abandon
-/// GCD tracking for the rest of the scan rather than risk `v - firstValue`
-/// overflowing), and a `<= 256`-entry distinct-value set (abandoned, same as
-/// Java's `uniqueValues`, the moment a 257th distinct value appears). Then
-/// picks whichever of table-compression (`bitsPerValue =
-/// unsignedBitsRequired(uniqueValues.len() - 1)`) or GCD/plain-delta
-/// (`bitsPerValue = unsignedBitsRequired((max - min) / gcd)`) needs fewer
-/// bits, strictly preferring delta on a tie (`<`, not `<=`, exactly like
-/// Java) -- this also means a field whose values are already a dense
-/// contiguous ordinal range (e.g. a SORTED field's per-doc dictionary
-/// ordinals, which reuse this exact function) never accidentally picks table
-/// compression: `uniqueValues.len() - 1 == max - min` there, so the `<`
-/// comparison always favors delta, matching `Lucene90DocValuesConsumer`'s own
-/// explicit `ords ? null : new LongHashSet()` (ordinals never build a
-/// `uniqueValues` set at all; this port gets the same *outcome* without
-/// needing that special case, since the two paths tie).
-// ARITH: the two divisions are by `gcd`, which the `if gcd == 0 { gcd = 1 }`
-// below forces non-zero, and `gcd` is `unsigned_abs`-derived so it is never
-// `-1` (no `i64::MIN / -1`). The two `unique.len() as i64 - 1` uses are
-// reached only past `min >= max`, which means at least two distinct values,
-// so the set is non-empty. `data.len() as i64 - start_offset` subtracts an
-// offset recorded from an earlier `data.len()` of the same append-only
-// buffer. The two `wrapping_sub`s are deliberate and documented in place.
-#[allow(clippy::arithmetic_side_effects)]
-fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i64]) {
-    let num_values = values.len() as i64;
-    meta.write_i64(num_values);
-
-    // `MinMaxTracker` starts at `(Long.MAX_VALUE, Long.MIN_VALUE)` and stays
-    // there for an empty value array, which is what Java then writes as this
-    // entry's `min`. Nothing reads it back (an empty field carries the `-2`
-    // docs-with-field marker, so no doc ever resolves to an ordinal), but
-    // matching it keeps the bytes identical to real Lucene's.
-    let min = values.iter().copied().min().unwrap_or(i64::MAX);
-    let max = values.iter().copied().max().unwrap_or(i64::MIN);
-
-    // Java runs the GCD scan before the `min >= max` branch and writes
-    // whatever it produced either way -- `0` when every value is identical
-    // (every `v - firstValue` is 0), or `1` when a value outside
-    // `[MIN/2, MAX/2]` tripped the overflow guard. `bitsPerValue == 0` means
-    // it is never read back, but writing the same number keeps this writer
-    // byte-identical to `Lucene90DocValuesConsumer` for the constant case.
-    let mut gcd = compute_gcd(values);
-
-    if min >= max {
-        // All values equal (including the empty-values case, which can't
-        // actually happen for a standalone NUMERIC field since
-        // `values.len() == max_doc` and `max_doc` is a real field count, but
-        // can for a SORTED_NUMERIC field's flat value array when every doc
-        // has zero values -- Java's `min >= max` check covers both "all
-        // equal" and "no values" the same way).
-        meta.write_i32(-1); // tableSize
-        meta.push(0); // bitsPerValue
-        meta.write_i64(min);
-        meta.write_i64(gcd);
-        let start_offset = data.len() as i64;
-        meta.write_i64(start_offset);
-        meta.write_i64(0); // valuesLength
-        meta.write_i64(-1); // valueJumpTableOffset
-        return;
-    }
-
-    // A non-constant value array always yields a non-zero GCD (some value
-    // differs from the first), so this only guards the theoretically
-    // unreachable case; Java has no equivalent because `DirectWriter` would
-    // divide by it either way.
-    if gcd == 0 {
-        gcd = 1;
-    }
-
-    // Distinct-value set, capped at 256 entries (table compression's max
-    // table size), same as Java's `uniqueValues` -- a hash set, as Java's
-    // `LongHashSet`; sorted only if it becomes the table.
-    let mut unique: HashSet<i64, BuildHasherDefault<SetHasher>> =
-        HashSet::with_capacity_and_hasher(512, BuildHasherDefault::default());
-    let mut unique_tracked = true;
-    for &v in values {
-        if !unique_tracked {
-            break;
-        }
-        unique.insert(v);
-        if unique.len() > 256 {
-            unique_tracked = false;
-        }
-    }
-
-    // Same wraparound-not-panic reasoning as the GCD loop above: `max - min`
-    // can overflow i64 for a pathological value set (e.g. min == i64::MIN),
-    // just like Java's `long` subtraction would -- wrap instead of crash.
-    let range_bits = direct_reader::unsigned_bits_required(max.wrapping_sub(min) / gcd);
-    let use_table = unique_tracked
-        && unique.len() > 1
-        && direct_reader::unsigned_bits_required(unique.len() as i64 - 1) < range_bits;
-
-    // `doBlocks`: per-16384-value blocks, each packed at its own width, when
-    // that appears to save 10% or more over one width for the whole column.
-    let do_blocks = !use_table && {
-        let whole = space_in_bits(values);
-        let blocks: i64 = values
-            .chunks(NUMERIC_BLOCK_SIZE)
-            .map(space_in_bits)
-            .fold(0i64, i64::wrapping_add);
-        whole > 0 && blocks as f64 / whole as f64 <= 0.9
-    };
-
-    let (bits_per_value, min, gcd, table): (u8, i64, i64, Option<Vec<i64>>) = if use_table {
-        let mut sorted_unique: Vec<i64> = unique.into_iter().collect();
-        sorted_unique.sort_unstable();
-        let bpv = direct_reader::unsigned_bits_required(sorted_unique.len() as i64 - 1);
-        (bpv, 0, 1, Some(sorted_unique))
-    } else if do_blocks {
-        // `numBitsPerValue = 0xFF`; `min` is the column's own, never zeroed.
-        (0xFF, min, gcd, None)
-    } else {
-        let mut bpv = range_bits;
-        let mut min = min;
-        // Java: if gcd==1 && min>0 && bits(max) == bits(max-min), drop the
-        // min-shift (store raw values instead) since it doesn't save space.
-        if gcd == 1 && min > 0 && direct_reader::unsigned_bits_required(max) == bpv {
-            min = 0;
-            bpv = direct_reader::unsigned_bits_required(max);
-        }
-        (bpv, min, gcd, None)
-    };
-
-    match &table {
-        Some(t) => {
-            meta.write_i32(t.len() as i32);
-            for &v in t {
-                meta.write_i64(v);
-            }
-        }
-        None if do_blocks => meta.write_i32(-2 - NUMERIC_BLOCK_SHIFT as i32),
-        None => meta.write_i32(-1),
-    }
-    meta.push(bits_per_value);
-    meta.write_i64(min);
-    meta.write_i64(gcd);
-
-    let start_offset = data.len() as i64;
-    meta.write_i64(start_offset);
-
-    if do_blocks {
-        let jump_table_offset = write_values_multiple_blocks(data, values, gcd);
-        meta.write_i64(data.len() as i64 - start_offset); // valuesLength
-        meta.write_i64(jump_table_offset);
-        return;
-    }
-    if bits_per_value != 0 {
-        let raw: Vec<i64> = match &table {
-            Some(t) => values
-                .iter()
-                .map(|v| t.binary_search(v).expect("value must be in its own table") as i64)
-                .collect(),
-            // `v - min` for `v` in `values` is normally in `[0, max - min]`
-            // (min/max are this array's own extrema), but `wrapping_sub`
-            // keeps the same non-panicking-on-pathological-input guarantee
-            // as `range_bits`'s `max.wrapping_sub(min)` above for the same
-            // reason -- both derive from the same possibly-huge min/max.
-            None => values.iter().map(|&v| v.wrapping_sub(min) / gcd).collect(),
-        };
-        let mut packed = direct_reader::encode(&raw, bits_per_value);
-        packed.extend(std::iter::repeat_n(
-            0u8,
-            direct_reader::padding_bytes_needed(bits_per_value),
-        ));
-        data.extend_from_slice(&packed);
-    }
-
-    meta.write_i64(data.len() as i64 - start_offset); // valuesLength
-    meta.write_i64(-1); // valueJumpTableOffset: no varying-bpv blocks
-}
-
 /// `Lucene90DocValuesFormat.NUMERIC_BLOCK_SHIFT`.
 const NUMERIC_BLOCK_SHIFT: u32 = 14;
 /// `Lucene90DocValuesFormat.NUMERIC_BLOCK_SIZE`.
@@ -6035,161 +5871,6 @@ pub fn write_single_sparse_sorted_numeric_field(
 /// sorts+dedups).
 fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
-}
-
-/// Port of `Lucene90DocValuesConsumer.addTermsDict` (block-LZ4-compressed
-/// terms + block-address array) followed by `writeTermsIndex` (a coarser
-/// sampled reverse index, sampled every
-/// [`TERMS_DICT_REVERSE_INDEX_MASK`]`+1`th ordinal) -- the machinery
-/// `SORTED`'s single-valued dictionary and `SORTED_SET`'s multi-valued one
-/// share verbatim in real Lucene (`addSortedField`/`addSortedSetField` both
-/// end by calling this same method). `terms` must already be sorted
-/// ascending with no duplicates (the caller's job -- this port always builds
-/// it from a `BTreeSet`/`sort_unstable+dedup` over the field's raw values).
-///
-/// Writes directly into `meta`/`data`, mirroring
-/// [`write_dense_numeric_entry_body`]'s "body only, no leading
-/// field-number/type byte" shape -- appends exactly what
-/// [`terms_dict::read_term_dict_entry`] expects to read right after a
-/// SORTED/SORTED_SET field's ords entry.
-// ARITH: `terms` is sorted ascending with no duplicates -- the doc comment
-// above states it and every caller builds it from a `BTreeSet` or a
-// `sort_unstable` + `dedup`. That is what makes `later.len() - prefix_len`
-// non-negative (a common prefix never exceeds either operand's length),
-// `suffix_len - 1` safe (distinct sorted terms differ, so a later term has at
-// least one byte past the common prefix), and `&term[..sort_key_len]` in
-// range (`sampled_previous < term` and neither is a prefix of the other in
-// the wrong direction). The two `debug_assert!`s below make `cargo test`
-// exercise both claims rather than leaving them as prose. Everything else is
-// a `Vec` length or an offset recorded from an earlier `data.len()`.
-#[allow(clippy::arithmetic_side_effects)]
-fn write_terms_dict<T: AsRef<[u8]>>(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[T]) {
-    let terms: Vec<&[u8]> = terms.iter().map(AsRef::as_ref).collect();
-    let size = terms.len() as i64;
-    meta.write_vlong(size);
-    meta.write_i32(TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT as i32);
-
-    let start = data.len() as i64;
-    let mut max_length = 0i32;
-    let mut max_block_length = 0i32;
-    let mut block_addresses: Vec<i64> = Vec::new();
-    // `termsDictBuffer`: the block's first term (the preset dictionary)
-    // followed by the rest of the block, prefix-compressed. One hash table
-    // for the whole field, as Java's `addTermsDict` keeps.
-    let mut block_buf: Vec<u8> = Vec::new();
-    let mut ht = lz4::FastCompressionHashTable::new();
-
-    let mut ord = 0usize;
-    while ord < terms.len() {
-        let term = &terms[ord];
-        block_addresses.push(data.len() as i64 - start);
-        data.write_vint(term.len() as i32);
-        data.extend_from_slice(term);
-        max_length = max_length.max(term.len() as i32);
-
-        // The rest of this 64-term block, prefix-compressed against its
-        // immediate predecessor.
-        block_buf.clear();
-        block_buf.extend_from_slice(term);
-        let dict_len = term.len();
-        let block_end = terms
-            .len()
-            .min(ord + (TERMS_DICT_BLOCK_LZ4_MASK as usize) + 1);
-        let mut prev: &[u8] = term;
-        for later in &terms[ord + 1..block_end] {
-            let prefix_len = common_prefix_len(prev, later);
-            debug_assert!(
-                prefix_len < later.len(),
-                "write_terms_dict requires strictly ascending, deduplicated terms"
-            );
-            let suffix_len = later.len() - prefix_len;
-            block_buf.push((prefix_len.min(15) as u8) | (((suffix_len - 1).min(15) as u8) << 4));
-            if prefix_len >= 15 {
-                block_buf.write_vint((prefix_len - 15) as i32);
-            }
-            if suffix_len >= 16 {
-                block_buf.write_vint((suffix_len - 16) as i32);
-            }
-            block_buf.extend_from_slice(&later[prefix_len..]);
-            max_length = max_length.max(later.len() as i32);
-            prev = later;
-        }
-
-        let body_len = block_buf.len() - dict_len;
-        if body_len > 0 {
-            // `compressAndGetTermsDictBlockLength`: the first term is LZ4's
-            // preset dictionary, so a suffix repeating bytes of it compresses
-            // to a back-reference exactly where Java's does.
-            data.write_vint(body_len as i32);
-            lz4::compress_with_dictionary(&block_buf, 0, dict_len, body_len, data, &mut ht);
-        }
-        max_block_length = max_block_length.max(body_len as i32);
-        ord = block_end;
-    }
-
-    // `DirectMonotonicWriter` flushes each completed block's meta entry as
-    // soon as it fills (`DirectMonotonicWriter.flush`), i.e. interleaved
-    // with the term loop above and always finished before `maxLength` is
-    // written -- see `read_term_dict_entry`'s read order, which expects this
-    // meta array right after `block_shift`, before `max_term_length`.
-    let (addr_meta, addr_data) =
-        direct_monotonic::write(&block_addresses, TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT);
-    meta.extend_from_slice(&addr_meta);
-
-    meta.write_i32(max_length);
-    meta.write_i32(max_block_length);
-    meta.write_i64(start);
-    meta.write_i64(data.len() as i64 - start);
-
-    let addresses_start = data.len() as i64;
-    data.extend_from_slice(&addr_data);
-    meta.write_i64(addresses_start);
-    meta.write_i64(data.len() as i64 - addresses_start);
-
-    // `writeTermsIndex`: a coarser reverse index, one sampled address + a
-    // short disambiguating prefix every `TERMS_DICT_REVERSE_INDEX_MASK + 1`
-    // ordinals.
-    meta.write_i32(TERMS_DICT_REVERSE_INDEX_SHIFT as i32);
-    let index_start = data.len() as i64;
-    let mut offset = 0i64;
-    let mut index_addresses: Vec<i64> = Vec::new();
-    let mut sampled_previous: Vec<u8> = Vec::new();
-    for (ord, term) in terms.iter().enumerate() {
-        let ord = ord as i64;
-        if ord & TERMS_DICT_REVERSE_INDEX_MASK == 0 {
-            index_addresses.push(offset);
-            let sort_key_len = if ord == 0 {
-                0
-            } else {
-                common_prefix_len(&sampled_previous, term) + 1
-            };
-            debug_assert!(
-                sort_key_len <= term.len(),
-                "write_terms_dict requires strictly ascending, deduplicated terms"
-            );
-            offset += sort_key_len as i64;
-            data.extend_from_slice(&term[..sort_key_len]);
-        } else if ord & TERMS_DICT_REVERSE_INDEX_MASK == TERMS_DICT_REVERSE_INDEX_MASK {
-            sampled_previous.clear();
-            sampled_previous.extend_from_slice(term);
-        }
-    }
-    index_addresses.push(offset);
-
-    // Same interleaving note as the block-address writer above: its meta
-    // entries are already fully flushed by this point, so they can be
-    // written now, before `indexOffset`/`indexLength`.
-    let (index_addr_meta, index_addr_data) =
-        direct_monotonic::write(&index_addresses, TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT);
-    meta.extend_from_slice(&index_addr_meta);
-
-    meta.write_i64(index_start);
-    meta.write_i64(data.len() as i64 - index_start);
-
-    let index_addresses_start = data.len() as i64;
-    data.extend_from_slice(&index_addr_data);
-    meta.write_i64(index_addresses_start);
-    meta.write_i64(data.len() as i64 - index_addresses_start);
 }
 
 /// Port of `Lucene90DocValuesConsumer.addSortedField`, scoped to exactly one

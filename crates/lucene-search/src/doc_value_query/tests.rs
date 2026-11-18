@@ -235,7 +235,12 @@ fn load_dv_meta(dir: &str) -> (Manifest, [u8; 16], Vec<u8>, DocValuesMeta) {
     let meta_buf = std::fs::read(format!("{dir}{}.raw", manifest.get("dvm_file_name"))).unwrap();
     let data_buf = std::fs::read(format!("{dir}{}.raw", manifest.get("dvd_file_name"))).unwrap();
     let suffix = dv_suffix(&manifest);
-    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let (version, mut parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    if ndv::has_disi_file(version) {
+        let dvm_name = manifest.get("dvm_file_name");
+        let dvp = std::fs::read(format!("{dir}{}", dvm_name.replace(".dvm", ".dvp"))).unwrap();
+        parsed.attach_disi(ndv::DisiBytes::new(std::sync::Arc::new(dvp)));
+    }
     (manifest, id, data_buf, parsed)
 }
 

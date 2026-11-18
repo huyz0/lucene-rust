@@ -22,6 +22,7 @@ F	bengaliStem
 F	brazilianStem
 F	bulgarianStem
 F	capitalization
+F	caseFolding
 F	cjkBigram
 F	cjkWidth
 F	classic
@@ -115,6 +116,8 @@ F	synonym
 F	synonymGraph
 F	teluguNormalization
 F	teluguStem
+F	thaiNormalization
+F	thaiRepeat
 F	tokenOffsetPayload
 F	trim
 F	truncate
@@ -130,3 +133,4 @@ C	htmlStrip
 C	mapping
 C	patternReplace
 C	persian
+C	thai

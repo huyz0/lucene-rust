@@ -1059,11 +1059,6 @@ impl<'a, S: GroupSelector<'a>> AllGroupsCollector<'a, S> {
         }
     }
 
-    /// The selector (`GroupingSearch` shares one with the first pass).
-    pub(crate) fn selector_mut(&mut self) -> &mut S {
-        &mut self.selector
-    }
-
     /// `getGroupCount()`.
     pub fn group_count(&self) -> usize {
         self.groups.len()
@@ -1081,7 +1076,9 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupsCollector<'a, S
     }
 
     fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
-        self.selector.set_next_reader(ord, leaf)
+        self.selector.set_next_reader(ord, leaf)?;
+        // `setScorer`: `groupSelector.setScorer(scorer)`.
+        self.selector.set_scorer()
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
@@ -1193,11 +1190,6 @@ impl<'a, S: GroupSelector<'a>> AllGroupHeadsCollector<'a, S> {
         }
     }
 
-    /// The selector (`GroupingSearch` shares one with the first pass).
-    pub(crate) fn selector_mut(&mut self) -> &mut S {
-        &mut self.selector
-    }
-
     /// `getCollectedGroupHeads()`, in first-seen order.
     pub fn group_heads(&self) -> &[GroupHead<S::Value>] {
         &self.heads
@@ -1249,7 +1241,8 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupHeadsCollector<'
         if !self.scoring {
             self.keys = Some(LeafKeys::open(&self.sort, leaf)?);
         }
-        Ok(())
+        // `setScorer`: `groupSelector.setScorer(scorer)`.
+        self.selector.set_scorer()
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {

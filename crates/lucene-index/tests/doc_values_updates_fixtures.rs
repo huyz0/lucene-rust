@@ -155,8 +155,15 @@ fn open_column(
         let only = FieldInfos {
             fields: vec![field],
         };
-        let (_, meta) = doc_values::parse_meta(&read(&meta_name), id, &suffix, &only)
+        let (version, mut meta) = doc_values::parse_meta(&read(&meta_name), id, &suffix, &only)
             .unwrap_or_else(|e| panic!("parse {meta_name}: {e}"));
+        if doc_values::has_disi_file(version) {
+            let disi_name =
+                field_updates::generation_file_name(&sci.segment_name, gen, &per_field, "dvp");
+            meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(read(
+                &disi_name,
+            ))));
+        }
         let _ = number;
         return (meta, read(&data_name), max_doc(sci, id, si_files));
     }
@@ -167,8 +174,14 @@ fn open_column(
         .strip_prefix(&format!("{}_", sci.segment_name))
         .and_then(|s| s.strip_suffix(".dvm"))
         .unwrap();
-    let (_, meta) = doc_values::parse_meta(&read(meta_name), id, suffix, infos)
+    let (version, mut meta) = doc_values::parse_meta(&read(meta_name), id, suffix, infos)
         .unwrap_or_else(|e| panic!("parse {meta_name}: {e}"));
+    if doc_values::has_disi_file(version) {
+        let disi_name = meta_name.replace(".dvm", ".dvp");
+        meta.attach_disi(doc_values::DisiBytes::new(std::sync::Arc::new(read(
+            &disi_name,
+        ))));
+    }
     (meta, read(data_name), max_doc(sci, id, si_files))
 }
 

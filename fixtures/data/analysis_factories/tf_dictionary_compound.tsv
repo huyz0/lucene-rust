@@ -124,17 +124,17 @@ T	10	als	24	27	1	1	<ALPHANUM>	0	-	0	1
 T	10	die	28	31	1	1	<ALPHANUM>	0	-	0	1
 T	10	bäume	32	37	1	1	<ALPHANUM>	0	-	0	1
 T	10	donaudampfschifffahrt	38	59	1	1	<ALPHANUM>	0	-	0	1
-T	10	donau	38	59	0	1	<ALPHANUM>	0	-	0	1
-T	10	dampf	38	59	0	1	<ALPHANUM>	0	-	0	1
-T	10	schiff	38	59	0	1	<ALPHANUM>	0	-	0	1
-T	10	fahrt	38	59	0	1	<ALPHANUM>	0	-	0	1
+T	10	donau	38	59	0	1	subword	0	-	0	1
+T	10	dampf	38	59	0	1	subword	0	-	0	1
+T	10	schiff	38	59	0	1	subword	0	-	0	1
+T	10	fahrt	38	59	0	1	subword	0	-	0	1
 T	10	rindfleischetikettierung	60	84	1	1	<ALPHANUM>	0	-	0	1
-T	10	rind	60	84	0	1	<ALPHANUM>	0	-	0	1
-T	10	fleisch	60	84	0	1	<ALPHANUM>	0	-	0	1
-T	10	etikett	60	84	0	1	<ALPHANUM>	0	-	0	1
+T	10	rind	60	84	0	1	subword	0	-	0	1
+T	10	fleisch	60	84	0	1	subword	0	-	0	1
+T	10	etikett	60	84	0	1	subword	0	-	0	1
 T	10	fussball	85	93	1	1	<ALPHANUM>	0	-	0	1
-T	10	fuss	85	93	0	1	<ALPHANUM>	0	-	0	1
-T	10	ball	85	93	0	1	<ALPHANUM>	0	-	0	1
+T	10	fuss	85	93	0	1	subword	0	-	0	1
+T	10	ball	85	93	0	1	subword	0	-	0	1
 E	10	93	93	0
 T	11	les	0	3	1	1	<ALPHANUM>	0	-	0	1
 T	11	enfants	4	11	1	1	<ALPHANUM>	0	-	0	1
