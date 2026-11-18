@@ -12,7 +12,9 @@
 //! - **Process**: [`live_bytes`] is what the library holds now. A host sets
 //!   [`set_process_limit`]; past it, every request's next [`checkpoint`]
 //!   fails, and work outside requests (indexing, merges) carries on, since
-//!   the host bounds those with its own controls.
+//!   the host bounds those with its own controls. A big merge ([`admit`])
+//!   waits for the merges before it when together they would pass the bound,
+//!   and its memory counts against requests like any other.
 //! - **Request**: a host wraps a call in a [`Scope`] ([`enter`]). The bytes
 //!   the call's threads gain while the scope is entered are its
 //!   [`Scope::used`]. A request grows past what it was granted by asking the
@@ -160,6 +162,56 @@ pub fn set_process_limit(bytes: i64) {
 /// The process bound, `0` when there is none.
 pub fn process_limit() -> i64 {
     PROCESS_LIMIT.load(Relaxed)
+}
+
+/// What admitted merges expect to allocate and have not yet finished.
+static ADMITTED: AtomicI64 = AtomicI64::new(0);
+
+/// How long a merge waits for room before it goes ahead anyway.
+pub const ADMIT_WAIT: Duration = Duration::from_secs(30);
+
+/// A merge's claim on the process bound, released when dropped.
+#[derive(Debug)]
+pub struct Admission {
+    bytes: i64,
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        ADMITTED.fetch_sub(self.bytes, Relaxed);
+    }
+}
+
+/// Admits work outside any request (a merge) that is about to allocate
+/// about `bytes`: while other admitted work is running, waits, up to
+/// `max_wait`, until what the process holds, plus what that work still
+/// expects, plus `bytes` is within the process bound, so concurrent merges
+/// do not outgrow it unseen. A lone merge never waits. Work is never
+/// refused: after `max_wait`, or with no bound set, it goes ahead and its
+/// claim still counts for the next one. The
+/// claim lasts until the result is dropped; it counts memory already
+/// allocated again, which errs towards waiting.
+pub fn admit(bytes: usize, max_wait: Duration) -> Admission {
+    admit_under(PROCESS_LIMIT.load(Relaxed), bytes, max_wait)
+}
+
+fn admit_under(limit: i64, bytes: usize, max_wait: Duration) -> Admission {
+    let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+    if limit > 0 {
+        let start = Instant::now();
+        while LIVE
+            .load(Relaxed)
+            .saturating_add(ADMITTED.load(Relaxed))
+            .saturating_add(bytes)
+            > limit
+            && ADMITTED.load(Relaxed) > 0
+            && start.elapsed() < max_wait
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    ADMITTED.fetch_add(bytes, Relaxed);
+    Admission { bytes }
 }
 
 /// Counters for the host's stats.
@@ -595,6 +647,22 @@ mod tests {
 
     // The allocator is not hooked in this crate's tests: they report
     // changes by hand, as the allocator would.
+
+    #[test]
+    fn admitted_work_waits_only_for_other_admitted_work() {
+        // No other claim: a lone merge goes ahead at once, over the limit.
+        let start = Instant::now();
+        let first = admit_under(1, 1 << 20, Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Over the limit while that claim is held: waits the whole time,
+        // then goes ahead.
+        let start = Instant::now();
+        let second = admit_under(1, 1 << 20, Duration::from_millis(120));
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        assert_eq!(second.bytes, 1 << 20);
+        drop(second);
+        drop(first);
+    }
 
     #[test]
     fn a_scope_counts_what_its_thread_gains_and_asks_the_host_for_more() {

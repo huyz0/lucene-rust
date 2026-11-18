@@ -151,11 +151,28 @@ fn unit_vectors(field: &FieldVectors<'_>) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// The mean of `vectors` (rows of `dim` floats), summed in `f64`.
-fn mean(vectors: &[f32], dim: usize) -> Vec<f32> {
+/// `row` as stored: scaled to unit length into `scratch` when `unit`, else
+/// as it is. The same scaling as [`unit_vectors`], one row at a time, so a
+/// field's vectors are never copied whole.
+fn stored_row<'a>(row: &'a [f32], unit: bool, scratch: &'a mut Vec<f32>) -> &'a [f32] {
+    if !unit {
+        return row;
+    }
+    scratch.clear();
+    scratch.extend_from_slice(row);
+    // A zero vector has no direction and stays zero.
+    let _ = lucene_util::vector_util::l2normalize(scratch, false);
+    scratch
+}
+
+/// The mean of `vectors` (rows of `dim` floats, scaled to unit length when
+/// `unit`), summed in `f64`.
+fn mean(vectors: &[f32], dim: usize, unit: bool) -> Vec<f32> {
     let mut sum = vec![0f64; dim];
     let mut rows = 0u32;
+    let mut scratch = Vec::new();
     for row in vectors.chunks_exact(dim) {
+        let row = stored_row(row, unit, &mut scratch);
         for (s, &x) in sum.iter_mut().zip(row) {
             *s += f64::from(x);
         }
@@ -167,16 +184,17 @@ fn mean(vectors: &[f32], dim: usize) -> Vec<f32> {
     sum.iter().map(|s| (s / rows) as f32).collect()
 }
 
-/// Every `stride`-th row of `vectors`, at most `count` of them.
-fn sample(vectors: &[f32], dim: usize, count: usize) -> Vec<f32> {
+/// Every `stride`-th row of `vectors`, at most `count` of them, scaled to
+/// unit length when `unit`.
+fn sample(vectors: &[f32], dim: usize, count: usize, unit: bool) -> Vec<f32> {
     let rows = vectors.len().checked_div(dim).unwrap_or(0);
     let stride = rows.div_ceil(count.max(1)).max(1);
-    vectors
-        .chunks_exact(dim)
-        .step_by(stride)
-        .flatten()
-        .copied()
-        .collect()
+    let mut out = Vec::new();
+    let mut scratch = Vec::new();
+    for row in vectors.chunks_exact(dim).step_by(stride) {
+        out.extend_from_slice(stored_row(row, unit, &mut scratch));
+    }
+    out
 }
 
 impl DiskHnswWriter {
@@ -263,7 +281,7 @@ impl DiskHnswWriter {
         let normalized = unit_vectors(field);
         let vectors = normalized.as_deref().unwrap_or(field.vectors);
         let graph = graph::build_graph(vectors, field.dimension, field.similarity, &params.graph)?;
-        self.write_field(field, vectors, &graph, factory, params)
+        self.write_field(field, vectors, false, &graph, factory, params)
     }
 
     /// Writes `field` with `graph`, whose ordinal `i` is the field's `i`-th
@@ -287,16 +305,36 @@ impl DiskHnswWriter {
         params: &DiskHnswParams,
     ) -> Result<()> {
         self.check(field, params)?;
-        let normalized = unit_vectors(field);
-        let vectors = normalized.as_deref().unwrap_or(field.vectors);
-        self.write_field(field, vectors, graph, factory, params)
+        let unit = field.similarity == Similarity::Cosine;
+        self.write_field(field, field.vectors, unit, graph, factory, params)
     }
 
-    /// Writes a checked `field` whose vectors, as stored, are `vectors`.
+    /// Writes a checked `field` whose vectors, as stored, are `vectors`
+    /// (scaled to unit length first when `unit`). A field that fails leaves
+    /// the files as they were.
     fn write_field(
         &mut self,
         field: &FieldVectors<'_>,
         vectors: &[f32],
+        unit: bool,
+        graph: &dyn HnswGraphView,
+        factory: &dyn QuantizerFactory,
+        params: &DiskHnswParams,
+    ) -> Result<()> {
+        let (nodes_len, codes_len) = (self.nodes.len(), self.codes.len());
+        let written = self.write_field_inner(field, vectors, unit, graph, factory, params);
+        if written.is_err() {
+            self.nodes.truncate(nodes_len);
+            self.codes.truncate(codes_len);
+        }
+        written
+    }
+
+    fn write_field_inner(
+        &mut self,
+        field: &FieldVectors<'_>,
+        vectors: &[f32],
+        unit: bool,
         graph: &dyn HnswGraphView,
         factory: &dyn QuantizerFactory,
         params: &DiskHnswParams,
@@ -314,11 +352,11 @@ impl DiskHnswWriter {
             .checked_mul(2)
             .filter(|&m| m <= usize::from(u16::MAX))
             .ok_or_else(|| Error::Graph(format!("M {max_conn}")))?;
-        let centroid = mean(vectors, dim);
+        let centroid = mean(vectors, dim, unit);
         let quantizer = factory.train(
             dim,
             field.similarity,
-            &sample(vectors, dim, params.training_sample),
+            &sample(vectors, dim, params.training_sample, unit),
         )?;
         let prepared = quantizer
             .prepare_centroid(&centroid)
@@ -329,7 +367,9 @@ impl DiskHnswWriter {
             old_codes
                 .par_chunks_mut(code_len)
                 .zip(vectors.par_chunks(dim))
-                .for_each(|(out, v)| quantizer.encode_prepared(v, &prepared, out));
+                .for_each_init(Vec::new, |scratch, (out, v)| {
+                    quantizer.encode_prepared(stored_row(v, unit, scratch), &prepared, out);
+                });
         }
         let code = |old: usize| -> &[u8] {
             // ARITH: `old < n`, and `old_codes` holds `n` codes.
@@ -383,19 +423,25 @@ impl DiskHnswWriter {
         )
         .ok_or_else(overflow)?;
 
-        // Records, by page group, in parallel. Nothing is added to the
-        // writer's buffers until the whole field has been encoded, so a
-        // field that fails leaves the files as they were.
+        // Records, by page group, in parallel, straight into the nodes file.
         let page_start = self.nodes.len().next_multiple_of(params.page_len);
         let region_len = layout.region_len(n).ok_or_else(overflow)?;
-        let mut region = vec![0u8; region_len];
+        let region_end = page_start.checked_add(region_len).ok_or_else(overflow)?;
+        // Room for the footer, so appending it does not double the buffer.
+        self.nodes.reserve_exact(
+            region_end
+                .saturating_add(codec_util::FOOTER_LENGTH)
+                .saturating_sub(self.nodes.len()),
+        );
+        self.nodes.resize(region_end, 0);
+        let region = &mut self.nodes[page_start..];
         let group_len = layout.page_len().saturating_mul(layout.pages_per_record());
         let per_group = layout.records_per_page();
         let encoding = params.encoding;
         let finite = region
             .par_chunks_mut(group_len.max(1))
             .enumerate()
-            .map(|(group, bytes)| {
+            .map_init(Vec::new, |scratch, (group, bytes)| {
                 let first = group.saturating_mul(per_group);
                 let last = first.saturating_add(per_group).min(n);
                 (first..last).all(|new| {
@@ -409,7 +455,7 @@ impl DiskHnswWriter {
                     rec[4..6].copy_from_slice(&counts[new].to_le_bytes());
                     // ARITH: `old < n`; rows are `dim` floats.
                     #[allow(clippy::arithmetic_side_effects)]
-                    let v = &vectors[old * dim..][..dim];
+                    let v = stored_row(&vectors[old * dim..][..dim], unit, scratch);
                     let ok = encoding.encode(
                         v,
                         &centroid,
@@ -536,8 +582,12 @@ impl DiskHnswWriter {
             out.write_bytes(code(order[node as usize] as usize));
         }
 
-        self.nodes.resize(page_start, 0);
-        self.nodes.extend_from_slice(&region);
+        self.codes.reserve_exact(
+            order
+                .len()
+                .saturating_mul(code_len)
+                .saturating_add(codec_util::FOOTER_LENGTH),
+        );
         for &old in &order {
             self.codes.extend_from_slice(code(old as usize));
         }
@@ -574,10 +624,12 @@ mod tests {
     #[test]
     fn samples_and_means() {
         let v: Vec<f32> = (0..10).map(|i| i as f32).collect();
-        assert_eq!(sample(&v, 1, 5), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
-        assert_eq!(sample(&v, 1, 100).len(), 10);
-        assert_eq!(mean(&v, 2), vec![4.0, 5.0]);
-        assert_eq!(mean(&[], 2), vec![0.0, 0.0]);
+        assert_eq!(sample(&v, 1, 5, false), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(sample(&v, 1, 100, false).len(), 10);
+        assert_eq!(mean(&v, 2, false), vec![4.0, 5.0]);
+        assert_eq!(mean(&[], 2, false), vec![0.0, 0.0]);
+        assert_eq!(mean(&[3.0, 4.0], 2, true), vec![0.6, 0.8]);
+        assert_eq!(sample(&[3.0, 4.0], 2, 1, true), vec![0.6, 0.8]);
     }
 
     #[test]
