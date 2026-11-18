@@ -108,7 +108,7 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
         // A `.si` that won't even parse means we don't know which files
         // belong to this segment; that's still worth surfacing as a single
         // failed "file" entry rather than silently skipping the segment.
-        let si = match crate::segment_info::parse_for_codec(
+        let si = match crate::segment_info::parse_for_commit(
             &match dir.open(&format!("{}.si", commit.segment_name)) {
                 Ok(b) => b,
                 Err(e) => {
@@ -121,8 +121,7 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
                     continue;
                 }
             },
-            &commit.segment_id,
-            &commit.codec_name,
+            commit,
         ) {
             Ok(si) => si,
             Err(e) => {

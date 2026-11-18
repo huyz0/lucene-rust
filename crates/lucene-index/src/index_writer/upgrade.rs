@@ -98,10 +98,9 @@ mod tests {
             .segments
             .iter()
             .map(|s| {
-                let si = crate::segment_info::parse_for_codec(
+                let si = crate::segment_info::parse_for_commit(
                     &dir.open(&format!("{}.si", s.segment_name)).unwrap(),
-                    &s.segment_id,
-                    &s.codec_name,
+                    s,
                 )
                 .unwrap();
                 (si.version, si.doc_count.saturating_sub(s.del_count))

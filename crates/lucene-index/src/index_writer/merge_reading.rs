@@ -307,7 +307,7 @@ impl IndexingConfig {
         // `SegmentInfo.maxDoc()`, never from the stored-fields file. It is
         // also what says whether the segment is compound.
         let si_bytes = dir.open(&format!("{name}.si"))?;
-        let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+        let si = segment_info::parse_for_commit(&si_bytes, &sci)?;
 
         // `SegmentCoreReaders`: a compound segment -- every segment real
         // Lucene flushes by default -- keeps its codec files inside

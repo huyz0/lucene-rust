@@ -13,11 +13,7 @@ pub(super) fn count_soft_deletes(
     soft: &str,
     retention: Option<&SoftDeletesRetention>,
 ) -> Result<Option<i32>> {
-    let si = segment_info::parse_for_codec(
-        &dir.open(&format!("{}.si", sci.segment_name))?,
-        &sci.segment_id,
-        &sci.codec_name,
-    )?;
+    let si = segment_info::parse_for_commit(&dir.open(&format!("{}.si", sci.segment_name))?, sci)?;
     let compound = if si.is_compound_file {
         Some(CompoundReader::open(
             dir,

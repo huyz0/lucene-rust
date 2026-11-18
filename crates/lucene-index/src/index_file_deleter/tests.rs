@@ -700,3 +700,37 @@ fn generational_liv_field_infos_and_doc_values_files_are_all_refcounted() {
     deleter.checkpoint(&infos(0, vec![]), false).unwrap();
     assert!(listing(&dir).is_empty(), "{:?}", listing(&dir));
 }
+
+/// `IndexWriter.addIndexes(Directory...)` copies a segment's `.si` byte for
+/// byte under the new segment name, so the file list in it still names the
+/// old segment: a read names every file for the segment it belongs to
+/// (`SegmentInfo.setFiles`), and the deleter keeps them all.
+#[test]
+fn a_copied_si_lists_files_named_for_the_segment_it_now_belongs_to() {
+    let tmp = tempdir("copied-si");
+    let dir = FsDirectory::open(&tmp);
+    let original = seed_segment(&dir, "_0", 1, &["_0.fdt", "_0_Lucene90_0.dvd"]);
+    for (from, to) in [
+        ("_0.si", "_5.si"),
+        ("_0.fdt", "_5.fdt"),
+        ("_0_Lucene90_0.dvd", "_5_Lucene90_0.dvd"),
+    ] {
+        write(&dir, to, &std::fs::read(tmp.join(from)).unwrap());
+        dir.delete_file(from).unwrap();
+    }
+    let copied = SegmentCommitInfo {
+        segment_name: "_5".to_string(),
+        ..original
+    };
+    assert_eq!(
+        segment_info_files(&dir, &copied).unwrap(),
+        ["_5.si", "_5.fdt", "_5_Lucene90_0.dvd"]
+    );
+    let committed = infos(1, vec![copied]);
+    segment_infos::write(&committed, &dir).unwrap();
+    IndexFileDeleter::open(&dir, &committed, DeletionPolicy::KeepOnlyLastCommit).unwrap();
+    assert_eq!(
+        listing(&dir),
+        vec!["_5.fdt", "_5.si", "_5_Lucene90_0.dvd", "segments_1"]
+    );
+}

@@ -137,13 +137,12 @@ impl<'d> SimpleTextDirectory<'d> {
         for sci in &mut infos.segments {
             let si_name = format!("{}.si", sci.segment_name);
             if sci.codec_name != CODEC_NAME {
-                let info = segment_info::parse_for_codec(
+                let info = segment_info::parse_for_commit(
                     &self
                         .real
                         .open(&si_name)
                         .map_err(crate::directory_reader::Error::from)?,
-                    &sci.segment_id,
-                    &sci.codec_name,
+                    sci,
                 )
                 .map_err(crate::directory_reader::Error::from)?;
                 let base = with_si(info.files, si_name);
@@ -213,12 +212,8 @@ impl<'d> SimpleTextDirectory<'d> {
         for sci in &mut infos.segments {
             let si_name = format!("{}.si", sci.segment_name);
             if !self.simpletext && !published.bases.contains_key(&sci.segment_name) {
-                let info = segment_info::parse_for_codec(
-                    &self.native.open(&si_name)?,
-                    &sci.segment_id,
-                    &sci.codec_name,
-                )
-                .map_err(store_error)?;
+                let info = segment_info::parse_for_commit(&self.native.open(&si_name)?, sci)
+                    .map_err(store_error)?;
                 let base = with_si(info.files, si_name.clone());
                 published.bases.insert(sci.segment_name.clone(), base);
                 published.native.insert(sci.segment_name.clone());
@@ -241,12 +236,8 @@ impl<'d> SimpleTextDirectory<'d> {
                 continue;
             }
             if !published.bases.contains_key(&sci.segment_name) {
-                let info = segment_info::parse_for_codec(
-                    &self.native.open(&si_name)?,
-                    &sci.segment_id,
-                    &sci.codec_name,
-                )
-                .map_err(store_error)?;
+                let info = segment_info::parse_for_commit(&self.native.open(&si_name)?, sci)
+                    .map_err(store_error)?;
                 let segment =
                     to_simpletext(&self.native, &base_commit(sci), &info).map_err(store_error)?;
                 for (file, bytes) in &segment.files {

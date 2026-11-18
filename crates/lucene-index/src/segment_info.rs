@@ -717,6 +717,45 @@ pub fn write_simpletext(si: &mut SimpleTextSegmentInfo) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// `SegmentInfo.namedForThisSegment` applied to every listed file: Lucene's
+/// `SegmentInfo.setFiles` -- which every `.si` read ends in -- renames each
+/// file to its own segment's name. `IndexWriter.addIndexes(Directory...)`
+/// copies a segment's `.si` byte for byte under a new segment name, so the
+/// list on disk still names the segment it came from.
+pub fn named_for_segment(segment_name: &str, files: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .map(|f| {
+            format!(
+                "{segment_name}{}",
+                lucene_codecs::simpletext::compound::strip_segment_name(f)
+            )
+        })
+        .collect()
+}
+
+/// [`parse_for_segment`] for a committed segment.
+pub fn parse_for_commit(
+    buf: &[u8],
+    sci: &crate::segment_infos::SegmentCommitInfo,
+) -> Result<SegmentInfo> {
+    parse_for_segment(buf, &sci.segment_name, &sci.segment_id, &sci.codec_name)
+}
+
+/// [`parse_for_codec`] for the segment `segment_name`: its file list is named
+/// for that segment (see [`named_for_segment`]), whatever segment name the
+/// `.si` was written under.
+pub fn parse_for_segment(
+    buf: &[u8],
+    segment_name: &str,
+    segment_id: &[u8; ID_LENGTH],
+    codec_name: &str,
+) -> Result<SegmentInfo> {
+    let mut si = parse_for_codec(buf, segment_id, codec_name)?;
+    si.files = named_for_segment(segment_name, &si.files);
+    Ok(si)
+}
+
 /// [`parse`] for a segment written by codec `codec_name` (the name its
 /// `segments_N` entry records): `Lucene90`..`Lucene95` read the `.si` with
 /// `Lucene90SegmentInfoFormat`, which has no `HasBlocks` byte, and everything

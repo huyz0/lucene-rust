@@ -1991,8 +1991,7 @@ impl IndexingConfig {
             let Ok(si_bytes) = dir.open(&format!("{}.si", sci.segment_name)) else {
                 continue;
             };
-            let Ok(si) = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)
-            else {
+            let Ok(si) = segment_info::parse_for_commit(&si_bytes, sci) else {
                 continue;
             };
             if si.doc_count <= 0 {
@@ -3764,11 +3763,7 @@ pub(crate) fn segment_field_infos(
     if sci.field_infos_gen != -1 {
         return crate::field_updates::read_current_field_infos(dir, sci, &[]).map_err(Error::from);
     }
-    let si = segment_info::parse_for_codec(
-        &dir.open(&format!("{}.si", sci.segment_name))?,
-        &sci.segment_id,
-        &sci.codec_name,
-    )?;
+    let si = segment_info::parse_for_commit(&dir.open(&format!("{}.si", sci.segment_name))?, sci)?;
     if si.is_compound_file {
         let compound = CompoundReader::open(dir, &sci.segment_name, &sci.segment_id)?;
         let files = compound.member_files();
@@ -6400,7 +6395,7 @@ impl<'d> IndexWriter<'d> {
             .chain(self.flushed_segments.iter());
         for sci in existing_segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = segment_info::parse_for_commit(&si_bytes, sci)?;
             let congruent = match &si.index_sort {
                 None => false,
                 Some(existing) => {
@@ -6805,10 +6800,9 @@ impl<'d> IndexWriter<'d> {
             let max_doc = match self.segment_max_docs.get(&sci.segment_name) {
                 Some(&n) => n,
                 None => {
-                    let si = segment_info::parse_for_codec(
+                    let si = segment_info::parse_for_commit(
                         &self.dir.open(&format!("{}.si", sci.segment_name))?,
-                        &sci.segment_id,
-                        &sci.codec_name,
+                        sci,
                     )?;
                     let n = usize::try_from(si.doc_count).unwrap_or(0);
                     self.segment_max_docs.insert(sci.segment_name.clone(), n);
@@ -8054,8 +8048,7 @@ impl IndexWriter<'_> {
                 None => {
                     let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?;
                     let v = to_segment_infos_version(
-                        segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?
-                            .version,
+                        segment_info::parse_for_commit(&si_bytes, sci)?.version,
                     );
                     self.segment_versions.insert(sci.segment_name.clone(), v);
                     v

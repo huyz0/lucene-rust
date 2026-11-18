@@ -640,8 +640,8 @@ def diff(a, b, path="", rel=1e-4, ignore=IGNORE):
 
 def hits_map(resp):
     out = {}
-    for h in resp.get("hits", {}).get("hits", []):
-        out[h["_id"]] = h.get("_score")
+    for n, h in enumerate(resp.get("hits", {}).get("hits", [])):
+        out[h.get("_id", f"#{n}")] = h.get("_score")
     return out
 
 
@@ -661,22 +661,22 @@ def cmp_search(p, s, ordered):
             return f"error type plugin={pt} stock={st}: {str(pe)[:300]} || {str(se)[:300]}"
         return None
     pr, sr = p[1], s[1]
-    if pr["hits"]["total"] != sr["hits"]["total"]:
-        return f"total plugin={pr['hits']['total']} stock={sr['hits']['total']}"
+    if pr["hits"].get("total") != sr["hits"].get("total"):
+        return f"total plugin={pr['hits'].get('total')} stock={sr['hits'].get('total')}"
     pm, sm = hits_map(pr), hits_map(sr)
     nh = len(sr["hits"]["hits"])
-    if not ordered and nh and sr["hits"]["total"]["value"] > nh and all(v is not None for v in sm.values()):
+    if not ordered and nh and (sr["hits"].get("total") or {"value": nh})["value"] > nh and all(v is not None for v in sm.values()):
         cut = min(sm.values()) * (1 + 1e-4) + 1e-9   # ties at the cut-off may pick different documents
         pm = {k: v for k, v in pm.items() if v is None or v > cut}
         sm = {k: v for k, v in sm.items() if v > cut}
-    score_page = ordered and nh and sr["hits"]["total"]["value"] > nh and sr["hits"]["hits"][0].get("sort") \
+    score_page = ordered and nh and (sr["hits"].get("total") or {"value": nh})["value"] > nh and sr["hits"]["hits"][0].get("sort") \
         and sr["hits"]["hits"][0]["sort"][0] == sr["hits"]["hits"][0].get("_score")
     if set(pm) != set(sm) and not score_page:
         return f"hit ids differ: only plugin={sorted(set(pm) - set(sm))[:6]} only stock={sorted(set(sm) - set(pm))[:6]}"
     for k in pm:
         if k in sm and not close(pm[k], sm[k], 1e-4):
             return f"score of {k}: plugin={pm[k]} stock={sm[k]}"
-    if ordered and nh and sr["hits"]["total"]["value"] > nh and all(h.get("_score") is not None for h in sr["hits"]["hits"]) \
+    if ordered and nh and (sr["hits"].get("total") or {"value": nh})["value"] > nh and all(h.get("_score") is not None for h in sr["hits"]["hits"]) \
             and all(h.get("sort") and h["sort"][0] == h["_score"] for h in sr["hits"]["hits"][:1]):
         # score-sorted page: hits tied with the last one within float error may be swapped for others
         cut = sr["hits"]["hits"][-1]["_score"]
@@ -687,8 +687,8 @@ def cmp_search(p, s, ordered):
         if set(pm) != set(sm):
             return f"hit ids differ: only plugin={sorted(set(pm) - set(sm))[:6]} only stock={sorted(set(sm) - set(pm))[:6]}"
     if ordered:
-        po = [h["_id"] for h in pr["hits"]["hits"]]
-        so = [h["_id"] for h in sr["hits"]["hits"]]
+        po = [h.get("_id") for h in pr["hits"]["hits"]]
+        so = [h.get("_id") for h in sr["hits"]["hits"]]
         if po != so:
             return f"order differs: plugin={po[:8]} stock={so[:8]}"
         for hp, hs in zip(pr["hits"]["hits"], sr["hits"]["hits"]):

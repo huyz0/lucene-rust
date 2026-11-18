@@ -159,11 +159,7 @@ impl ReaderPool {
             return Ok(Arc::clone(hit));
         }
         let bytes = dir.open(&format!("{}.si", sci.segment_name))?;
-        let si = Arc::new(segment_info::parse_for_codec(
-            &bytes,
-            &sci.segment_id,
-            &sci.codec_name,
-        )?);
+        let si = Arc::new(segment_info::parse_for_commit(&bytes, sci)?);
         let mut infos = self.infos();
         infos.retain(|k, _| k.name != key.name || k == &key);
         Ok(Arc::clone(infos.entry(key).or_insert(si)))

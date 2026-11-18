@@ -47,8 +47,12 @@ impl SegmentReader {
         let si_bytes = dir.open(&format!("{segment_name}.si"))?;
         // `Codec.forName(codecName).segmentInfoFormat().read(..)`: a segment
         // written by a `Lucene90`..`Lucene95` codec has no `hasBlocks` byte.
-        let si: SegmentInfo =
-            segment_info::parse_for_codec(&si_bytes, &segment_id, &commit.codec_name)?;
+        let si: SegmentInfo = segment_info::parse_for_segment(
+            &si_bytes,
+            &segment_name,
+            &segment_id,
+            &commit.codec_name,
+        )?;
 
         // Every file the open below reads, fetched at once from a directory
         // that reads by range. Only a hint: each open reports its own error.

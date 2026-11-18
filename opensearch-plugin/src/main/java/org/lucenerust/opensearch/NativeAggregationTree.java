@@ -1393,7 +1393,7 @@ public final class NativeAggregationTree {
                 org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
                 b.add(new MatchAllDocsQuery(), org.apache.lucene.search.BooleanClause.Occur.MUST);
                 if (mc.fieldContext() != null) {
-                    if (mc.fieldContext().fieldType().hasDocValues() == false) {
+                    if (NativeAggregations.hasOwnDocValues(mc.fieldContext().fieldType()) == false) {
                         return null;
                     }
                     b.add(new org.apache.lucene.search.FieldExistsQuery(mc.fieldContext().field()), org.apache.lucene.search.BooleanClause.Occur.MUST_NOT);
