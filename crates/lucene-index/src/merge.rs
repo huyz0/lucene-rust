@@ -4497,7 +4497,7 @@ fn merge_vector_group(
                 )
                 .collect();
             if let Some(written) =
-                crate::disk_hnsw_vectors::write(format, &disk, merged_segment_id, suffix)?
+                crate::disk_hnsw_vectors::write_merged(format, &disk, merged_segment_id, suffix)?
             {
                 files.extend(written);
             }

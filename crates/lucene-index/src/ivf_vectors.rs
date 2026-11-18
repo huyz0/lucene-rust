@@ -159,6 +159,14 @@ impl IvfGroupWriter {
     /// when every value fits them, so a field with larger values keeps
     /// exact ones rather than failing.
     pub(crate) fn add(&mut self, field: &IvfField<'_>, sources: &[IvfSource<'_>]) -> Result<()> {
+        // A merge decodes the vectors once and its writer holds a second
+        // copy besides its codes: about 2.5 times the vectors.
+        let _admitted = (!sources.is_empty()).then(|| {
+            lucene_util::memory::admit(
+                field.vectors.len().saturating_mul(10),
+                lucene_util::memory::ADMIT_WAIT,
+            )
+        });
         let fits = |v: &f32| v.abs() <= 65_504.0;
         let params = if self.params.rerank_encoding == VectorEncoding::F16
             && !field.vectors.iter().all(fits)
