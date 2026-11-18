@@ -25,10 +25,7 @@ fn types(analyzer: &Analyzer, text: &str) -> Vec<(String, String)> {
 }
 
 fn dictionary() -> Arc<CharArraySet> {
-    Arc::new(CharArraySet::from_words(
-        ["rind", "fleisch", "wurst"],
-        true,
-    ))
+    Arc::new(CharArraySet::from_words(["rind", "fleisch", "wurst"], true))
 }
 
 fn compound(host: Option<Version>) -> Analyzer {
