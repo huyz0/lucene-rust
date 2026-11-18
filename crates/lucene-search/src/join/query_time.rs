@@ -50,6 +50,7 @@ use std::sync::Arc;
 
 use lucene_util::bytes_ref_hash::BytesRefHash;
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::version::Version;
 
 use super::ScoreMode;
 use crate::collector::ScoreMode as CollectorScoreMode;
@@ -104,6 +105,36 @@ pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
         a
     } else {
         b
+    }
+}
+
+/// Whether the scores of a join add up in double precision, as Lucene 10.6
+/// does (#16378, #16428); before, they add up in `float`. The `float` sum of
+/// two floats is the double sum rounded to float (double rounding is
+/// innocuous for one addition, 53 >= 2 * 24 + 2), so one `f64` slot serves
+/// both.
+fn double_precision(host: Version) -> bool {
+    host.on_or_after(Version::LUCENE_10_6_0)
+}
+
+/// `a + b` in the precision the join sums in.
+#[inline]
+fn sum_add(double: bool, a: f64, b: f64) -> f64 {
+    let r = a + b;
+    if double {
+        r
+    } else {
+        f64::from(r as f32)
+    }
+}
+
+/// `sum / count` in the precision the join sums in.
+#[inline]
+fn sum_div(double: bool, sum: f64, count: i32) -> f64 {
+    if double {
+        sum / f64::from(count)
+    } else {
+        f64::from((sum as f32) / (count as f32))
     }
 }
 
@@ -450,6 +481,7 @@ pub struct TermsWithScoreCollector<'a> {
     /// not associative, so a different order could round differently.
     score_sums: Vec<f64>,
     score_counts: Vec<i32>,
+    double: bool,
     pending: PendingOrds,
     /// The ordinal a single-valued document without a value is pended
     /// under: the segment's own empty term when it has one (so the two
@@ -470,9 +502,16 @@ impl<'a> TermsWithScoreCollector<'a> {
             terms: BytesRefHash::new(),
             score_sums: Vec::new(),
             score_counts: Vec::new(),
+            double: double_precision(Version::host()),
             pending: PendingOrds::default(),
             missing_ord: -1,
         }
+    }
+
+    /// Sums as the Lucene `host` does (double precision from 10.6).
+    pub fn for_lucene(mut self, host: Version) -> Self {
+        self.double = double_precision(host);
+        self
     }
 
     /// The value a new term's slot starts from (`ArrayUtil.grow` then the
@@ -509,7 +548,7 @@ impl<'a> TermsWithScoreCollector<'a> {
                 self.score_sums[id] = current;
                 self.score_counts[id] = 1;
             } else {
-                self.score_sums[id] += current;
+                self.score_sums[id] = sum_add(self.double, self.score_sums[id], current);
                 self.score_counts[id] = self.score_counts[id].wrapping_add(1);
             }
             return;
@@ -518,7 +557,9 @@ impl<'a> TermsWithScoreCollector<'a> {
             self.score_sums[id] = current;
         } else {
             match self.score_mode {
-                ScoreMode::Total => self.score_sums[id] += current,
+                ScoreMode::Total => {
+                    self.score_sums[id] = sum_add(self.double, existing, current);
+                }
                 ScoreMode::Min => {
                     if current < existing {
                         self.score_sums[id] = current;
@@ -541,11 +582,13 @@ impl<'a> TermsWithScoreCollector<'a> {
         // give the double answer.
         let sum = self.score_sums[id];
         match self.score_mode {
-            ScoreMode::Total => self.score_sums[id] += f64::from(score),
+            ScoreMode::Total => {
+                self.score_sums[id] = sum_add(self.double, sum, f64::from(score));
+            }
             ScoreMode::Min => self.score_sums[id] = f64::from(java_min_f32(sum as f32, score)),
             ScoreMode::Max => self.score_sums[id] = f64::from(java_max_f32(sum as f32, score)),
             ScoreMode::Avg => {
-                self.score_sums[id] += f64::from(score);
+                self.score_sums[id] = sum_add(self.double, sum, f64::from(score));
                 self.score_counts[id] = self.score_counts[id].wrapping_add(1);
             }
             ScoreMode::None => {}
@@ -563,7 +606,7 @@ impl<'a> TermsWithScoreCollector<'a> {
         let mut sums = self.score_sums;
         if self.score_mode == ScoreMode::Avg {
             for (s, &c) in sums.iter_mut().zip(&self.score_counts) {
-                *s /= f64::from(c);
+                *s = sum_div(self.double, *s, c);
             }
         }
         let mut scores: Vec<f32> = sums.into_iter().map(|s| s as f32).collect();
@@ -1073,6 +1116,7 @@ pub struct NumericJoinCollector<'a> {
     /// Every join value, with its combined score and (for `Avg`) how many
     /// documents had it: one probe per value. `(0.0, 0)` without scores.
     values: FxHashMap<i64, (f64, i32)>,
+    double: bool,
 }
 
 impl<'a> NumericJoinCollector<'a> {
@@ -1084,18 +1128,31 @@ impl<'a> NumericJoinCollector<'a> {
             sv: None,
             mv: None,
             values: FxHashMap::default(),
+            double: double_precision(Version::host()),
         }
+    }
+
+    /// Sums as the Lucene `host` does (double precision from 10.6).
+    pub fn for_lucene(mut self, host: Version) -> Self {
+        self.double = double_precision(host);
+        self
     }
 
     #[inline]
     fn add(&mut self, value: i64, score: f32) {
-        Self::add_to(&mut self.values, self.score_mode, value, score);
+        Self::add_to(&mut self.values, self.score_mode, self.double, value, score);
     }
 
     /// [`Self::add`] on the map alone, so a caller holding the doc values
     /// borrowed can add.
     #[inline]
-    fn add_to(values: &mut FxHashMap<i64, (f64, i32)>, mode: ScoreMode, value: i64, score: f32) {
+    fn add_to(
+        values: &mut FxHashMap<i64, (f64, i32)>,
+        mode: ScoreMode,
+        double: bool,
+        value: i64,
+        score: f32,
+    ) {
         use std::collections::hash_map::Entry;
         match values.entry(value) {
             Entry::Vacant(v) => {
@@ -1113,9 +1170,9 @@ impl<'a> NumericJoinCollector<'a> {
                     ScoreMode::None => {}
                     ScoreMode::Max => *s = f64::from(java_max_f32(*s as f32, score)),
                     ScoreMode::Min => *s = f64::from(java_min_f32(*s as f32, score)),
-                    ScoreMode::Total => *s += f64::from(score),
+                    ScoreMode::Total => *s = sum_add(double, *s, f64::from(score)),
                     ScoreMode::Avg => {
-                        *s += f64::from(score);
+                        *s = sum_add(double, *s, f64::from(score));
                         *n = n.wrapping_add(1);
                     }
                 }
@@ -1126,12 +1183,13 @@ impl<'a> NumericJoinCollector<'a> {
     /// The join values, ascending, each with its score (`joinScorer`).
     pub fn into_sorted(self) -> Vec<(i64, f32)> {
         let mode = self.score_mode;
+        let double = self.double;
         let mut values: Vec<(i64, f32)> = self
             .values
             .into_iter()
             .map(|(v, (s, n))| {
                 let s = if mode == ScoreMode::Avg {
-                    s / f64::from(n)
+                    sum_div(double, s, n)
                 } else {
                     s
                 };
@@ -1167,7 +1225,7 @@ impl<'a> SegmentCollector<'a> for NumericJoinCollector<'a> {
             if values.advance_exact(doc)? {
                 for _ in 0..values.doc_value_count() {
                     let v = values.next_value()?;
-                    Self::add_to(&mut self.values, self.score_mode, v, score);
+                    Self::add_to(&mut self.values, self.score_mode, self.double, v, score);
                 }
             }
             return Ok(());
@@ -1540,6 +1598,7 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsCollector<'a> {
 #[derive(Debug, Clone)]
 pub struct CollectedOrdinals {
     pub(crate) score_mode: ScoreMode,
+    pub(crate) double: bool,
     pub(crate) collected: FixedBitSet,
     /// `Scores`, every slot starting at `unset()`; empty for `None`.
     pub(crate) scores: Blocks<f64>,
@@ -1570,7 +1629,9 @@ impl CollectedOrdinals {
         };
         match self.score_mode {
             ScoreMode::None => 1.0,
-            ScoreMode::Avg => (self.scores.get(o) / f64::from(self.occurrences.get(o))) as f32,
+            ScoreMode::Avg => {
+                sum_div(self.double, self.scores.get(o), self.occurrences.get(o)) as f32
+            }
             _ => self.scores.get(o) as f32,
         }
     }
@@ -1634,6 +1695,7 @@ impl<'a> GlobalOrdinalsWithScoreCollector<'a> {
             seg: None,
             state: CollectedOrdinals {
                 score_mode,
+                double: double_precision(Version::host()),
                 collected: FixedBitSet::new(value_count),
                 scores,
                 occurrences,
@@ -1642,6 +1704,12 @@ impl<'a> GlobalOrdinalsWithScoreCollector<'a> {
                 max,
             },
         })
+    }
+
+    /// Sums as the Lucene `host` does (double precision from 10.6).
+    pub fn for_lucene(mut self, host: Version) -> Self {
+        self.state.double = double_precision(host);
+        self
     }
 
     /// What was collected.
@@ -1685,7 +1753,7 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsWithScoreCollector<'a> {
                 // the double answer.
                 ScoreMode::Min => f64::from(java_min_f32(*existing as f32, score)),
                 ScoreMode::Max => f64::from(java_max_f32(*existing as f32, score)),
-                ScoreMode::Total | ScoreMode::Avg => *existing + f64::from(score),
+                ScoreMode::Total | ScoreMode::Avg => sum_add(s.double, *existing, f64::from(score)),
                 ScoreMode::None => *existing,
             };
         }

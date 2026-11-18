@@ -7,6 +7,7 @@
 //! digits parses in Java and is rejected here).
 
 use std::fmt;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// A Lucene version. Equality and ordering are over the encoded value, as in
 /// Java.
@@ -81,7 +82,27 @@ versions! {
     LUCENE_10_6_0 = 10, 6, 0;
 }
 
+/// The Lucene release of the process this library runs in; see [`Version::host`].
+static HOST: AtomicI32 = AtomicI32::new(Version::LATEST.encoded);
+
 impl Version {
+    /// The Lucene the host node runs (OpenSearch 3.9 bundles 10.5.1, 3.11
+    /// bundles 10.6.0): [`Version::LATEST`] until [`Version::set_host`] says
+    /// otherwise. Components whose output changed between Lucene releases read it
+    /// once when they are built, so they match the Lucene the node would have used.
+    pub fn host() -> Version {
+        Version {
+            encoded: HOST.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Records the Lucene release of the host process (the plugin calls it once at
+    /// start). A release newer than [`Version::LATEST`] counts as `LATEST`: its
+    /// behaviour is not known here.
+    pub fn set_host(host: Version) {
+        HOST.store(host.min(Version::LATEST).encoded, Ordering::Relaxed);
+    }
+
     /// `Version.LATEST`.
     pub const LATEST: Version = Version::LUCENE_10_6_0;
     /// `Version.LUCENE_CURRENT`.

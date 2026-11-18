@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 pub use lucene_index::similarity::{default_compute_norm, FieldInvertState, NormSimilarity};
 use lucene_util::small_float;
+use lucene_util::version::Version;
 
 use crate::explain::Explanation;
 
@@ -1258,6 +1259,30 @@ impl BaseModel for DfrSimilarity {
     }
 }
 
+/// `DistributionSPL.score`. Lucene 10.6 clamps the result at zero (#16139,
+/// `Math.max(0.0, ...)`: NaN propagates, -0.0 becomes 0.0), where 10.5 can
+/// return a tiny negative score from rounding; `clamp` picks which.
+pub(crate) fn spl_score(tfn: f64, lambda: f64, clamp: bool) -> f64 {
+    let mut q = 1.0 - 1.0 / (tfn + 1.0);
+    if q == 1.0 {
+        q = 1.0f64.next_down();
+    }
+    let mut pow = lambda.powf(q);
+    if pow == lambda {
+        pow = if lambda < 1.0 {
+            lambda.next_up()
+        } else {
+            lambda.next_down()
+        };
+    }
+    let score = -((pow - lambda) / (1.0 - lambda)).ln();
+    if clamp && !score.is_nan() && score <= 0.0 {
+        0.0
+    } else {
+        score
+    }
+}
+
 /// `Distribution`: IB's probabilistic distribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
@@ -1272,30 +1297,11 @@ impl Distribution {
     pub fn score(self, tfn: f64, lambda: f64) -> f64 {
         match self {
             Distribution::LL => -(lambda / (tfn + lambda)).ln(),
-            Distribution::SPL => {
-                let mut q = 1.0 - 1.0 / (tfn + 1.0);
-                if q == 1.0 {
-                    q = 1.0f64.next_down();
-                }
-                let mut pow = lambda.powf(q);
-                if pow == lambda {
-                    pow = if lambda < 1.0 {
-                        lambda.next_up()
-                    } else {
-                        lambda.next_down()
-                    };
-                }
-                // Clamp to avoid negative scores from floating-point rounding
-                // (`Math.max(0.0, ...)`: NaN propagates, -0.0 becomes 0.0).
-                let score = -((pow - lambda) / (1.0 - lambda)).ln();
-                if score.is_nan() {
-                    score
-                } else if score <= 0.0 {
-                    0.0
-                } else {
-                    score
-                }
-            }
+            Distribution::SPL => spl_score(
+                tfn,
+                lambda,
+                Version::host().on_or_after(Version::LUCENE_10_6_0),
+            ),
         }
     }
 

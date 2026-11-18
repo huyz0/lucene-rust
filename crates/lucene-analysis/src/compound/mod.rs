@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::StateSlot;
 use crate::{AnalysisError, CharArraySet};
+use lucene_util::version::Version;
 
 pub use hyphenation::{HyphenationTree, PatternParser};
 
@@ -212,6 +213,9 @@ pub struct CompoundWordTokenFilter<I, D> {
     current: StateSlot,
     buf: Vec<u16>,
     parts: Vec<(usize, usize)>,
+    /// Subwords are typed [`TOKEN_TYPE_SUBWORD`] from Lucene 10.6 (#16680);
+    /// before, they keep the term's type.
+    typed_subwords: bool,
 }
 
 /// `DictionaryCompoundWordTokenFilter`.
@@ -286,7 +290,15 @@ impl<I: TokenStream, D: Decompose> CompoundWordTokenFilter<I, D> {
             current: StateSlot::new(),
             buf: Vec::new(),
             parts: Vec::new(),
+            typed_subwords: Version::host().on_or_after(Version::LUCENE_10_6_0),
         }
+    }
+
+    /// Behaves as the Lucene `host` does: whether subwords are typed
+    /// [`TOKEN_TYPE_SUBWORD`] (10.6 and later) or keep the term's type.
+    pub fn for_lucene(mut self, host: Version) -> Self {
+        self.typed_subwords = host.on_or_after(Version::LUCENE_10_6_0);
+        self
     }
 }
 
@@ -301,7 +313,9 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
             a.set_term_utf16(&self.buf[token.txt]);
             a.set_offset(token.start_offset, token.end_offset)?;
             a.set_position_increment(0)?;
-            a.set_token_type(TOKEN_TYPE_SUBWORD);
+            if self.typed_subwords {
+                a.set_token_type(TOKEN_TYPE_SUBWORD);
+            }
             return Ok(true);
         }
         self.current.clear();
