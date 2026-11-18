@@ -6,6 +6,8 @@
 
 use super::*;
 
+mod live_masks;
+
 /// Where a segment's files are read from, and what names them.
 struct SegmentFiles<'a> {
     dir: &'a dyn Directory,
