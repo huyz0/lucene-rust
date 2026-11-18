@@ -4,13 +4,11 @@
 //! Java's `FSDirectory.open(path)` opens directly -- or, for
 //! `ByteBuffersDirectory`, by memory (`ByteBuffersIndexOutput`).
 //!
-//! Scope of this slice (see PLAN.md Phase 5 / docs/parity.md): a single-file
-//! sequential output plus `Directory::sync` for the fsync-before-durable
-//! contract Lucene itself uses (`Directory.sync(Collection<String>)`,
-//! `IndexWriter` calls it on every new segment's files before referencing
-//! them from a `segments_N` commit). Writing `segments_N` itself — the
-//! generation/checksum-of-checksums commit lifecycle — is explicitly out of
-//! scope here; see the parity matrix.
+//! A single-file sequential output, plus `Directory::sync` for the
+//! fsync-before-durable contract Lucene itself uses
+//! (`Directory.sync(Collection<String>)`: `IndexWriter` syncs every new
+//! segment's files before referencing them from a `segments_N` commit). The
+//! commit lifecycle itself lives in `lucene-index`.
 //!
 //! [`DataOutput`]'s methods are infallible by signature (matching the
 //! existing in-memory `VecDataOutput`, which can never fail, so changing the

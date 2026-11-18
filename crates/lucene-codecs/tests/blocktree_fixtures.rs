@@ -5,8 +5,8 @@
 //! entirely) and "id" (`IndexOptions.DOCS`, one distinct token per doc,
 //! exercising the DOCS-only sumDocFreq/sumTotalTermFreq aliasing path).
 //! Both fields fit in a single non-floor leaf `.tim` block (well under the
-//! default 25/48 min/maxItemsInBlock thresholds), which is this slice's
-//! scope -- see `crates/lucene-codecs/src/blocktree.rs`'s module doc.
+//! default 25/48 min/maxItemsInBlock thresholds), which keeps the fixture to the simple case
+//! -- see `crates/lucene-codecs/src/blocktree.rs`'s module doc.
 //! Also covers ordered enumeration (`TermsEnum::next()`) and `seek_ceil()`
 //! against the `many` field (400 terms, multi-block/floor-split) via real
 //! `TermsEnum.next()`/`seekCeil()` ground truth.

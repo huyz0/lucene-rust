@@ -5610,8 +5610,8 @@ fn finish_field_list_and_footers(
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)` -- three separate
 /// buffers matching the real writer's three `IndexOutput`s (`.dvm`, `.dvd`,
-/// `.dvs`); `.dvs` is always just a header+footer here since no field in
-/// this slice's scope ever has a skip index (`Lucene90DocValuesProducer`
+/// `.dvs`); `.dvs` is always just a header+footer here since no field
+/// written here ever has a skip index (`Lucene90DocValuesProducer`
 /// unconditionally opens `.dvs` once `VERSION_CURRENT >=
 /// VERSION_SKIPPER_SEPARATE_FILE`, which this port's `VERSION_CURRENT`
 /// always is, so it must exist and pass header/footer checks even when

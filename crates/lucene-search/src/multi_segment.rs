@@ -28,9 +28,8 @@
 //! [`search_boolean_query_multi_segment`] are thin, non-duplicated wrappers
 //! around it. Adding a third query type's multi-segment entry point (phrase,
 //! dismax, ...) means adding another equally thin wrapper, never a second copy
-//! of the fan-out/merge logic itself -- this is the DRY design this task's
-//! brief explicitly asks for, given every existing scored query type already
-//! shares the `Vec<ScoreDoc>`-shaped output.
+//! of the fan-out/merge logic itself -- every scored query type shares the
+//! `Vec<ScoreDoc>`-shaped output.
 //!
 //! Collecting each segment into its own bounded `TopDocsCollector::new(top_n)`
 //! *before* merging (rather than collecting every match from every segment
@@ -1683,8 +1682,8 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
 // **Scope decision: sequential only, no `rayon`-concurrent sibling (yet).**
 // [`merge_multi_segment_scored`] has a `_concurrent` twin
 // ([`merge_multi_segment_scored_concurrent`]) because that was this crate's
-// established pattern for scored multi-segment search. This task adds only
-// the sequential path for sort-by-field: the per-segment work here (a
+// established pattern for scored multi-segment search. Sort-by-field has only
+// the sequential path: the per-segment work here (a
 // doc-values sweep, see `doc_value_query::search_numeric_range`'s own "why a
 // full sweep" note) has the same shape as the scored case and a concurrent
 // version would follow the exact same recipe (`par_iter` over segments,

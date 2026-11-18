@@ -312,7 +312,7 @@ struct SliceReader<'a> {
     pool: &'a BytePool,
     /// The current slice's bytes still to read, up to `limit`.
     cur: &'a [u8],
-    /// Where this slice's bytes stop: the link, or the stream's end.
+    /// Where the slice's bytes stop: the link, or the stream's end.
     limit: u32,
     end: u32,
     level: u8,
