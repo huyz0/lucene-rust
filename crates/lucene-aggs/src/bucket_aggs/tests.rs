@@ -1,4 +1,5 @@
 #![cfg(test)]
+use super::date_rounding::*;
 use super::*;
 
 /// The grid places every date in the bucket `DateRounding::bucket` gives
