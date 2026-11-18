@@ -207,6 +207,9 @@ jobs:
       - name: Java citations resolve against the pinned tree
         run: python3 scripts/check-java-refs.py
 
+      - name: Every setting of ours is documented
+        run: python3 scripts/check-settings-docs.py
+
       # Every request the plugin hands back to Lucene/Java names a reason; a new one fails here.
       - name: No new Lucene fallbacks
         run: python3 scripts/check-fallbacks.py

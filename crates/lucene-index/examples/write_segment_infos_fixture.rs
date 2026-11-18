@@ -161,7 +161,7 @@ fn main() {
     )
     .unwrap();
 
-    // segments_N -- the piece this slice ports.
+    // segments_N.
     let sis = SegmentInfos {
         id: COMMIT_ID,
         generation: 1,

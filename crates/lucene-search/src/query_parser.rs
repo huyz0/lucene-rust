@@ -66,7 +66,7 @@
 //! field for a bare (no `field:` prefix) term/phrase/wildcard/etc. If a bare
 //! term appears and no default field was given, parsing fails with
 //! [`ParseError::MissingField`] rather than guessing -- there is no implicit
-//! "search every field" behavior in this slice (real Lucene's `QueryParser`
+//! "search every field" behavior (real Lucene's `QueryParser`
 //! always requires a default field for exactly this reason).
 //!
 //! **One level of explicit grouping**, via `(...)`, but nesting is not

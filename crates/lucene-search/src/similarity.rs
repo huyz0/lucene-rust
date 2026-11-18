@@ -1,8 +1,6 @@
-//! `BM25Similarity`-equivalent (`org.apache.lucene.search.similarities.BM25Similarity`),
-//! pared down to this slice's scope: the pure scoring formula, no `Similarity`/
-//! `SimScorer`/`SimWeight` trait hierarchy (no second similarity implementation exists
-//! in this port to justify one — same "no speculative polymorphism" reasoning
-//! `lib.rs`'s module doc already applies to `Weight`/`Scorer`).
+//! `BM25Similarity`-equivalent (`org.apache.lucene.search.similarities.BM25Similarity`)
+//! as a pure scoring formula; the `Similarity` trait and the other
+//! similarities live in [`crate::similarities`].
 //!
 //! ## The formula (verified against Lucene 10.5.0's `BM25Similarity.java`, not guessed)
 //!
@@ -46,7 +44,7 @@
 //! which is what every field in this port's fixtures implicitly uses (no
 //! per-field `Similarity` override machinery exists here).
 //!
-//! ## Norms: real per-doc field length, decoded from `.nvd`/`.nvm` (this task)
+//! ## Norms: real per-doc field length, decoded from `.nvd`/`.nvm`
 //!
 //! Real BM25 needs each matched document's *own* field length and the field's
 //! *average* length across the whole segment (`fieldLength`/`avgFieldLength`

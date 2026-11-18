@@ -6,7 +6,7 @@
 //! division of labor as `write_points_fixture.rs`: `fixtures/src/
 //! VerifyDocValues.java` opens each result through real Lucene's
 //! `Lucene90DocValuesFormat` with a hand-built `SegmentInfo`/`FieldInfos`,
-//! so this slice doesn't also need a `.si`/`.fnm` writer.
+//! so the fixture doesn't also need a `.si`/`.fnm` writer.
 //!
 //! Covers all five `DocValuesType`s this port's write side supports, each
 //! scoped to exactly one shape: dense (every doc has a value, or for the

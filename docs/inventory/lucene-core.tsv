@@ -599,7 +599,7 @@ search/BooleanQuery	ported	crates/lucene-search/src/query.rs::BooleanQuery
 search/BooleanScorer	ported	crates/lucene-search/src/docid_set.rs::WindowedDisjunction
 search/BooleanScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::build_boolean
 search/BooleanWeight	ported	crates/lucene-search/src/exec/build.rs::build_boolean
-search/BoostAttribute	ported	crates/lucene-search/src/lib.rs::ExpandedTerm
+search/BoostAttribute	ported	crates/lucene-search/src/multi_term_expansion.rs::ExpandedTerm
 search/BoostAttributeImpl	not-needed	AttributeImpl plumbing behind BoostAttribute; Rust carries the per-term boost as a plain field.
 search/BoostQuery	ported	crates/lucene-search/src/query.rs::BoostQuery
 search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
@@ -701,7 +701,7 @@ search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQue
 search/Matches	ported	crates/lucene-search/src/matches.rs::Matches
 search/MatchesIterator	ported	crates/lucene-search/src/matches.rs::MatchesIterator
 search/MatchesUtils	ported	crates/lucene-search/src/matches.rs::from_sub_matches
-search/MaxNonCompetitiveBoostAttribute	ported	crates/lucene-search/src/lib.rs::FuzzyTopTerms
+search/MaxNonCompetitiveBoostAttribute	ported	crates/lucene-search/src/multi_term_expansion.rs::FuzzyTopTerms
 search/MaxNonCompetitiveBoostAttributeImpl	not-needed	AttributeImpl plumbing behind MaxNonCompetitiveBoostAttribute; Rust keeps the two values on FuzzyTopTerms.
 search/MaxScoreAccumulator	ported	crates/lucene-search/src/collector.rs::MaxScoreAccumulator
 search/MaxScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::MaxScore
@@ -772,7 +772,7 @@ search/SortedSetSelector	ported	crates/lucene-search/src/top_field.rs::Selector
 search/SortedSetSortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/SynonymQuery	ported	crates/lucene-search/src/extended_query.rs::SynonymQuery
 search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
-search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
+search/TermCollectingRewrite	ported	crates/lucene-search/src/multi_term_expansion.rs::fuzzy_expansion_across_leaves
 search/TermInSetQuery	ported	crates/lucene-search/src/query.rs::TermInSetQuery
 search/TermMatchesIterator	ported	crates/lucene-search/src/matches.rs::ListMatchesIterator
 search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery

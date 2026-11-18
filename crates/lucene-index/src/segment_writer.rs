@@ -1,75 +1,19 @@
-//! A minimal, honest slice of what real Lucene's `DocumentsWriterPerThread`
-//! (buffer documents) + `IndexWriter.commit()` (describe N segments in one
-//! `segments_N`) do together -- scoped down to exactly what this port's
-//! existing write-side primitives support today.
-//!
-//! # What this is
+//! Flushes a batch of stored-only documents to a new segment, the building
+//! block under the fixtures and the stored-fields-only writer paths.
 //!
 //! [`flush_stored_only_segment`] takes an in-memory batch of already-built
-//! [`Document`]s and [`FieldInfo`]s, "flushes" them to a brand-new segment
-//! (`.fdt`/`.fdx`/`.fdm` stored fields + `.fnm` field infos + `.si` segment
-//! info, all written through a real [`Directory`]), and returns
-//! the [`SegmentCommitInfo`] that describes it -- ready to push into a
-//! [`crate::segment_infos::SegmentInfos::segments`] list. Call it more than once against the same
-//! `Directory` with distinct segment names, collect the resulting
-//! [`SegmentCommitInfo`]s, sync their files, and pass all of them to one
-//! [`crate::segment_infos::write()`] call: that produces a single commit
-//! (`segments_N`) that lists multiple,
-//! independently-flushed segments -- exactly what `IndexWriter.commit()`
-//! does after several `DocumentsWriterPerThread.flush()` calls, minus
-//! everything this port hasn't earned yet (see "What this deliberately is
-//! not" below).
+//! [`Document`]s and [`FieldInfo`]s, writes them to a brand-new segment
+//! (`.fdt`/`.fdx`/`.fdm` stored fields, `.fnm` field infos and `.si` segment
+//! info, all through a [`Directory`]), and returns the [`SegmentCommitInfo`]
+//! that describes it, ready for [`crate::segment_infos::SegmentInfos::segments`].
+//! Calling it more than once against one `Directory` with distinct segment
+//! names and passing all the results to one [`crate::segment_infos::write()`]
+//! produces a multi-segment commit.
 //!
-//! [`crate::segment_infos::write()`] itself already generalizes to any number of
-//! segments (`SegmentInfos::segments: Vec<SegmentCommitInfo>`, with a plain
-//! loop over them in both `parse` and `write`) -- that part of a
-//! multi-segment commit was *already* mechanical, not new work. What was
-//! missing, and what this module adds, is the reusable "flush one batch of
-//! documents to one new segment" building block, so a caller doesn't have to
-//! hand-copy the `.fdt`/`.fnm`/`.si`-writing boilerplate (previously
-//! duplicated across `write_segment_info_fixture.rs` and
-//! `write_segment_infos_fixture.rs`) once per segment.
-//!
-//! # What this deliberately is not
-//!
-//! This is **not** an `IndexWriter`. In particular, on purpose, it has:
-//! - no RAM accounting or automatic flush-triggering (the caller decides
-//!   when to call [`flush_stored_only_segment`], there's no
-//!   `ramBufferSizeMB`-style threshold),
-//! - no merging (`TieredMergePolicy`/`ConcurrentMergeScheduler` equivalents),
-//! - no deletes/updates during indexing (`BufferedUpdates`),
-//! - no NRT reopen,
-//! - no concurrency (`DocumentsWriterPerThread`-per-thread pooling) -- one
-//!   caller, one directory, sequential calls,
-//! - and no indexed fields at all yet: like the single-segment fixture it
-//!   generalizes, every field is stored-only (`IndexOptions::None`, no doc
-//!   values/points/vectors/term vectors), because this port has no write-side
-//!   postings/doc-values/points/vectors format built into a reusable form
-//!   yet. `SegmentCoreReaders` only opens those producers when
-//!   `FieldInfos.hasPostings()`/`hasDocValues()`/etc. are true (see
-//!   `org.apache.lucene.index.SegmentCoreReaders`), so a segment with zero
-//!   indexed fields needs none of those files -- a real constraint, not a
-//!   shortcut in this module.
-//!
-//! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
-//! currently-true scope line.
-//!
-//! # Why a plain function, not a stateful writer/builder object
-//!
-//! Two shapes were weighed for this slice: (a) exactly what's here -- a
-//! free function taking an already-built batch of documents and producing
-//! one segment -- versus (b) a stateful `IndexWriter`-shaped builder with an
-//! `add_document`/`commit()` API that internally buffers documents across
-//! calls. (b) was rejected for now: it would still cap out at one segment
-//! per `commit()` (this port has no RAM-threshold/flush-triggering logic to
-//! decide *when* to start a second segment), so the extra stateful API
-//! surface wouldn't unlock anything this module's callers can't already do
-//! by calling [`flush_stored_only_segment`] more than once themselves (see
-//! `write_multi_segment_commit_fixture.rs`). Revisit (b) once a real
-//! flush-trigger policy (even a trivial "every N documents" one) gives a
-//! builder object something genuine to own as internal state --
-//! introducing it earlier would be state management with no real caller
-//! yet.
+//! It is not an `IndexWriter`: the caller decides when to flush, and every
+//! field is stored-only (`IndexOptions::None`, no doc values, points, vectors
+//! or term vectors), so the segment needs none of those producers' files.
+//! Indexed documents go through [`crate::index_writer`].
 
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;

@@ -1834,7 +1834,7 @@ fn write_single_dense_numeric_field_round_trips_through_own_reader() {
     let (meta_bytes, data_bytes, skip_bytes) =
         write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
 
-    // .dvs is header+footer only in this slice's scope.
+    // .dvs is header+footer only: no field has a skip index.
     assert_eq!(
         check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id).unwrap(),
         VERSION_WRITE_DEFAULT

@@ -5,41 +5,17 @@
 //! `IntersectTermsEnum` to walk only the trie blocks that can possibly
 //! contain a match.
 //!
-//! ## Scope of this slice
+//! ## What is here
 //!
-//! **What's here**: a glob-style pattern (`*` = zero-or-more bytes, `?` =
-//! exactly one byte, everything else matches itself literally) plus prefix
-//! matching, tested by linear scan over [`crate::blocktree::FieldTerms`]'s
-//! already-materialized, already-sorted `entries` `Vec`
+//! A glob-style pattern (`*` = zero-or-more bytes, `?` = exactly one code
+//! point, everything else literal) plus prefix matching, tested by linear scan
+//! over [`crate::blocktree::FieldTerms`]'s sorted terms
 //! ([`crate::blocktree::FieldTerms::intersect`]). This covers `PrefixQuery`
-//! exactly and `WildcardQuery` for its glob subset (`*`/`?`, no `\`-escaping
-//! of literal `*`/`?` — see below).
-//!
-//! **What's deliberately NOT here** (see `docs/parity.md` for the full
-//! writeup):
-//!
-//! - **No `CompiledAutomaton`/`ByteRunAutomaton` DFA compilation.** Real
-//!   Lucene compiles the pattern into a byte-level automaton once and then
-//!   drives `IntersectTermsEnum`'s trie walk with it (visiting only the
-//!   `.tip`/`.tim` blocks a partial match could reach, potentially skipping
-//!   most of a huge dictionary). This module instead tests every candidate
-//!   term against the pattern directly — see the module doc for why that's
-//!   an honest tradeoff given this port's existing eager-materialization
-//!   design, not a placeholder for something better arriving next.
-//! - **No true `IntersectTermsEnum` block-skipping.** `FieldTerms::intersect`
-//!   scans the field's full sorted `Vec` in `O(n)` (`n` = number of terms in
-//!   the field), unlike real Lucene which can be sub-linear in the number of
-//!   *matching* terms plus the automaton's own state count. For a prefix
-//!   pattern this port narrows the scan with a binary-search range first
-//!   (see [`WildcardPattern::literal_prefix`] and `intersect`'s use of it) —
-//!   a partial, cheap win that doesn't require automaton machinery, but this
-//!   is still fundamentally "filter the sorted Vec," not "walk only the
-//!   matching subtree of the trie."
-//! - **No regex** (`RegexpQuery`) and **no fuzzy/Levenshtein automaton**
-//!   (`FuzzyQuery`). Both need a real automaton/edit-distance representation
-//!   (`LevenshteinAutomata`, `RegExp` parsing) that is a materially larger
-//!   scope than glob matching over an already-sorted `Vec` — deferred
-//!   explicitly rather than half-built here.
+//! and `WildcardQuery`. A prefix pattern narrows the scan to a binary-searched
+//! range first (see [`WildcardPattern::literal_prefix`]). Regular expressions and
+//! the edit-distance automaton are in [`crate::regexp`] and [`crate::fuzzy`];
+//! the compiled-automaton intersection of the block tree is in
+//! [`crate::automaton`].
 //!
 //! `\`-escaping of literal `*`/`?` **is** supported (see
 //! [`WildcardPattern::new`]'s doc comment) — this mirrors real
@@ -256,8 +232,8 @@ impl WildcardPattern {
 /// rest of the pattern, which can itself branch at a later `*` -- `O(term.
 /// len()^k)` for `k` non-adjacent stars, not `O(k * term.len())`. Real
 /// wildcard queries are short and rarely have more than one or two `*`s, so
-/// this is not worth replacing with a DP/NFA table for this slice's scope
-/// (see the module doc: a real automaton is explicitly deferred), but a
+/// this is not worth replacing with a DP/NFA table here (a real automaton
+/// is in [`crate::automaton`]), but a
 /// pattern with several `*`s against a long term is a genuine, unguarded
 /// pathological case, not just a theoretical one.
 fn matches_from(tokens: &[Token], term: &[u8]) -> bool {
