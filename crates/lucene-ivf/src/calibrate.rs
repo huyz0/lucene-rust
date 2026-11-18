@@ -102,19 +102,24 @@ impl Truths {
             .par_iter()
             .map(|&qi| {
                 let q = kmeans::row(vectors, dim, qi);
-                let mut scored: Vec<(f32, u32)> = (0..n)
-                    .filter(|&j| j != qi)
-                    .map(|j| (similarity.score(q, kmeans::row(vectors, dim, j)), j as u32))
-                    .collect();
+                // The best `k` so far, best first: a bounded list rather
+                // than a score for every vector, whose buffer a `Vec` kept
+                // after truncating would stay as large as the field.
                 let by_score =
                     |a: &(f32, u32), b: &(f32, u32)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
-                if k < scored.len() {
-                    scored.select_nth_unstable_by(k, by_score);
-                    scored.truncate(k);
+                let mut best: Vec<(f32, u32)> = Vec::with_capacity(k + 1);
+                for j in (0..n).filter(|&j| j != qi) {
+                    let entry = (similarity.score(q, kmeans::row(vectors, dim, j)), j as u32);
+                    if best.len() == k && by_score(&entry, &best[k - 1]).is_ge() {
+                        continue;
+                    }
+                    let at = best.partition_point(|b| by_score(b, &entry).is_lt());
+                    best.insert(at, entry);
+                    best.truncate(k);
                 }
                 Truth {
                     query: qi,
-                    neighbours: scored.into_iter().map(|(_, j)| j).collect(),
+                    neighbours: best.into_iter().map(|(_, j)| j).collect(),
                 }
             })
             .collect();
@@ -329,6 +334,37 @@ fn bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truths_are_the_exact_nearest_and_keep_no_scan_buffer() {
+        let (n, dim) = (500usize, 4usize);
+        let mut rng = SplitMix64::new(3);
+        let vectors: Vec<f32> = (0..n * dim)
+            .map(|_| rng.below(10_000) as f32 / 100.0)
+            .collect();
+        let truths = Truths::sample(&vectors, dim, Similarity::Euclidean, 9).unwrap();
+        assert_eq!(truths.truths.len(), QUERIES);
+        for t in &truths.truths {
+            let q = kmeans::row(&vectors, dim, t.query);
+            let mut all: Vec<(f32, u32)> = (0..n)
+                .filter(|&j| j != t.query)
+                .map(|j| {
+                    (
+                        Similarity::Euclidean.score(q, kmeans::row(&vectors, dim, j)),
+                        j as u32,
+                    )
+                })
+                .collect();
+            all.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let mut want: Vec<u32> = all[..truths.k].iter().map(|e| e.1).collect();
+            let mut got = t.neighbours.clone();
+            want.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, want);
+            // A score per vector must not outlive the scan.
+            assert!(t.neighbours.capacity() <= 4 * truths.k);
+        }
+    }
 
     #[test]
     fn validity() {
