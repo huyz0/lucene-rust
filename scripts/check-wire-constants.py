@@ -130,6 +130,7 @@ JAVA_ONLY = {
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): "the padding of the Java-side half-float flat writer; the native writer starts vector data on a page (VECTOR_DATA_ALIGNMENT) and readers follow the recorded offset",
     ("MoreLikeThisEncoder.java", "DEFAULT_MAX_NUM_TOKENS_PARSED"): "stock's default max_num_tokens_parsed of more_like_this, applied in Java when the query is encoded",
     ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
+    ("DocumentEncoder.java", "MAX_KNOWN_FIELDS"): "how many field names an encoding thread remembers state for, in Java only",
     ("JsScripts.java", "CACHE_LIMIT"): "the plugin's cache of js check results, in Java only",
     ("MlAgents.java", "MAX_NAME"): "the longest agent name ml-commons accepts, checked in Java when an agent is registered or updated",
     ("MlAgentRunner.java", "MAX_DEPTH"): "how many agents may call one another through AgentTool, checked in Java",

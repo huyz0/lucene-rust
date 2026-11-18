@@ -304,7 +304,6 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         }
     }
 
-    /** Maps a native status to Java: refusals to {@link IllegalArgumentException}, the rest tragic. */
     /** Runs one native setter on the open writer under the writer lock and checks its status. */
     private void locked(java.util.function.IntSupplier call, String what) throws IOException {
         synchronized (lock) {
