@@ -206,6 +206,32 @@ fn sequential_faults_read_ahead_and_random_ones_do_not() {
 }
 
 #[test]
+fn interleaved_scans_of_one_file_each_read_ahead() {
+    let Some(pager) = Pager::global() else {
+        return;
+    };
+    let page = 16 * 1024;
+    let len = 256 * page;
+    let seq = pattern(len, page);
+    let input = pager
+        .open_with_readahead(len, page, seq.clone(), "interleaved", 8)
+        .unwrap();
+    let bytes = input.bytes();
+    // Four readers each scanning a quarter of the file in order, one page
+    // at a time in turn: each keeps its own run.
+    let quarter = len / 4;
+    for step in 0..quarter / page {
+        for q in 0..4 {
+            let at = q * quarter + step * page;
+            assert_eq!(bytes[at], byte(at));
+        }
+    }
+    let calls = seq.calls.load(Ordering::Relaxed);
+    assert!(calls <= 60, "{calls} fills for 256 pages in four runs");
+    assert_eq!(seq.fills.load(Ordering::Relaxed), 256);
+}
+
+#[test]
 fn background_read_ahead_reads_each_page_once() {
     let Some(pager) = Pager::global() else {
         return;
