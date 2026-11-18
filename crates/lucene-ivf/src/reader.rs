@@ -533,6 +533,12 @@ impl IvfField {
         self.count
     }
 
+    /// Where the field's rerank vectors start in `.ivv`
+    /// ([`crate::VECTORS_ALIGNMENT`] aligned when written by this crate).
+    pub fn vectors_offset(&self) -> usize {
+        self.vectors_offset
+    }
+
     /// The number of clusters.
     pub fn clusters(&self) -> usize {
         self.starts.len().saturating_sub(1)

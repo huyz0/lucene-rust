@@ -164,6 +164,21 @@ impl<D: Directory> Directory for NrtCachingDirectory<D> {
         }
     }
 
+    fn open_member(
+        &self,
+        container: &str,
+        offset: u64,
+        len: u64,
+        member: &str,
+    ) -> Result<Option<Input>> {
+        let _guard = lock_ignoring_poison(&self.guard);
+        if self.cache.file_exists(container) {
+            Ok(None)
+        } else {
+            self.inner.open_member(container, offset, len, member)
+        }
+    }
+
     fn file_length(&self, name: &str) -> Result<u64> {
         let _guard = lock_ignoring_poison(&self.guard);
         if self.cache.file_exists(name) {

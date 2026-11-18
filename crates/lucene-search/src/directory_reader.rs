@@ -2944,6 +2944,9 @@ struct CompoundArchive {
     /// the mapping): members are [`Input::Slice`]s of it, never copies.
     data: Arc<Input>,
     entries: compound_format::CompoundEntries,
+    /// The `.cfs`'s name, for a directory that opens a member of it itself
+    /// ([`Directory::open_member`]).
+    name: String,
 }
 
 impl CompoundArchive {
@@ -2964,6 +2967,7 @@ impl CompoundArchive {
         Ok(CompoundArchive {
             data: cfs_bytes,
             entries,
+            name: cfs_name,
         })
     }
 }
@@ -3045,7 +3049,17 @@ fn open_segment_file_advised(
             // `open_input` checks the entry's range against the archive.
             let member = compound_format::open_input(&archive.data, &archive.entries, &name)?;
             let entry = archive.entries.get(&name).expect("open_input found it");
-            Input::slice_of(&archive.data, entry.offset as usize, member.len())?
+            // A directory that reads a vector file by its kind opens the
+            // member itself; the others slice the archive.
+            match u64::try_from(entry.offset)
+                .ok()
+                .map(|offset| dir.open_member(&archive.name, offset, member.len() as u64, &name))
+                .transpose()?
+                .flatten()
+            {
+                Some(input) => input,
+                None => Input::slice_of(&archive.data, entry.offset as usize, member.len())?,
+            }
         }
         None => match alignment {
             Some(alignment) => dir.open_aligned(&name, alignment)?,

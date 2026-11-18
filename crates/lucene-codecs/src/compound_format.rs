@@ -242,7 +242,7 @@ pub fn write(
     for (name, bytes) in ordered {
         verify_sub_file(name, bytes, segment_id)?;
 
-        let start = entry_start(cfs.len(), bytes);
+        let start = entry_start(cfs.len(), name, bytes);
         cfs.resize(start, 0);
         let start_offset = cfs.len() as i64;
         cfs.extend_from_slice(bytes);
@@ -269,8 +269,18 @@ pub fn write(
 /// and a member that began anywhere else in the archive would lose that.
 const VECTOR_DATA_PAGE: usize = crate::vectors::VECTOR_DATA_ALIGNMENT;
 
-/// Where a sub-file appended at `pos` starts in `.cfs`: the next
-/// [`ALIGNMENT_BYTES`] boundary, except that flat vector data starts on a
+/// Extensions of the other vector files whose members start on a page: IVF
+/// rerank vectors (`.ivv`, each field's vectors start on a page) and disk
+/// HNSW node records (`.dhn`, page-aligned record groups) lose the alignment
+/// inside them if their member starts anywhere else; the HNSW graph (`.vex`),
+/// quantized vectors (`.veq`) and IVF codes (`.ivp`) start on a page so a
+/// paging directory can read each as a file of its own
+/// (`Directory::open_member`).
+const PAGE_ALIGNED_EXTENSIONS: [&str; 5] = ["ivv", "dhn", "vex", "veq", "ivp"];
+
+/// Where a sub-file `name` appended at `pos` starts in `.cfs`: the next
+/// [`ALIGNMENT_BYTES`] boundary, except that flat vector data and the files
+/// of [`PAGE_ALIGNED_EXTENSIONS`] start on a
 /// page ([`VECTOR_DATA_PAGE`]) and paged zstd stored fields, whose
 /// chunks are packed into pages counted from the file's start
 /// ([`crate::stored_fields::ZSTD_PAGED_PAGE_SIZE`]), never straddle a page
@@ -278,18 +288,19 @@ const VECTOR_DATA_PAGE: usize = crate::vectors::VECTOR_DATA_ALIGNMENT;
 /// there (a small segment's `.fdt` costs no padding); a longer one starts
 /// on the next page. Readers slice by the recorded offset either way,
 /// Java's included.
-fn entry_start(pos: usize, bytes: &[u8]) -> usize {
+fn entry_start(pos: usize, name: &str, bytes: &[u8]) -> usize {
     let start = pos.next_multiple_of(ALIGNMENT_BYTES);
     let mut input = SliceInput::new(bytes);
     let codec = input
         .read_be_u32()
         .ok()
         .and_then(|_| input.read_string().ok());
+    let ext = name.rsplit('.').next().unwrap_or(name);
     if bytes.len() >= VECTOR_DATA_PAGE
-        && matches!(
+        && (matches!(
             codec.as_deref(),
             Some(crate::vectors::DATA_CODEC | crate::vectors::HALF_FLOAT_DATA_CODEC)
-        )
+        ) || PAGE_ALIGNED_EXTENSIONS.contains(&ext))
     {
         return pos.next_multiple_of(VECTOR_DATA_PAGE);
     }

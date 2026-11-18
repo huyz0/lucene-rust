@@ -2855,6 +2855,15 @@ impl Directory for TrackingDirectory<'_> {
     fn open_aligned(&self, name: &str, alignment: usize) -> lucene_store::Result<Input> {
         self.inner.open_aligned(name, alignment)
     }
+    fn open_member(
+        &self,
+        container: &str,
+        offset: u64,
+        len: u64,
+        member: &str,
+    ) -> lucene_store::Result<Option<Input>> {
+        self.inner.open_member(container, offset, len, member)
+    }
 
     fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
         let output = self.inner.create_output(name)?;
