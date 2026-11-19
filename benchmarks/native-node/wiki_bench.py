@@ -191,6 +191,14 @@ def nstats(c):
         return None
 
 
+def _node_cpu():
+    import subprocess
+    try:
+        return _cpu(subprocess.check_output(["pgrep", "-f", "org.opensearch.bootstrap.OpenSearch"]).split()[0].decode())
+    except Exception:
+        return 0.0
+
+
 def load(base, out, settings):
     import concurrent.futures
     c = Conn(base)
@@ -203,6 +211,7 @@ def load(base, out, settings):
     c.call("PUT", "/" + INDEX, {"settings": st, "mappings": MAPPING})
     files = sorted(glob.glob(os.path.join(out, "bulk-*.ndjson")))
     t0 = time.perf_counter()
+    cpu0 = _node_cpu()
 
     def send(p):
         r, _ = Conn(base).call("POST", f"/{INDEX}/_bulk", open(p, "rb").read())
@@ -212,6 +221,7 @@ def load(base, out, settings):
     with concurrent.futures.ThreadPoolExecutor(3) as ex:
         list(ex.map(send, files))
     t1 = time.perf_counter() - t0
+    cpu1 = _node_cpu()
     c.call("POST", f"/{INDEX}/_refresh")
     t2 = time.perf_counter()
     if os.environ.get("NOMERGE"):  # leave the segments the merge policy made while loading (refresh_interval in SETTINGS)
@@ -224,8 +234,12 @@ def load(base, out, settings):
         c.call("POST", f"/{INDEX}/_forcemerge?max_num_segments=1")
         c.call("POST", f"/{INDEX}/_refresh")
     idx = c.call("GET", f"/_cat/indices/{INDEX}?format=json&bytes=b")[0][0]
-    print(f"{c.call('GET', f'/{INDEX}/_count')[0]['count']} docs in {t1:.0f}s (+merge {time.perf_counter() - t2:.0f}s), "
-          f"{SHARDS} shards, store {int(idx['store.size']) / 2**20:.0f} MiB")
+    ndocs = c.call('GET', f'/{INDEX}/_count')[0]['count']
+    cpu2 = _node_cpu()
+    print(f"{ndocs} docs in {t1:.0f}s = {ndocs / t1:.0f} docs/s (+merge {time.perf_counter() - t2:.0f}s), "
+          f"{SHARDS} shards, store {int(idx['store.size']) / 2**20:.0f} MiB, node CPU {cpu1 - cpu0:.1f}s bulk + {cpu2 - cpu1:.1f}s merge")
+    print(json.dumps({"load": {"docs": ndocs, "bulk_s": round(t1, 1), "docs_per_s": round(ndocs / t1), "merge_s": round(time.perf_counter() - t2, 1),
+                               "store_mib": round(int(idx['store.size']) / 2**20), "cpu_bulk_s": round(cpu1 - cpu0, 1), "cpu_merge_s": round(cpu2 - cpu1, 1)}}))
 
 
 def time_all(base, label, outf, out):
@@ -343,6 +357,15 @@ def report(pats):
 
 if __name__ == "__main__":
     a = sys.argv
+    if os.environ.get("BENCH_EXT"):  # a shape set: INDEX, MAPPING, body_for(name, q), prep(argv) (see confluence_shapes.py)
+        import importlib.util
+        sp = importlib.util.spec_from_file_location("ext", os.path.join(os.path.dirname(os.path.abspath(__file__)), os.environ["BENCH_EXT"] + ".py"))
+        ext = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(ext)
+        INDEX, MAPPING, body_for = ext.INDEX, ext.MAPPING, ext.body_for
+        if a[1] == "prep":
+            ext.prep(a[2:])
+            sys.exit(0)
     if a[1] == "prep":
         prep(a[2], a[3], int(a[4]) if len(a) > 4 else 10**9)
     elif a[1] == "load":
