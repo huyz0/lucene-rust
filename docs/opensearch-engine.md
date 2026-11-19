@@ -133,27 +133,36 @@ Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
 
 ## Reading `_source` in the library
 
-`index.engine.accelerated_source_parsing` (default `false`, fixed at creation) makes
+`index.engine.accelerated_source_parsing` (default `true`, fixed at creation) makes
 the engine read a document's `_source` in the library instead of through
 OpenSearch's document mapper and the plugin's field encoder. It applies to an
 index whose mapping is made only of `keyword` (with `ignore_above`), `text` with
 the standard analyzer, `integer`, `long`, `float`, `double` and `date` fields at
-their default parameters, and no partition field. The check runs for every
+their default parameters, in plain `object` fields to any depth, and no partition
+field. A value may be `null` (no value, as the mapper reads it) or an array of
+values (a keyword array is one entry of its distinct values, a text array one
+analyzed field with the mapper's gap between values, an object field may be an
+array of objects). The check runs for every
 document, and a document the library does not reproduce digit for digit goes to
 OpenSearch's mapper unchanged: an unmapped field (dynamic mapping, so the cluster
-state flow is as stock), `null`, an array, an object, a repeated key, a number or
-date in a shape the library does not reproduce, an `ignore_above` or oversized
-keyword, `_routing`, a comment or trailing text, or a source that is not JSON.
+state flow is as stock), an array inside an array, a dotted key, a repeated key, a
+number or date in a shape the library does not reproduce (a number or boolean given
+to a keyword, a numeric string), an `ignore_above` or oversized keyword, `_routing`,
+a comment or trailing text, or a source that is not JSON or not valid UTF-8.
 `GET _plugins/_accelerated/stats` counts documents handled and refused
 (`source_parsing`). Stored fields, doc values, postings, points and the `_source`
 bytes are the same as the mapper's: the system property `accelerated.ingest.verify` runs both
 paths on every document and counts any difference, and
 `opensearch-plugin/e2e/fuzz_ingest.py` compares a plugin node with stock on random
-valid and malformed documents.
-On a logs bulk (4 clients, 5,000-document requests, one shard, three million
-documents, with merges) it indexes 106.6k documents/s at 25.9 CPU-seconds per
-million against 75.7k and 36.8 with the setting off and 89.7k and 30.7 on stock
-OpenSearch.
+valid and malformed documents (`--shape objects` for object, array and null shapes).
+On a logs bulk (4 clients, 5,000-document requests, one shard, one million
+documents, 2 GB heap, three cores, third pass on a warm node, two runs) it indexes
+106.5k documents/s at 24.6 to 26.9 CPU-seconds per million, against 67 to 71k and
+39.5 to 42.2 with the setting off and 86.6 to 87.6k and 31.4 to 33.3 on stock
+OpenSearch (1.22x its documents per second at 0.8x its CPU; a cold node's first
+pass is 82 to 85k against stock's 53 to 56k). The JSON read itself takes about
+0.5 microseconds of a document's 25: the gain is the document mapper and field
+encoder the library replaces.
 
 ## What it refuses
 

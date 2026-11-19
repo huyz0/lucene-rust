@@ -61,11 +61,12 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class NativeIngest {
     /**
      * {@code index.engine.accelerated_source_parsing}: read a document's {@code _source} in the library
-     * where the mapping allows, instead of in OpenSearch's document mapper. Off by default.
+     * where the mapping allows, instead of in OpenSearch's document mapper. On by default: a document
+     * the library does not reproduce exactly is the mapper's.
      */
     public static final Setting<Boolean> SOURCE_PARSING = Setting.boolSetting(
         "index.engine.accelerated_source_parsing",
-        false,
+        true,
         Setting.Property.IndexScope
     );
 
@@ -76,7 +77,7 @@ public final class NativeIngest {
     public static final AtomicLong REFUSED = new AtomicLong();
     static final AtomicLong MISMATCHES = new AtomicLong();
 
-    private static final int KEYWORD = 0, TEXT = 1, INTEGER = 2, LONG = 3, FLOAT = 4, DOUBLE = 5, DATE = 6;
+    private static final int KEYWORD = 0, TEXT = 1, INTEGER = 2, LONG = 3, FLOAT = 4, DOUBLE = 5, DATE = 6, OBJECT = 7;
 
     /** Documents the accelerated reader took from the document mapper, and the ones it left to it. */
     public static void stats(org.opensearch.core.xcontent.XContentBuilder b) throws IOException {
@@ -84,6 +85,9 @@ public final class NativeIngest {
     }
 
     private static final int FRAGMENT_HEADER = 32;
+
+    /** Where a thread's reads land before the fragment is cut to size. */
+    private static final ThreadLocal<byte[]> ROOM = ThreadLocal.withInitial(() -> new byte[8192]);
 
     private static int header(byte[] fragment, int index) {
         return java.nio.ByteBuffer.wrap(fragment).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(index * 4);
@@ -150,16 +154,18 @@ public final class NativeIngest {
             return null;
         }
         BytesRef src = source.source().toBytesRef();
-        byte[] fragment = new byte[Math.max(256, src.length * 3 + 128)];
-        int n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, fragment);
-        if (n > fragment.length) {
-            fragment = new byte[n];
-            n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, fragment);
+        byte[] room = ROOM.get();
+        int n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
+        if (n > room.length) {
+            room = new byte[n + (n >> 1)];
+            ROOM.set(room);
+            n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
         }
         if (n <= 0) {
             REFUSED.incrementAndGet();
             return null;
         }
+        byte[] fragment = java.util.Arrays.copyOf(room, n);
         HANDLED.incrementAndGet();
         Document root = new Document(fragment, n, c.text);
         SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
@@ -255,26 +261,72 @@ public final class NativeIngest {
             FieldMapper fm = (FieldMapper) m;
             fields.add(fm);
             String name = fm.name();
-            if (name.indexOf('.') >= 0 || seen.add(name) == false) {
+            if (seen.add(name) == false) {
                 return -1;
             }
             specs.add(new String[] { name });
         }
-        if (specs.isEmpty() || specs.size() > 128) {
+        // The mapping's `object` fields, plain ones only; every leaf of it is one of the field mappers.
+        List<String> objects = new ArrayList<>();
+        Set<String> leaves = new HashSet<>();
+        if (objects(root.get("properties"), "", objects, leaves, 0) == false || leaves.equals(seen) == false) {
             return -1;
         }
-        Blob plan = new Blob(256).i32(specs.size());
+        if (specs.isEmpty() || specs.size() + objects.size() > 128) {
+            return -1;
+        }
+        Blob plan = new Blob(256).i32(specs.size() + objects.size());
         for (FieldMapper fm : fields) {
             Map<String, Object> params = params(fm);
             if (params == null || writeField(plan, fm.name(), params, text) == false) {
                 return -1;
             }
         }
+        for (String object : objects) {
+            plan.string(object).u8(OBJECT).u8(0).i32(0).i32(0).i32(0).u8(0).u8(0);
+        }
         int[] id = new int[1];
         if (NativeWriter.ingestRegister(plan.toArray(), id) != NativeBridge.OK) {
             return -1;
         }
         return id[0];
+    }
+
+    private static final Set<String> OBJECT_KEYS = Set.of("type", "properties", "dynamic");
+
+    /**
+     * Collects the paths of the plain {@code object} fields under {@code properties} into {@code objects}
+     * and the paths of everything else into {@code leaves}; false for an object with any other setting
+     * (nested, disabled, subobjects, ...) or one too deep.
+     */
+    private static boolean objects(Object properties, String prefix, List<String> objects, Set<String> leaves, int depth) {
+        if (properties == null) {
+            return true;
+        }
+        if (properties instanceof Map<?, ?> == false || depth > 20) {
+            return false;
+        }
+        for (Map.Entry<?, ?> e : ((Map<?, ?>) properties).entrySet()) {
+            if (e.getKey() instanceof String == false || e.getValue() instanceof Map<?, ?> == false) {
+                return false;
+            }
+            String name = (String) e.getKey();
+            Map<?, ?> field = (Map<?, ?>) e.getValue();
+            String path = prefix + name;
+            Object type = field.get("type");
+            if (type == null || "object".equals(type)) {
+                if (OBJECT_KEYS.containsAll(field.keySet()) == false) {
+                    return false;
+                }
+                objects.add(path);
+                if (objects(field.get("properties"), path + ".", objects, leaves, depth + 1) == false) {
+                    return false;
+                }
+            } else {
+                leaves.add(path);
+            }
+        }
+        return true;
     }
 
     private static boolean dataStreamEnabled(org.opensearch.index.mapper.DataStreamFieldMapper ds) throws IOException {

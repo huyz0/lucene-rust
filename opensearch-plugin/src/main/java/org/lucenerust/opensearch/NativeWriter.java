@@ -67,7 +67,7 @@ public final class NativeWriter {
             "ffi_jvm_ingest_register",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
         );
-        static final MethodHandle INGEST_PARSE = bind(
+        static final MethodHandle INGEST_PARSE = bindCritical(
             "ffi_jvm_ingest_parse",
             FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
@@ -393,19 +393,16 @@ public final class NativeWriter {
      */
     public static int ingestParse(int plan, byte[] src, int off, int len, byte[] out) {
         try (Scratch s = Scratch.open()) {
-            MemorySegment in = s.alloc(len);
-            MemorySegment.copy(src, off, in, JAVA_BYTE, 0, len);
-            MemorySegment room = s.alloc(out.length);
             MemorySegment n = s.alloc(Long.BYTES);
-            int rc = (int) H.INGEST_PARSE.invokeExact(plan, in, (long) len, room, (long) out.length, n);
-            if (rc != OK) {
-                return 0;
-            }
-            int length = (int) n.get(JAVA_LONG, 0);
-            if (length > 0 && length <= out.length) {
-                MemorySegment.copy(room, JAVA_BYTE, 0, out, 0, length);
-            }
-            return length;
+            int rc = (int) H.INGEST_PARSE.invokeExact(
+                plan,
+                MemorySegment.ofArray(src).asSlice(off, len),
+                (long) len,
+                MemorySegment.ofArray(out),
+                (long) out.length,
+                n
+            );
+            return rc != OK ? 0 : (int) n.get(JAVA_LONG, 0);
         } catch (Throwable t) {
             throw rethrow(t);
         }

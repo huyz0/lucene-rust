@@ -12,6 +12,10 @@ produces field by field (`native ingest mismatch` on stderr; the script counts t
 
     PLUGIN_URL=http://localhost:9200 STOCK_URL=http://localhost:9201 \\
         python3 opensearch-plugin/e2e/fuzz_ingest.py --seed 1 --docs 20000 --valid 0.6
+
+`--shape objects` fuzzes a mapping with `object` fields (nested two deep), keyword, text and numeric
+fields holding arrays and nulls, and an array of objects: documents with arrays, nulls, nested
+arrays, repeated keys, dotted keys, unmapped keys and values of the wrong type.
 """
 import argparse
 import json
@@ -147,6 +151,129 @@ def gen_doc(r):
 
 
 
+OBJECT_PROPS = {
+    "@timestamp": {"type": "date"}, "host": {"type": "keyword"}, "tags": {"type": "keyword"}, "scores": {"type": "long"},
+    "msgs": {"type": "text"}, "ratio": {"type": "double"}, "when": {"type": "date"},
+    "obj": {"properties": {"k": {"type": "keyword"}, "n": {"type": "integer"}, "t": {"type": "text"}, "d": {"type": "date"},
+                           "deep": {"properties": {"x": {"type": "long"}, "tags": {"type": "keyword", "ignore_above": 40}}}}},
+    "objs": {"type": "object", "properties": {"v": {"type": "integer"}, "name": {"type": "keyword"}}},
+}
+OBJECT_LEAVES = ["@timestamp", "host", "tags", "scores", "ratio", "when", "obj.k", "obj.n", "obj.d", "obj.deep.x", "obj.deep.tags", "objs.v", "objs.name"]
+WORDS = ["the", "quick", "brown", "fox", "Jumps", "over", "LAZY", "dog", "a.b", "foo_bar", "x@y.com", "e-mail", "caf\u00e9"]
+
+
+def kw(r):
+    return r.choice(["a", "b", "c", "dup", "", "Caf\u00e9", "x" * r.choice([39, 40, 41, 300]), "line\nbreak", "sp ace", "7", "%d" % r.randrange(5)])
+
+
+def txt(r):
+    return " ".join(r.choice(WORDS) for _ in range(r.randrange(0, 6)))
+
+
+def many(r, one, p_bad=0.0, bad=()):
+    """A value for a multi-valued field: scalar, null, empty, array (with nulls), or an odd shape."""
+    k = r.random()
+    if k < .2:
+        return one(r)
+    if k < .3:
+        return None
+    if k < .4:
+        return []
+    if k < .85:
+        return [None if r.random() < .15 else one(r) for _ in range(r.randrange(1, 6))]
+    return r.choice([[[one(r)]], [one(r), [one(r)]], {"a": one(r)}, [{"a": one(r)}], True, [True], [one(r), {"b": 1}], [[]], {}]) if bad else [one(r), one(r)]
+
+
+def object_doc(r, adversarial):
+    d = {}
+
+    def put(k, v):
+        d[k] = v
+    if r.random() < .95:
+        put("@timestamp", date_val(r) if adversarial and r.random() < .3 else "2026-11-%02dT%02d:00:00.%03dZ" % (r.randrange(1, 29), r.randrange(24), r.randrange(1000)))
+    if r.random() < .8:
+        put("host", r.choice([kw(r), None, ["a", "b"]] if adversarial else [kw(r), None, [kw(r), kw(r)]]))
+    if r.random() < .8:
+        put("tags", many(r, kw, adversarial, True))
+    if r.random() < .8:
+        put("scores", many(r, lambda r: r.choice([0, 1, -1, 2**63 - 1, -2**63, r.randrange(-1000, 1000)]) if not adversarial or r.random() < .9 else r.choice([1.5, "7", 2**63, True]), adversarial, True))
+    if r.random() < .8:
+        put("msgs", many(r, txt, adversarial, True))
+    if r.random() < .5:
+        put("ratio", many(r, lambda r: r.choice([0.5, 1, -2.25, 1e10, 3]), adversarial, True))
+    if r.random() < .4:
+        put("when", many(r, lambda r: "2026-%02d-%02dT00:00:00Z" % (r.randrange(1, 13), r.randrange(1, 29)), adversarial, True))
+    if r.random() < .7:
+        o = {}
+        if r.random() < .8: o["k"] = many(r, kw, adversarial, True)
+        if r.random() < .8: o["n"] = many(r, lambda r: r.choice([0, 5, -7, 2**31 - 1, -2**31, 2**31] if adversarial else [0, 5, -7, 2**31 - 1]), adversarial, True)
+        if r.random() < .6: o["t"] = many(r, txt, adversarial, True)
+        if r.random() < .4: o["d"] = "2026-11-%02dT01:02:03.%dZ" % (r.randrange(1, 29), r.randrange(10))
+        if r.random() < .7:
+            dp = {}
+            if r.random() < .8: dp["x"] = many(r, lambda r: r.randrange(-50, 50), adversarial, True)
+            if r.random() < .8: dp["tags"] = many(r, kw, adversarial, True)
+            o["deep"] = r.choice([dp, dp, dp, None, [dp, dp], []]) if True else dp
+        put("obj", r.choice([o, o, o, None, [o, o], []]))
+    if r.random() < .6:
+        items = [{"v": r.randrange(100), "name": kw(r)} if r.random() < .8 else r.choice([{"v": 1}, {}, None, {"name": None}]) for _ in range(r.randrange(0, 4))]
+        put("objs", r.choice([items, items, {"v": 3, "name": "solo"}, None]))
+    if adversarial:
+        k = r.random()
+        if k < .08: put("unknown", r.choice([1, None, "x", {"a": 1}, [1]]))
+        elif k < .12: put("obj.k", "dotted")
+        elif k < .16: put("obj", {"k": "a", "k": "b"})
+        elif k < .2: put("obj", {"unknown": 1})
+        elif k < .24: put("obj", {"n": "5"})
+        elif k < .28: put("obj", 5)
+        elif k < .32: put("tags", r.choice([1, 2.5, True, [1, 2], ["a", 1]]))
+        elif k < .35: put("host", "dup")
+    items = list(d.items())
+    r.shuffle(items)
+    out = json.dumps(dict(items), ensure_ascii=r.random() < .5)
+    if adversarial and out != "{}" and r.random() < .06:
+        out = out[:-1] + r.choice([',"objs":[{"v":1,"v":2}]', ',"obj":{"k":"a","k":"b"}', ',"tags":["a"],"tags":["b"]', ',"obj":null,"obj":{}', ","]) + "}"
+    return out
+
+
+def gen_object_doc(r):
+    return object_doc(r, adversarial=r.random() > float(os.environ.get("VALID", "0.6")))
+
+
+def readback_objects(node, index):
+    rows, after = [], None
+    while True:
+        q = {"size": 1000, "sort": [{"_seq_no": "asc"}], "docvalue_fields": OBJECT_LEAVES, "_source": False}
+        if after is not None:
+            q["search_after"] = after
+        st, resp = node.req("POST", f"/{index}/_search", q)
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            break
+        rows += [(h["_id"], json.dumps(h.get("fields"), sort_keys=True)) for h in hits]
+        after = hits[-1]["sort"]
+    counts = []
+    count = lambda q: counts.append(node.req("POST", f"/{index}/_count", {"query": q})[1].get("count"))
+    for t in ["a", "b", "c", "dup", "", "7", "0", "Caf\u00e9", "x" * 39, "x" * 40, "x" * 300]:
+        for f in ["tags", "obj.k", "obj.deep.tags", "host", "objs.name"]:
+            count({"term": {f: t}})
+    for w in ["the", "quick", "fox", "jumps", "lazy", "dog", "foo_bar", "cafe", "mail", "e"]:
+        count({"match": {"msgs": w}})
+        count({"match": {"obj.t": w}})
+    for phrase in ["the quick", "dog the", "quick brown fox", "over lazy dog the", "fox quick"]:
+        count({"match_phrase": {"msgs": phrase}})
+        count({"match_phrase": {"obj.t": phrase}})
+    for f in ["scores", "obj.n", "obj.deep.x", "objs.v", "ratio"]:
+        for rng in [{"gte": 0, "lte": 10}, {"gte": 100}, {"lt": 0}, {"gte": 2**31 - 1}]:
+            count({"range": {f: rng}})
+    for rng in [{"gte": "2026-01-01", "lte": "2026-11-15"}, {"gte": "2026-06-01"}]:
+        for f in ["@timestamp", "when", "obj.d"]:
+            count({"range": {f: rng}})
+    for f in OBJECT_LEAVES + ["obj", "obj.deep", "objs", "msgs", "obj.t"]:
+        count({"exists": {"field": f}})
+    return rows, counts
+
+
 PROPS = {"@timestamp": {"type": "date"}, "host": {"type": "keyword"}, "status": {"type": "integer"}, "bytes": {"type": "long"},
          "latency_ms": {"type": "float"}, "dbl": {"type": "double"}, "message": {"type": "text"}}
 
@@ -222,21 +349,25 @@ def main():
     ap.add_argument("--docs", type=int, default=5000)
     ap.add_argument("--valid", type=float, default=0.6, help="share of documents whose every value is one the accelerated reader takes")
     ap.add_argument("--dynamic", default="false")
+    ap.add_argument("--shape", default="flat", choices=["flat", "objects"])
     a = ap.parse_args()
     os.environ["VALID"] = str(a.valid)
     plugin, stock = Node(a.plugin, 300), Node(a.stock, 300)
     r = random.Random(a.seed)
-    docs = [("d%d" % i if r.random() < .9 else "dup%d" % r.randrange(50), gen_doc(r)) for i in range(a.docs)]
+    gen = gen_object_doc if a.shape == "objects" else gen_doc
+    props = OBJECT_PROPS if a.shape == "objects" else PROPS
+    read = readback_objects if a.shape == "objects" else readback
+    docs = [("d%d" % i if r.random() < .9 else "dup%d" % r.randrange(50), gen(r)) for i in range(a.docs)]
     outcomes = []
     data = []
     for n, settings in ((plugin, {"index.engine.accelerated_source_parsing": True}), (stock, {})):
         n.req("DELETE", "/fi")
-        st, resp = n.req("PUT", "/fi", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings}, "mappings": {"dynamic": a.dynamic, "properties": PROPS}})
+        st, resp = n.req("PUT", "/fi", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings}, "mappings": {"dynamic": a.dynamic, "properties": props}})
         if st != 200:
             print("create failed on", n.url, json.dumps(resp)[:300])
             return 1
         outcomes.append(results(n, "fi", docs, a.valid, r))
-        data.append(readback(n, "fi"))
+        data.append(read(n, "fi"))
     bad = 0
     for k, (p, s) in enumerate(zip(*outcomes)):
         if p != s and not (p[:2] == s[:2] and "immense term" in str(p[2]) and str(s[2]).startswith(str(p[2]))):
