@@ -264,6 +264,14 @@ jobs:
             /usr/share/swift /usr/local/julia* /opt/microsoft; docker image prune --all --force' \
             >/dev/null 2>&1 &
 
+      # The dictionaries, ICU packs and tessellator corpus are not tracked:
+      # build.rs runs scripts/fetch-data.py, which downloads pinned jars into
+      # fixtures/.jars. Cached so a run needs no network for them.
+      - uses: actions/cache@v4
+        with:
+          path: fixtures/.jars
+          key: data-jars-${{ hashFiles('scripts/fetch-data.py') }}
+
       # No toolchain action: rust-toolchain.toml pins the version and its
       # components, and rustup installs it on the first cargo invocation. That
       # keeps CI honest -- if the pin is wrong, this is where it shows up.
@@ -426,6 +434,10 @@ jobs:
         run: |
           rustup show active-toolchain
           rustc --version
+      - uses: actions/cache@v4
+        with:
+          path: fixtures/.jars
+          key: data-jars-${{ hashFiles('scripts/fetch-data.py') }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: gate

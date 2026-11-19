@@ -141,6 +141,16 @@ a dependency the shipped library links is not under a licence listed here.
     the Savoy and Carrot2 stop lists, `NOTICE`, as Lucene ships them) must
     hold.
 
+- **Fetched, not tracked.** The dictionary and ICU data files below (the
+  `src/resources/*.z`, `*.nrm`, `*.brk`, `*.icu` of the kuromoji, nori,
+  smartcn, stempel, morfologik and ICU crates), `fixtures/corpus/real_polygons.z`
+  and the plugin's `analysis/*.zip` are not in the repository. `scripts/fetch-data.py`
+  writes them from the pinned upstream jars and downloads (SHA-256 per file; the
+  ICU packs by the tools under `crates/lucene-analysis-icu/tools/`), and each
+  crate's `build.rs` runs it when a file is missing, so they are compiled in as
+  before. The licences below apply to the files as built and shipped. A rebuild
+  matches the files that were tracked byte for byte (`scripts/fetch-data.py --check`).
+
 - **Dictionaries of the M12 morphological analyzers** (T12.1).
   `crates/lucene-analysis-kuromoji/src/resources/` carries the nine binary
   files of Lucene 10.5.0's `analysis-kuromoji` jar -- mecab-ipadic-2.7.0-20070801

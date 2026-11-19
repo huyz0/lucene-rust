@@ -2,6 +2,7 @@
 name = "lucene-analysis-stempel"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 
 # lucene-analysis-stempel: the Egothor/Stempel stemmer tables,

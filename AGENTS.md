@@ -20,6 +20,17 @@ The original plan — phases, crate layout, verification strategy, effort
 estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
 [`opensearch-plugin/`](opensearch-plugin/).
 
+## Data that is not tracked
+
+Dictionaries, ICU packs, the tessellator corpus and the ml-commons tokenizer
+data are built by `scripts/fetch-data.py` from pinned upstream sources (jars on
+Maven Central, ml-commons) into git-ignored paths; the crates' `build.rs` runs it
+when a file is missing (Python 3; the ICU pack also needs a JDK). Do not commit
+compiled or downloadable files: `scripts/check-binary-size.py` fails a tracked
+binary above 64 KiB that is not in its shrink-only baseline. Java-written
+differential fixtures cannot be regenerated (random segment ids that tests
+hardcode) and stay tracked.
+
 ## Invariants (don't break)
 
 1. **Downward-only crate deps.** `util ← store ← codecs ← index ← search ←

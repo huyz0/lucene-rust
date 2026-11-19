@@ -2,6 +2,7 @@
 name = "lucene-analysis-nori"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 
 # lucene-analysis-nori: Korean morphological analysis over
