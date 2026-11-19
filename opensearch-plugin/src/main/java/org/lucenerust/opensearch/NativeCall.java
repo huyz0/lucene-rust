@@ -34,11 +34,20 @@ final class NativeCall {
 
     /** A downcall handle for {@code symbol} in the library {@link NativeLibrary#load} opened. */
     @SuppressWarnings("restricted") // a downcall is the whole point; NativeLibrary documents the flag
-    static MethodHandle bind(String symbol, FunctionDescriptor descriptor) {
+    static MethodHandle bind(String symbol, FunctionDescriptor descriptor, Linker.Option... options) {
         MemorySegment address = NativeLibrary.lookup()
             .find(symbol)
             .orElseThrow(() -> new UnsatisfiedLinkError("liblucene_ffi has no symbol [" + symbol + "]"));
-        return Linker.nativeLinker().downcallHandle(address, descriptor);
+        return Linker.nativeLinker().downcallHandle(address, descriptor, options);
+    }
+
+    /**
+     * A downcall that reads and writes Java arrays in place, with no copy through native memory: for a
+     * short call that neither blocks nor calls back into the JVM, as the JVM holds off garbage
+     * collection while it runs.
+     */
+    static MethodHandle bindCritical(String symbol, FunctionDescriptor descriptor) {
+        return bind(symbol, descriptor, Linker.Option.critical(true));
     }
 
     /** A {@code MethodHandle.invokeExact} failure: only an error the JVM raised, never a status. */

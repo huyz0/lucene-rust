@@ -8,9 +8,12 @@
 //! inverted, doc-values and point entries in the layout `writer_blob` decodes)
 //! or refuses, and a refusal always means "let the JVM's mapper handle this
 //! document": an unmapped field, a value the fast path does not reproduce
-//! digit for digit, a repeated field, an array, a null, anything that is not
-//! plain JSON. The scanner is strict RFC 8259; whatever the JVM's parser would
-//! accept beyond that is refused here.
+//! digit for digit, a repeated field, an array of arrays, a number or boolean for
+//! a keyword, anything that is not plain JSON. Plain objects (the mapping's
+//! `object` fields, at any depth, as `a.b` paths), arrays of scalars or of
+//! objects, and `null` (no value, as the mapper reads it) are read here. The
+//! scanner is strict RFC 8259; whatever the JVM's parser would accept beyond
+//! that is refused here.
 //!
 //! The fragment is `4 x i32` entry counts (stored, inverted, doc values,
 //! points), `4 x i32` byte lengths, then the four sections.
@@ -21,6 +24,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::status::{set_last_error, Status};
@@ -33,6 +37,8 @@ pub const LONG: u8 = 3;
 pub const FLOAT: u8 = 4;
 pub const DOUBLE: u8 = 5;
 pub const DATE: u8 = 6;
+/// An `object` field: a path whose children are looked up as `path.child`.
+pub const OBJECT: u8 = 7;
 
 /// Plan field flags.
 const INDEXED: u8 = 1;
@@ -44,6 +50,10 @@ const MAX_TERM_LENGTH: usize = 32766;
 const MAX_FIELDS: usize = 128;
 
 struct Field {
+    /// Its index in the plan.
+    idx: u16,
+    /// Where the last `.` of its name is; [`NO_DOT`] for a name without one (a field of the root).
+    last_dot: u32,
     name: Box<[u8]>,
     kind: u8,
     flags: u8,
@@ -56,11 +66,18 @@ struct Field {
     norm: u8,
 }
 
+const NO_DOT: u32 = u32::MAX;
+
 /// A mapping's fields, compiled.
 pub struct Plan {
     fields: Vec<Field>,
     /// Open-addressed table of `field index + 1`, 0 for empty.
     slots: Vec<u16>,
+    /// Per place in a document -- the start of an object, or a key already read -- the field
+    /// that followed it last time, as `field index + 1` (0 for none): documents of one shape
+    /// repeat their key order, so a key is checked against that field before it is hashed.
+    /// Only a guess, always confirmed against the key's bytes.
+    next: Vec<AtomicU16>,
 }
 
 fn invalid(what: &str) -> Status {
@@ -116,7 +133,7 @@ impl Plan {
             let len = usize::try_from(r.i32()?).map_err(|_| invalid("name length"))?;
             let name = r.take(len)?.to_vec().into_boxed_slice();
             let kind = r.u8()?;
-            if kind > DATE {
+            if kind > OBJECT {
                 return Err(invalid("kind"));
             }
             let flags = r.u8()?;
@@ -126,6 +143,11 @@ impl Plan {
             let options = r.u8()?;
             let norm = r.u8()?;
             fields.push(Field {
+                idx: u16::try_from(fields.len()).map_err(|_| invalid("count"))?,
+                last_dot: name
+                    .iter()
+                    .rposition(|&b| b == b'.')
+                    .map_or(NO_DOT, |p| p as u32),
                 name,
                 kind,
                 flags,
@@ -151,7 +173,12 @@ impl Plan {
             }
             slots[s] = u16::try_from(i + 1).map_err(|_| invalid("count"))?;
         }
-        Ok(Plan { fields, slots })
+        let next = (0..=n * 2).map(|_| AtomicU16::new(0)).collect();
+        Ok(Plan {
+            fields,
+            slots,
+            next,
+        })
     }
 
     fn find(&self, name: &[u8]) -> Option<usize> {
@@ -223,6 +250,15 @@ struct Sections {
     doc_values: Vec<u8>,
     points: Vec<u8>,
     counts: [i32; 4],
+    /// The values of the keyword array being read, and where each one is in `values`.
+    values: Vec<u8>,
+    spans: Vec<(u32, u32)>,
+    /// Arrays of objects being read (0 outside any): inside one a field can occur once per
+    /// object, and its keyword and text values wait in `deferred` to become one entry.
+    repeat: usize,
+    /// `(field, from, to)` into `held`, in the order read.
+    deferred: Vec<(u16, u32, u32)>,
+    held: Vec<u8>,
 }
 
 impl Sections {
@@ -232,12 +268,22 @@ impl Sections {
         self.doc_values.clear();
         self.points.clear();
         self.counts = [0; 4];
+        self.repeat = 0;
+        self.deferred.clear();
+        self.held.clear();
     }
 }
 
+/// Most values one keyword array may hold here (its terms are merged pairwise).
+const MAX_ARRAY_TERMS: usize = 256;
+/// Most keyword and text values the objects of one array may hold.
+const MAX_DEFERRED: usize = 4096;
+/// Deepest nesting of objects read here.
+const MAX_DEPTH: usize = 32;
+
 thread_local! {
     static SECTIONS: RefCell<Sections> = RefCell::new(Sections::default());
-    static UNESCAPED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static UNESCAPED: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
 fn put_i32(out: &mut Vec<u8>, v: i32) {
@@ -253,6 +299,35 @@ fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     out.extend_from_slice(b);
 }
 
+const ONES: u64 = 0x0101_0101_0101_0101;
+const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+/// The index of the first byte at or after `from` that ends a run of plain string bytes (`"`,
+/// `\`, or a control byte), or `src.len()`; eight bytes at a time. The subtraction can flag
+/// a byte above a true hit, never below one, so the lowest flag is exact.
+#[inline]
+fn plain_run(src: &[u8], mut from: usize) -> usize {
+    while let Some(w) = src.get(from..from + 8) {
+        let x = u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]);
+        let zero = |v: u64| v.wrapping_sub(ONES) & !v;
+        let hits = (zero(x ^ (ONES * u64::from(b'"')))
+            | zero(x ^ (ONES * u64::from(b'\\')))
+            | x.wrapping_sub(ONES * 0x20) & !x)
+            & HIGHS;
+        if hits != 0 {
+            return from + (hits.trailing_zeros() / 8) as usize;
+        }
+        from += 8;
+    }
+    while let Some(&b) = src.get(from) {
+        if b == b'"' || b == b'\\' || b < 0x20 {
+            break;
+        }
+        from += 1;
+    }
+    from
+}
+
 /// Where a scanned string lives: in the source, or unescaped in the scratch.
 enum Str {
     Source(usize, usize),
@@ -263,6 +338,8 @@ struct Scanner<'s, 'u> {
     src: &'s [u8],
     pos: usize,
     scratch: &'u mut Vec<u8>,
+    /// The dotted path of the object being read, up to its own length.
+    path: &'u mut Vec<u8>,
 }
 
 impl<'s> Scanner<'s, '_> {
@@ -293,18 +370,14 @@ impl<'s> Scanner<'s, '_> {
             return None;
         }
         let start = self.pos + 1;
-        let mut i = start;
-        loop {
-            let b = *self.src.get(i)?;
-            match b {
-                b'"' => {
-                    self.pos = i + 1;
-                    return Some(Str::Source(start, i));
-                }
-                b'\\' => break,
-                0..=0x1f => return None,
-                _ => i += 1,
+        let mut i = plain_run(self.src, start);
+        match *self.src.get(i)? {
+            b'"' => {
+                self.pos = i + 1;
+                return Some(Str::Source(start, i));
             }
+            b'\\' => {}
+            _ => return None,
         }
         self.scratch.clear();
         self.scratch.extend_from_slice(&self.src[start..i]);
@@ -373,12 +446,13 @@ impl<'s> Scanner<'s, '_> {
         Some(v)
     }
 
-    fn text(&self, s: &Str) -> Option<&str> {
-        let bytes = match *s {
+    /// A scanned string's bytes: UTF-8, as the whole source was checked once ([`read_document`])
+    /// and an escape decodes to a scalar value.
+    fn text(&self, s: &Str) -> &[u8] {
+        match *s {
             Str::Source(a, b) => &self.src[a..b],
             Str::Scratch => &self.scratch[..],
-        };
-        std::str::from_utf8(bytes).ok()
+        }
     }
 
     /// A number token: its text and whether it has a fraction or exponent.
@@ -425,6 +499,27 @@ impl<'s> Scanner<'s, '_> {
         }
         self.pos = i;
         std::str::from_utf8(&self.src[s..i]).ok().map(|t| (t, real))
+    }
+}
+
+/// An integer token (`-?(0|[1-9][0-9]*)`, as [`Scanner::number`] read it) as `i64`; `None` past its range.
+fn int_of(t: &str) -> Option<i64> {
+    let b = t.as_bytes();
+    let (neg, digits) = match b.split_first()? {
+        (b'-', rest) => (true, rest),
+        _ => (false, b),
+    };
+    if digits.len() > 19 {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for &c in digits {
+        v = v * 10 + u64::from(c - b'0');
+    }
+    if neg {
+        0i64.checked_sub_unsigned(v)
+    } else {
+        i64::try_from(v).ok()
     }
 }
 
@@ -518,8 +613,9 @@ pub fn parse(plan: &Plan, src: &[u8], out: &mut Vec<u8>) -> bool {
         UNESCAPED.with(|u| {
             let mut sections = s.borrow_mut();
             let mut scratch = u.borrow_mut();
+            let (text, path) = &mut *scratch;
             sections.clear();
-            if read_document(plan, src, &mut sections, &mut scratch).is_none() {
+            if read_document(plan, src, &mut sections, text, path).is_none() {
                 return false;
             }
             out.clear();
@@ -543,66 +639,381 @@ pub fn parse(plan: &Plan, src: &[u8], out: &mut Vec<u8>) -> bool {
     })
 }
 
-fn read_document(plan: &Plan, src: &[u8], sec: &mut Sections, scratch: &mut Vec<u8>) -> Option<()> {
+fn read_document(
+    plan: &Plan,
+    src: &[u8],
+    sec: &mut Sections,
+    scratch: &mut Vec<u8>,
+    path: &mut Vec<u8>,
+) -> Option<()> {
     let mut sc = Scanner {
         src,
         pos: 0,
         scratch,
+        path,
     };
     sc.skip_ws();
-    sc.expect(b'{')?;
-    let mut seen: u128 = 0;
-    sc.skip_ws();
-    if sc.src.get(sc.pos) == Some(&b'}') {
-        sc.pos += 1;
-    } else {
-        loop {
-            sc.skip_ws();
-            let key = sc.string()?;
-            let idx = {
-                let kb = match key {
-                    Str::Source(a, b) => &src[a..b],
-                    Str::Scratch => &sc.scratch[..],
-                };
-                plan.find(kb)?
-            };
-            if seen >> idx & 1 == 1 {
-                return None;
-            }
-            seen |= 1u128 << idx;
-            sc.expect(b':')?;
-            sc.skip_ws();
-            value(&plan.fields[idx], &mut sc, sec)?;
-            sc.skip_ws();
-            match *sc.src.get(sc.pos)? {
-                b',' => sc.pos += 1,
-                b'}' => {
-                    sc.pos += 1;
-                    break;
-                }
-                _ => return None,
-            }
-        }
+    if *sc.src.get(sc.pos)? != b'{' || std::str::from_utf8(src).is_err() {
+        return None;
     }
+    read_object(plan, &mut sc, sec, 0, plan.fields.len(), 0)?;
     sc.skip_ws();
     (sc.pos == src.len()).then_some(())
 }
 
+impl Scanner<'_, '_> {
+    /// The plan field a key names inside the object whose path is the first
+    /// `prefix` bytes of `self.path` (the root when 0); a key with a `.` is
+    /// the mapper's to expand.
+    fn lookup(&mut self, plan: &Plan, key: &Str, prefix: usize, place: usize) -> Option<usize> {
+        let kb = match *key {
+            Str::Source(a, b) => &self.src[a..b],
+            Str::Scratch => &self.scratch[..],
+        };
+        let guess = usize::from(plan.next[place].load(Ordering::Relaxed));
+        if guess != 0 {
+            let f = &plan.fields[guess - 1];
+            let hit = if prefix == 0 {
+                f.last_dot == NO_DOT && *f.name == *kb
+            } else {
+                f.last_dot as usize == prefix
+                    && f.name[prefix + 1..] == *kb
+                    && f.name[..prefix] == self.path[..prefix]
+            };
+            if hit {
+                return Some(guess - 1);
+            }
+        }
+        if kb.contains(&b'.') {
+            return None;
+        }
+        let found = if prefix == 0 {
+            plan.find(kb)
+        } else {
+            self.path.truncate(prefix);
+            self.path.push(b'.');
+            self.path.extend_from_slice(kb);
+            plan.find(self.path)
+        }?;
+        plan.next[place].store(found as u16 + 1, Ordering::Relaxed);
+        Some(found)
+    }
+
+    /// Consumes the literal `null`.
+    fn null(&mut self) -> bool {
+        if self.src.get(self.pos..self.pos + 4) == Some(b"null") {
+            self.pos += 4;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The object at the cursor, whose path is the first `prefix` bytes of the
+/// scanner's path buffer (0 for the root).
+fn read_object(
+    plan: &Plan,
+    sc: &mut Scanner<'_, '_>,
+    sec: &mut Sections,
+    prefix: usize,
+    start: usize,
+    depth: usize,
+) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    sc.expect(b'{')?;
+    let mut seen: u128 = 0;
+    let mut place = start;
+    sc.skip_ws();
+    if sc.src.get(sc.pos) == Some(&b'}') {
+        sc.pos += 1;
+        return Some(());
+    }
+    loop {
+        sc.skip_ws();
+        let key = sc.string()?;
+        let idx = sc.lookup(plan, &key, prefix, place)?;
+        place = idx;
+        if seen >> idx & 1 == 1 {
+            return None;
+        }
+        seen |= 1u128 << idx;
+        sc.expect(b':')?;
+        sc.skip_ws();
+        let f = &plan.fields[idx];
+        if f.kind == OBJECT {
+            sc.path.clear();
+            sc.path.extend_from_slice(&f.name);
+            let at = sc.path.len();
+            member_object(plan, sc, sec, at, plan.fields.len() + 1 + idx, depth)?;
+        } else {
+            member(f, sc, sec)?;
+        }
+        sc.skip_ws();
+        match *sc.src.get(sc.pos)? {
+            b',' => sc.pos += 1,
+            b'}' => {
+                sc.pos += 1;
+                return Some(());
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// An `object` field's value: an object, an array of objects (each its own
+/// scope), or `null`.
+fn member_object(
+    plan: &Plan,
+    sc: &mut Scanner<'_, '_>,
+    sec: &mut Sections,
+    at: usize,
+    start: usize,
+    depth: usize,
+) -> Option<()> {
+    match *sc.src.get(sc.pos)? {
+        b'{' => read_object(plan, sc, sec, at, start, depth + 1),
+        b'n' => sc.null().then_some(()),
+        b'[' => {
+            sc.pos += 1;
+            sc.skip_ws();
+            if sc.src.get(sc.pos) == Some(&b']') {
+                sc.pos += 1;
+                return Some(());
+            }
+            sec.repeat += 1;
+            loop {
+                sc.skip_ws();
+                match *sc.src.get(sc.pos)? {
+                    b'{' => read_object(plan, sc, sec, at, start, depth + 1)?,
+                    b'n' => sc.null().then_some(())?,
+                    _ => return None,
+                }
+                sc.skip_ws();
+                match *sc.src.get(sc.pos)? {
+                    b',' => sc.pos += 1,
+                    b']' => {
+                        sc.pos += 1;
+                        break;
+                    }
+                    _ => return None,
+                }
+            }
+            sec.repeat -= 1;
+            if sec.repeat == 0 {
+                flush_deferred(plan, sec);
+            }
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+/// A leaf field's value: a scalar, `null` (nothing), or an array of them.
+fn member(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> {
+    match *sc.src.get(sc.pos)? {
+        b'n' => sc.null().then_some(()),
+        b'[' => array(f, sc, sec),
+        b'{' => None,
+        _ => value(f, sc, sec),
+    }
+}
+
+/// An array's values, in order; a `null` among them is no value.
+fn array(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> {
+    sc.pos += 1;
+    sc.skip_ws();
+    if sc.src.get(sc.pos) == Some(&b']') {
+        sc.pos += 1;
+        return Some(());
+    }
+    // Outside an array of objects, a text array is one entry holding every value and a
+    // keyword array one entry holding every distinct value; inside one each value waits
+    // with the field's others ([`flush_deferred`]).
+    let direct = sec.repeat == 0;
+    let mut at = usize::MAX;
+    sec.values.clear();
+    sec.spans.clear();
+    loop {
+        sc.skip_ws();
+        match *sc.src.get(sc.pos)? {
+            b'n' => sc.null().then_some(())?,
+            b'[' | b'{' => return None,
+            _ => match f.kind {
+                TEXT => {
+                    let s = sc.string()?;
+                    let t = sc.text(&s);
+                    if !direct {
+                        defer(f, t, sec)?;
+                    } else {
+                        if at == usize::MAX {
+                            text_header(sec, f);
+                            at = sec.inverted.len();
+                            put_i32(&mut sec.inverted, 0);
+                        }
+                        put_bytes(&mut sec.inverted, t);
+                        sec.spans.push((0, 0));
+                    }
+                }
+                KEYWORD => {
+                    let s = sc.string()?;
+                    let t = keyword_text(f, sc, &s)?;
+                    if !direct {
+                        defer(f, t, sec)?;
+                    } else {
+                        if sec.spans.len() >= MAX_ARRAY_TERMS {
+                            return None;
+                        }
+                        let from = sec.values.len() as u32;
+                        sec.values.extend_from_slice(t);
+                        sec.spans.push((from, sec.values.len() as u32));
+                    }
+                }
+                _ => value(f, sc, sec)?,
+            },
+        }
+        sc.skip_ws();
+        match *sc.src.get(sc.pos)? {
+            b',' => sc.pos += 1,
+            b']' => {
+                sc.pos += 1;
+                break;
+            }
+            _ => return None,
+        }
+    }
+    match f.kind {
+        TEXT if at != usize::MAX => {
+            let n = sec.spans.len() as i32;
+            sec.inverted[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        KEYWORD if !sec.spans.is_empty() => {
+            let values = std::mem::take(&mut sec.values);
+            let spans = std::mem::take(&mut sec.spans);
+            let each: Vec<&[u8]> = spans
+                .iter()
+                .map(|&(a, b)| &values[a as usize..b as usize])
+                .collect();
+            keyword_entries(f, &each, sec);
+            sec.values = values;
+            sec.spans = spans;
+        }
+        _ => {}
+    }
+    Some(())
+}
+
+/// A keyword or text value read inside an array of objects.
+fn defer(f: &Field, value: &[u8], sec: &mut Sections) -> Option<()> {
+    if sec.deferred.len() >= MAX_DEFERRED {
+        return None;
+    }
+    let from = sec.held.len() as u32;
+    sec.held.extend_from_slice(value);
+    sec.deferred.push((f.idx, from, sec.held.len() as u32));
+    Some(())
+}
+
+/// The deferred values as the mapper's one entry per field: a keyword's distinct values with
+/// their counts (and a doc value per value), a text's values in order.
+fn flush_deferred(plan: &Plan, sec: &mut Sections) {
+    let items = std::mem::take(&mut sec.deferred);
+    let held = std::mem::take(&mut sec.held);
+    let mut done: u128 = 0;
+    for (k, &(idx, ..)) in items.iter().enumerate() {
+        if done >> idx & 1 == 1 {
+            continue;
+        }
+        done |= 1u128 << idx;
+        let f = &plan.fields[usize::from(idx)];
+        let mine: Vec<&[u8]> = items[k..]
+            .iter()
+            .filter(|i| i.0 == idx)
+            .map(|&(_, a, b)| &held[a as usize..b as usize])
+            .collect();
+        if f.kind == TEXT {
+            text_header(sec, f);
+            put_i32(&mut sec.inverted, mine.len() as i32);
+            for t in &mine {
+                put_bytes(&mut sec.inverted, t);
+            }
+        } else {
+            keyword_entries(f, &mine, sec);
+        }
+    }
+    sec.deferred = items;
+    sec.deferred.clear();
+    sec.held = held;
+    sec.held.clear();
+}
+
+fn text_header(sec: &mut Sections, f: &Field) {
+    put_i32(&mut sec.inverted, f.number);
+    sec.inverted.push(2);
+    put_i32(&mut sec.inverted, f.analyzer);
+    sec.inverted.push(f.options);
+    sec.inverted.push(f.norm);
+    put_bytes(&mut sec.inverted, &f.name);
+    sec.counts[1] += 1;
+}
+
+/// A keyword's text, refused when the mapper would not index it as is.
+fn keyword_text<'a>(f: &Field, sc: &'a Scanner<'_, '_>, s: &Str) -> Option<&'a [u8]> {
+    let t = sc.text(s);
+    if t.len() > MAX_TERM_LENGTH {
+        return None;
+    }
+    if f.ignore_above != u32::MAX
+        && t.len() as u64 > u64::from(f.ignore_above)
+        && utf16_len(std::str::from_utf8(t).ok()?) as u64 > u64::from(f.ignore_above)
+    {
+        return None;
+    }
+    Some(t)
+}
+
+/// The entries of a keyword field's values: one inverted entry whose terms are the
+/// distinct values in first-seen order (a keyword field indexes documents only, so a
+/// repeated value still counts once), and a doc value per value.
+fn keyword_entries(f: &Field, values: &[&[u8]], sec: &mut Sections) {
+    if f.flags & INDEXED != 0 {
+        put_i32(&mut sec.inverted, f.number);
+        sec.inverted.push(0);
+        let distinct = (0..values.len())
+            .filter(|&i| (0..i).all(|j| values[j] != values[i]))
+            .count();
+        put_i32(&mut sec.inverted, distinct as i32);
+        for i in 0..values.len() {
+            if (0..i).any(|j| values[j] == values[i]) {
+                continue;
+            }
+            put_bytes(&mut sec.inverted, values[i]);
+            put_i32(&mut sec.inverted, 1);
+            sec.inverted.push(0);
+        }
+        sec.counts[1] += 1;
+    }
+    if f.flags & DOC_VALUES != 0 {
+        for v in values {
+            put_i32(&mut sec.doc_values, f.number);
+            sec.doc_values.push(1);
+            put_bytes(&mut sec.doc_values, v);
+            sec.counts[2] += 1;
+        }
+    }
+}
+
+/// One scalar of a leaf field.
 fn value(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> {
     match f.kind {
         KEYWORD => {
             let s = sc.string()?;
-            let t = sc.text(&s)?;
-            if t.len() > MAX_TERM_LENGTH {
-                return None;
+            let b = keyword_text(f, sc, &s)?;
+            if sec.repeat > 0 {
+                return defer(f, b, sec);
             }
-            if f.ignore_above != u32::MAX
-                && t.len() as u64 > u64::from(f.ignore_above)
-                && utf16_len(t) as u64 > u64::from(f.ignore_above)
-            {
-                return None;
-            }
-            let b = t.as_bytes();
             if f.flags & INDEXED != 0 {
                 put_i32(&mut sec.inverted, f.number);
                 sec.inverted.push(0);
@@ -621,23 +1032,20 @@ fn value(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> 
         }
         TEXT => {
             let s = sc.string()?;
-            let t = sc.text(&s)?;
-            put_i32(&mut sec.inverted, f.number);
-            sec.inverted.push(2);
-            put_i32(&mut sec.inverted, f.analyzer);
-            sec.inverted.push(f.options);
-            sec.inverted.push(f.norm);
-            put_bytes(&mut sec.inverted, &f.name);
+            let t = sc.text(&s);
+            if sec.repeat > 0 {
+                return defer(f, t, sec);
+            }
+            text_header(sec, f);
             put_i32(&mut sec.inverted, 1);
-            put_bytes(&mut sec.inverted, t.as_bytes());
-            sec.counts[1] += 1;
+            put_bytes(&mut sec.inverted, t);
         }
         INTEGER | LONG => {
             let (t, real) = sc.number()?;
             if real {
                 return None;
             }
-            let v: i64 = t.parse().ok()?;
+            let v = int_of(t)?;
             if f.kind == INTEGER {
                 let v = i32::try_from(v).ok()?;
                 point(sec, f, &((v as u32) ^ 0x8000_0000).to_be_bytes());
@@ -651,7 +1059,7 @@ fn value(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> 
             let v: f32 = if real {
                 t.parse().ok()?
             } else {
-                t.parse::<i64>().ok()? as f32
+                int_of(t)? as f32
             };
             if !v.is_finite() {
                 return None;
@@ -665,7 +1073,7 @@ fn value(f: &Field, sc: &mut Scanner<'_, '_>, sec: &mut Sections) -> Option<()> 
             let v: f64 = if real {
                 t.parse().ok()?
             } else {
-                t.parse::<i64>().ok()? as f64
+                int_of(t)? as f64
             };
             if !v.is_finite() {
                 return None;
