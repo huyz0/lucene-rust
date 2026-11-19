@@ -11,6 +11,7 @@ Ratios above 1 mean the plugin is faster than the baseline named in the report.
 | [Environment](reference/benchmarks/environment.md) | the machines and settings the reports were produced on |
 | [Write path on log documents](reference/benchmarks/logs-write.md) | indexing throughput and CPU on log-shaped documents against the stock writer |
 | [Aggregation sweep](reference/benchmarks/agg-sweep.md) | 22 aggregation, sort and fetch request shapes over REST |
+| [Garbage collection](reference/benchmarks/gc-pressure.md) | heap allocation, GC pauses and tail latency against stock at a 1 GB and a 4 GB heap |
 | [Aggregation segment cache](reference/benchmarks/agg-segment-cache.md) | dashboards repeated across refreshes: stock, the plugin, and the plugin with the cache |
 | [Lean sequence numbers](reference/benchmarks/lean-seq-no.md) | index size saved by the opt-in leaner sequence-number storage on a logs index |
 | [Settings defaults review](reference/benchmarks/settings-defaults.md) | the evidence behind each default of the plugin's own settings |
