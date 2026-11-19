@@ -12,7 +12,7 @@
  "org/lucenerust/opensearch/NativeSearch.java#openReaderView@2": 108,
  "org/lucenerust/opensearch/NativeSignificantTerms.java#read@2": 104,
  "org/lucenerust/opensearch/QueryEncoder.java#highlightNode": 105,
- "org/lucenerust/opensearch/RestStatsAction.java#prepareRequest": 130,
+ "org/lucenerust/opensearch/RestStatsAction.java#prepareRequest": 122,
  "org/lucenerust/opensearch/SortEncoder.java#encode@6": 146,
  "org/lucenerust/opensearch/SortEncoder.java#modeOrReason": 102,
  "org/lucenerust/opensearch/engine/AcceleratedEngine.java": 2123,

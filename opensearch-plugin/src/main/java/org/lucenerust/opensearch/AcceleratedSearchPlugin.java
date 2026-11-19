@@ -260,6 +260,8 @@ public class AcceleratedSearchPlugin extends Plugin implements
 
     private final NativeReaders readers = new NativeReaders();
     private final SearchStats stats = new SearchStats();
+    /** Direct search for eligible plain searches; null unless {@link DirectSearch#ENABLED} and the security plugin is absent. */
+    private final DirectSearch directSearch;
     /** The node's settings, for the highlighters that read node settings. */
     private final Settings nodeSettings;
     private final String libraryPath;
@@ -315,6 +317,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         // The index's one reader wrapper is the security plugin's when it is installed: stored
         // fields are then read natively one layer lower, in the engine's searchers, under it.
         this.fetchWrapper = nativeFetch && security == false;
+        this.directSearch = DirectSearch.ENABLED.get(settings) && security == false ? new DirectSearch(readers, stats) : null;
         if (nativeFetch) {
             org.lucenerust.opensearch.engine.EngineFetchLayer.install(
                 (indexSettings, reader) -> NativeStoredFieldsReader.wrap(
@@ -487,6 +490,9 @@ public class AcceleratedSearchPlugin extends Plugin implements
     @Override
     public void onIndexModule(IndexModule indexModule) {
         AcceleratedIndexerFactory.install(indexModule);
+        if (directSearch != null) {
+            directSearch.track(indexModule);
+        }
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
             indexModule.addIndexOperationListener(new DerivedSource.Listener(AcceleratedEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
         }
@@ -499,19 +505,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
                 }
             });
         }
-        // A search's unified, plain and fvh highlighting run accelerated while index.highlight.accelerated is on.
-        if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
-            FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
-            indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
-            indexModule.addSearchOperationListener(new SearchOperationListener() {
-                @Override
-                public void onPreFetchPhase(SearchContext context) {
-                    if (highlight.enabled()) {
-                        org.lucenerust.opensearch.highlight.HighlightRouting.route(context);
-                    }
-                }
-            });
-        }
+        routeHighlighting(indexModule);
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
         // index.fetch.accelerated is on, and with Lucene otherwise
@@ -582,6 +576,22 @@ public class AcceleratedSearchPlugin extends Plugin implements
                     }
                 });
             }
+        }
+    }
+
+    /** A search's unified, plain and fvh highlighting run accelerated while index.highlight.accelerated is on. */
+    private void routeHighlighting(IndexModule indexModule) {
+        if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
+            FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
+            indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onPreFetchPhase(SearchContext context) {
+                    if (highlight.enabled()) {
+                        org.lucenerust.opensearch.highlight.HighlightRouting.route(context);
+                    }
+                }
+            });
         }
     }
 
@@ -755,6 +765,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         List<Setting<?>> settings = new ArrayList<>(AcceleratedEncryptedDirectoryFactory.settings());
         settings.addAll(List.of(
             AcceleratedQueryPhaseSearcher.ENABLED,
+            DirectSearch.ENABLED,
             FETCH_ENABLED,
             HIGHLIGHT_ENABLED,
             org.lucenerust.opensearch.highlight.ExtendedHighlighting.ENABLED,
@@ -1036,6 +1047,38 @@ public class AcceleratedSearchPlugin extends Plugin implements
             MlCommons.initialize(client, clusterService, threadPool, scriptService, environment.dataFiles()[0], runtime);
         }
         return org.lucenerust.opensearch.neural.NeuralStats.initialize(clusterService, indexNameExpressionResolver, environment.settings());
+    }
+
+    /**
+     * The REST layer's hook for {@link DirectSearch}: the one place a request can be answered before the search
+     * action exists. Deprecated in OpenSearch with no replacement for this; the wrapper only forwards unless the
+     * node setting is on.
+     */
+    @Override
+    @SuppressWarnings("removal")
+    public java.util.function.UnaryOperator<org.opensearch.rest.RestHandler> getRestHandlerWrapper(
+        org.opensearch.common.util.concurrent.ThreadContext threadContext
+    ) {
+        if (directSearch == null) {
+            return null;
+        }
+        return handler -> new org.opensearch.rest.RestHandler() {
+            @Override
+            public void handleRequest(
+                org.opensearch.rest.RestRequest request,
+                org.opensearch.rest.RestChannel channel,
+                org.opensearch.transport.client.node.NodeClient client
+            ) throws Exception {
+                if (directSearch.handle(request, channel) == false) {
+                    handler.handleRequest(request, channel, client);
+                }
+            }
+
+            @Override
+            public java.util.List<Route> routes() {
+                return handler.routes();
+            }
+        };
     }
 
     @Override

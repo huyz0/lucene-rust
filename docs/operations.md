@@ -75,6 +75,7 @@ written), `method.engine` picks the k-NN engine. `extended` needs
 | `index.codec.stored_fields.recompress_on_merge` | index | `off` | accelerated engine, `index.codec: default`: merges write stored fields with a high-compression LZ4 match finder. Same LZ4 format, so OpenSearch's engine and stock Lucene read it; merged stored fields 9-28% smaller and fetches up to 30% faster, for about 1.4 CPU-s more per million log events indexed (see [benchmarks/settings-defaults.md](benchmarks/settings-defaults.md)). `false` writes stock's fast LZ4 (the default: on a warmed node recompression cost 6 CPU-s per 1M log docs, about 14% of indexing throughput). Values: `non_force` (every merge except an explicitly forced one, force merge and `_upgrade`, which copy chunks like stock), `on` (every merge; a force merge of 1M documents then takes 19.6 s instead of 5.9 s, 3.6x, for 434 instead of 479 MiB), `off` (default); `true` and `false` are accepted as `on` and `off`. With a 1 s refresh the force-merged index is 452 MiB (`non_force`) against 441 MiB (`on`), the force merge 8.1 s against 12.2 s. |
 | `index.codec.index_format` | index (node default `accelerated_search.index_format` in `opensearch.yml`) | `auto` | accelerated engine: which Lucene release's index files are written. `auto` writes the newest format the Lucene on the node reads (10.5.x hosts such as OpenSearch 3.9 get 10.5 files; a 10.6 host gets doc-values format 3 with `.dvp` files and `segments_N` version 11, which a 10.5 node cannot open). `10.5` and `10.6` pin it; a value newer than the node's Lucene is refused. Read when the shard opens; segments already written keep their format and every node reads both. |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for accelerated-engine indices. Used for rolling back and for mixed clusters |
+| `search.accelerated.direct.enabled` | node, at start | `false` | answer plain searches on a single-shard accelerated index straight from the REST layer, skipping the search action: see [Direct search](#direct-search) |
 | `breaker.indexing_buffers.limit` | node | 3 × `indices.memory.index_buffer_size` + `indices.store.page_cache.size` | circuit breaker for the accelerated writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
 | `-Daccelerated.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
 
@@ -403,3 +404,28 @@ Before rolling a new build out, run the proofs a release is held to:
 | `scripts/verify-opensearch.sh --engine --yaml` | the same with every index on the accelerated engine |
 | `scripts/verify-opensearch-cluster.sh` | three nodes: replication, recovery, failover, relocation between the engines |
 | `scripts/verify-rollback.sh` | this page's upgrade and rollback |
+
+## Direct search
+
+A cheap search spends most of its time in OpenSearch's request path: about 0.3 ms of REST and netty and 0.6 ms of the
+search action (index resolution, shard iterators, the query phase's hand-off to the search pool, the fetch phase, the
+response objects), on every engine. `search.accelerated.direct.enabled: true` (node setting, read at start, default
+`false`) answers eligible searches in the REST layer instead: OpenSearch's own code parses and builds the query, the
+native engine runs it and reads the hits' `_id` and `_source`, and the response is written as JSON. On the sweep's
+cheap shapes (term, keyword, range, ids, wildcard, prefix, exists, filters) that takes the plugin from 1.0-1.4x to 2-3x
+of OpenSearch's time; results are the same ids, scores, totals and sources.
+
+A request is answered directly when all of these hold, and otherwise goes to OpenSearch unchanged:
+
+- the URL is `/<index>/_search` with one concrete index name (not an alias, wildcard or list) and no query-string
+  parameter other than `request_cache`;
+- the index is a one-shard accelerated-engine index with `index.search.accelerated` on, no realtime search, no derived
+  source and no nested fields;
+- the body is only `query`, `size`, `from` and `track_total_hits`, with `from` + `size` at most 100 (no sort,
+  aggregations, `post_filter`, highlight, `_source` filtering, `timeout`, rescore ...), and the native encoder accepts
+  the query;
+- no hit carries `_routing` or `_ignored`.
+
+What a direct search does not go through: request authorization (so it is never on when the security plugin is
+installed), the task manager (no cancel or task listing), the search slow log, the index's search statistics and the
+request circuit breaker. `GET /_plugins/accelerated/stats` counts them as `direct_searches`.

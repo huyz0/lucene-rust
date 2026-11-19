@@ -16,6 +16,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.engine.accelerated_source_parsing` | index, at creation | `true` | read `_source` of mappings with keyword, text, numbers, boolean, date, geo_point, nested, objects, multi-fields and `copy_to` in the library: 1.12x stock's documents per second on a logs bulk, 20% less CPU per document, 1.07x on text and 1.03x on nested. Other documents go to the document mapper; `false` turns it off |
 | `indices.engine.accelerated.default` | node | `true` | the default of the setting above |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false` rolls the node back to OpenSearch's engine |
+| `search.accelerated.direct.enabled` | node, at start | `false` | answer plain searches on a single-shard accelerated index from the REST layer (2-3x on cheap shapes; skips authorization, tasks, slow log and search stats) |
 
 ## Memory
 

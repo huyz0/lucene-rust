@@ -22,6 +22,17 @@ public final class SearchStats {
         nativeQueries.increment();
     }
 
+    private final LongAdder directSearches = new LongAdder();
+
+    /** A search {@link DirectSearch} answered without OpenSearch's search action; also counted as native. */
+    public void directSearch() {
+        directSearches.increment();
+    }
+
+    public long directCount() {
+        return directSearches.sum();
+    }
+
     private final LongAdder liveQueries = new LongAdder();
 
     /** A native search that read the writer's buffered documents too; also counted as native. */
