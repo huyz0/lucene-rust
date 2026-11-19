@@ -39,10 +39,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/mdbook
-          key: mdbook-0.4.52
+          key: mdbook-0.4.52-mermaid-0.14.0
       - name: install mdbook
         if: steps.mdbook.outputs.cache-hit != 'true'
         run: cargo install mdbook --version 0.4.52 --locked --root ~/mdbook
+          cargo install mdbook-mermaid --version 0.14.0 --locked --root ~/mdbook
       - name: build the site
         run: |
           export PATH="$HOME/mdbook/bin:$PATH"
