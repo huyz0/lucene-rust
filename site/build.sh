@@ -4,7 +4,8 @@
 # The hand-written pages live in site/src. The reference pages are the files
 # under docs/ that the repository already keeps true (the same ones its gates
 # read), copied in here with their links to source files pointed at GitHub, so
-# there is one copy of each fact. Needs `mdbook` (cargo install mdbook).
+# there is one copy of each fact. Needs `mdbook` 0.4.52 and `mdbook-mermaid` 0.14.0
+# (cargo install mdbook mdbook-mermaid --locked --version ...).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 REPO=https://github.com/huyz0/lucene-rust/blob/main
@@ -33,4 +34,7 @@ for f in $(grep -o 'reference/benchmarks/[^)]*\.md' src/SUMMARY.md | sed 's#refe
     fix_links "../docs/benchmarks/$f" > "src/reference/benchmarks/$f"
 done
 
+if [ ! -f mermaid.min.js ]; then
+    mdbook-mermaid install . >/dev/null   # writes the two mermaid scripts (git-ignored)
+fi
 mdbook build

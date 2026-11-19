@@ -88,3 +88,5 @@ opensearch-plugin/build/
 /site/book/
 /site/src/reference/
 /site/src/contributing/gates/
+/site/mermaid.min.js
+/site/mermaid-init.js

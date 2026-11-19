@@ -16,6 +16,13 @@ default-theme = "light"
 preferred-dark-theme = "navy"
 site-url = "/lucene-rust/"
 no-section-label = true
+additional-css = ["custom.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "custom.js"]
 
 [output.html.search]
 limit-results = 20
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
