@@ -31,8 +31,20 @@ Each figure is a single run, so treat small differences as noise.
   against 18.1 GB for stock. The tail under load is about ten times lower, and the plugin at a 1 GB
   heap has a lower tail than stock at 4 GB.
 - The medians are close; the difference is in the tail, which is where pauses show.
-- On the write side the plugin is **not** better yet: its write threads allocate 7.5 GB against 6.0 GB
-  for stock, and pauses during indexing are of the same order (15 against 36 pauses at 1 GB, 270
-  against 211 ms in total at 4 GB). Bulk indexing is faster (16.0 against 20.1 s at 1 GB).
+- On the write side the gain depends on heap size. One million log documents in bulk, second pass on
+  a warmed JVM, 3 cores for the node, 4 bulk clients:
+
+  | Heap | Heap peak (plugin / stock) | GC count | Total GC pause, ms | Bulk p99, ms |
+  |---|---|---|---|---|
+  | 2 GB | 1.15-1.25 / 1.3-1.6 GB | 10-12 / 10-12 | about equal | n/a |
+  | 1 GB | 570 / 760 MB | 21 / 56 | 169 / 448 | n/a |
+  | 512 MB | 305 / 399 MB | 41 / 148 | 334 / 1,190 | 669 / 911 |
+
+  At small heaps the plugin runs 2.7 to 3.6 times fewer collections with shorter total pause. At 2 GB
+  the two are equal.
+- The cost: node RSS is 0.1-0.15 GB higher (native buffers; peak 1.68 against 1.59 GB at 1 GB heap,
+  1.20 against 1.04 GB at 512 MB). Indexing throughput is not above stock: 0.95x at a 512 MB heap and
+  about 0.75x at 2 GB on a warmed JVM. The claim is steadier latency and more memory left for the page
+  cache, not faster indexing.
 - Part of what is left on the search side is OpenSearch's own reduce phase on the coordinating node,
   which the plugin does not replace.
