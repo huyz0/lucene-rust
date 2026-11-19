@@ -12598,3 +12598,34 @@ fn doc_values_updates_reach_into_a_lucene_compound_segment() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }
 }
+
+/// Terms given back with `recycle` come out of `recycled` empty, with their
+/// arrays, and a term read from them is the one pushed to them last.
+#[test]
+fn recycled_inverted_terms_keep_arrays_and_no_terms() {
+    let mut t = InvertedTerms::recycled(4, 64, 8);
+    t.push(b"alpha", 2, &[0, 5], &[], &[] as &[&[u8]]);
+    t.push(b"beta", 1, &[3], &[], &[] as &[&[u8]]);
+    let ends_capacity = t.ram_bytes();
+    t.recycle();
+    let mut again = InvertedTerms::recycled(1, 1, 1);
+    assert!(again.is_empty());
+    assert!(again.ram_bytes() >= ends_capacity);
+    again.push(b"gamma", 1, &[7], &[], &[] as &[&[u8]]);
+    let got = again.get(0);
+    assert_eq!(
+        (got.term, got.freq, got.positions),
+        (&b"gamma"[..], 1, &[7][..])
+    );
+    assert_eq!(again.len(), 1);
+}
+
+/// A big document's terms are not kept by the thread.
+#[test]
+fn oversized_inverted_terms_are_not_pooled() {
+    let mut big = InvertedTerms::with_capacity(1, 1 << 20, 0);
+    big.push(b"x", 1, &[], &[], &[] as &[&[u8]]);
+    big.recycle();
+    let next = InvertedTerms::recycled(0, 0, 0);
+    assert!(next.ram_bytes() < 1 << 20);
+}

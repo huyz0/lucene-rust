@@ -2184,7 +2184,7 @@ impl<'d> IndexWriter<'d> {
                 };
                 self.pending_postings.add_field(doc_id, inv, options)?;
                 // the hash holds them now; the document keeps its norm
-                inv.terms = InvertedTerms::default();
+                std::mem::take(&mut inv.terms).recycle();
             }
             *self
                 .pending_explicit

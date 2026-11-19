@@ -267,7 +267,7 @@ impl<'a> Inverted<'a> {
             self.term_bytes.len(),
             self.occurrences.len(),
         );
-        let mut terms = InvertedTerms::with_capacity(n, bytes, occurrences); // alloc-ok: sizes held
+        let mut terms = InvertedTerms::recycled(n, bytes, occurrences);
         let has_offsets = self.has_offsets();
         for (id, t) in self.terms.iter().enumerate() {
             let mut b = terms.start_hashed(term_of(&self.terms, &self.term_bytes, id), t.hash);

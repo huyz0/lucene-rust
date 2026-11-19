@@ -103,7 +103,7 @@ use crate::index_writer::pending_postings::PendingPostings;
 use crate::index_writer::{
     buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
     DocumentVector, ExplicitDocs, ExplicitDocument, FlushDeletes, IndexWriter, IndexingConfig,
-    InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
 use crate::merge_rate_limiter::{MergeRateLimiter, OneMergeProgress};
@@ -1569,7 +1569,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         };
                         dwpt.postings.add_field(doc_id, inv, options)?;
                         // the postings hold them now; the document keeps its norm
-                        inv.terms = InvertedTerms::default();
+                        std::mem::take(&mut inv.terms).recycle();
                     }
                     if let Some(soft) = live {
                         dwpt.live.record(doc_id, &doc.fields, soft, &live_cfg);
