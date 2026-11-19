@@ -1,0 +1,69 @@
+/* Wider content and tables that use the width they are given. */
+:root {
+    --content-max-width: 1180px;
+}
+.content main {
+    max-width: var(--content-max-width);
+}
+.content table {
+    width: 100%;
+    margin: 1em 0;
+}
+.content table th,
+.content table td {
+    padding: 0.5em 0.9em;
+    vertical-align: top;
+    line-height: 1.5;
+    overflow-wrap: break-word;
+}
+.content table th {
+    white-space: nowrap;
+    text-align: left;
+}
+.content table td:first-child {
+    min-width: 11em;
+}
+.content table td code,
+.content table th code {
+    overflow-wrap: break-word;
+}
+.content table td:first-child code {
+    white-space: nowrap;
+}
+/* Only a table wider than the page scrolls, sideways, never in a small box. */
+.table-wrap {
+    overflow-x: auto;
+    max-width: 100%;
+}
+.content pre {
+    max-width: 100%;
+}
+.content img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Sidebar: section links read as headings, their pages as an indented list. */
+.sidebar .chapter > li.chapter-item > a,
+.sidebar .chapter > li.chapter-item > span > a {
+    font-weight: 700;
+    font-size: 1.12em;
+    color: var(--sidebar-active);
+    padding-top: 0.35em;
+}
+.sidebar .chapter > li.chapter-item {
+    margin-top: 0.7em;
+}
+.sidebar .chapter > li.chapter-item:first-child {
+    margin-top: 0;
+}
+.sidebar .chapter > li.chapter-item > ol.section > li > a,
+.sidebar .chapter ol.section a {
+    font-weight: 400;
+    font-size: 0.95em;
+    color: var(--sidebar-fg);
+}
+.sidebar .chapter a.active {
+    color: var(--sidebar-active);
+    font-weight: 700;
+}
