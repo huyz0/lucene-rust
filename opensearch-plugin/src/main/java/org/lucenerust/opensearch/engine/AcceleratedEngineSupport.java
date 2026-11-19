@@ -178,14 +178,16 @@ public final class AcceleratedEngineSupport {
      *   <li>{@code on} (also {@code true}): every merge. On 2M log events merged stored fields are
      *       28% smaller (the index 16%) and fetches about 30% faster, for about 1.4 CPU-s more per
      *       million documents indexed; but a force merge of 1M documents takes 3.6x as long.
-     *   <li>{@code non_force} (the default): every merge except an explicitly forced one (force
-     *       merge, upgrade), which copies the chunks like stock does.
-     *   <li>{@code off} (also {@code false}): never.
+     *   <li>{@code non_force}: every merge except an explicitly forced one (force merge,
+     *       upgrade), which copies the chunks like stock does.
+     *   <li>{@code off} (also {@code false}, the default): never, as stock. On a warmed node the
+     *       recompression was two thirds of merge-thread CPU and about 14% of logs indexing
+     *       throughput.
      * </ul>
      */
     public static final Setting<String> MERGE_LZ4_HIGH_COMPRESSION = new Setting<>(
         "index.codec.stored_fields.recompress_on_merge",
-        RECOMPRESS_NON_FORCE,
+        "off",
         v -> recompressOnMerge("index.codec.stored_fields.recompress_on_merge", v),
         Setting.Property.IndexScope
     );
