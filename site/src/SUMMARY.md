@@ -29,6 +29,7 @@
   - [Environment](reference/benchmarks/environment.md)
   - [Write path on log documents](reference/benchmarks/logs-write.md)
   - [Aggregation sweep](reference/benchmarks/agg-sweep.md)
+  - [Garbage collection](reference/benchmarks/gc-pressure.md)
   - [Aggregation segment cache](reference/benchmarks/agg-segment-cache.md)
   - [Filtered sort](reference/benchmarks/filtered-sort.md)
   - [Newest-N queries](reference/benchmarks/newest-n.md)
