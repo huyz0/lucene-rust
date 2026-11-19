@@ -31,6 +31,9 @@ import org.opensearch.index.mapper.FieldMapper;
 import org.opensearch.index.mapper.IdFieldMapper;
 import org.opensearch.index.mapper.Mapper;
 import org.opensearch.index.mapper.MetadataFieldMapper;
+import org.opensearch.index.mapper.NestedPathFieldMapper;
+import org.opensearch.index.mapper.ObjectMapper;
+import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.ParseContext;
 import org.opensearch.index.mapper.ParsedDocument;
 import org.opensearch.index.mapper.SeqNoFieldMapper;
@@ -43,6 +46,7 @@ import org.lucenerust.opensearch.NativeBridge;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -61,11 +65,12 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class NativeIngest {
     /**
      * {@code index.engine.accelerated_source_parsing}: read a document's {@code _source} in the library
-     * where the mapping allows, instead of in OpenSearch's document mapper. Off by default.
+     * where the mapping allows, instead of in OpenSearch's document mapper. On by default: a document
+     * the library does not reproduce exactly is the mapper's.
      */
     public static final Setting<Boolean> SOURCE_PARSING = Setting.boolSetting(
         "index.engine.accelerated_source_parsing",
-        false,
+        true,
         Setting.Property.IndexScope
     );
 
@@ -76,7 +81,7 @@ public final class NativeIngest {
     public static final AtomicLong REFUSED = new AtomicLong();
     static final AtomicLong MISMATCHES = new AtomicLong();
 
-    private static final int KEYWORD = 0, TEXT = 1, INTEGER = 2, LONG = 3, FLOAT = 4, DOUBLE = 5, DATE = 6;
+    private static final int KEYWORD = 0, TEXT = 1, INTEGER = 2, LONG = 3, FLOAT = 4, DOUBLE = 5, DATE = 6, OBJECT = 7, GEO_POINT = 8, BOOLEAN = 9, NESTED = 10;
 
     /** Documents the accelerated reader took from the document mapper, and the ones it left to it. */
     public static void stats(org.opensearch.core.xcontent.XContentBuilder b) throws IOException {
@@ -85,8 +90,15 @@ public final class NativeIngest {
 
     private static final int FRAGMENT_HEADER = 32;
 
+    /** Where a thread's reads land before the fragment is cut to size. */
+    private static final ThreadLocal<byte[]> ROOM = ThreadLocal.withInitial(() -> new byte[8192]);
+
     private static int header(byte[] fragment, int index) {
-        return java.nio.ByteBuffer.wrap(fragment).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(index * 4);
+        return intAt(fragment, index * 4);
+    }
+
+    private static int intAt(byte[] b, int at) {
+        return (b[at] & 0xFF) | (b[at + 1] & 0xFF) << 8 | (b[at + 2] & 0xFF) << 16 | (b[at + 3] & 0xFF) << 24;
     }
 
     /** Entries the fragment of {@code doc} holds in {@code section} (stored, inverted, doc values, points); 0 without a fragment. */
@@ -121,9 +133,10 @@ public final class NativeIngest {
         }
     }
 
-    private record Compiled(DocumentMapper mapper, int plan, boolean text) {}
+    /** A compiled mapping: its plan, and per plan index the path a nested object's documents carry in {@code _nested_path}. */
+    private record Compiled(DocumentMapper mapper, int plan, boolean text, String[] nestedPaths) {}
 
-    private static final Compiled NONE = new Compiled(null, -1, false);
+    private static final Compiled NONE = new Compiled(null, -1, false, null);
 
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
@@ -150,28 +163,47 @@ public final class NativeIngest {
             return null;
         }
         BytesRef src = source.source().toBytesRef();
-        byte[] fragment = new byte[Math.max(256, src.length * 3 + 128)];
-        int n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, fragment);
-        if (n > fragment.length) {
-            fragment = new byte[n];
-            n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, fragment);
+        byte[] room = ROOM.get();
+        int n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
+        if (n > room.length) {
+            room = new byte[n + (n >> 1)];
+            ROOM.set(room);
+            n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
         }
         if (n <= 0) {
             REFUSED.incrementAndGet();
             return null;
         }
+        byte[] fragment = java.util.Arrays.copyOf(room, n);
         HANDLED.incrementAndGet();
-        Document root = new Document(fragment, n, c.text);
         SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
         Field version = new NumericDocValuesField(VersionFieldMapper.NAME, -1L);
-        root.add(new Field(IdFieldMapper.NAME, Uid.encodeId(source.id()), IdFieldMapper.Defaults.FIELD_TYPE));
+        BytesRef id = Uid.encodeId(source.id());
+        int kids = intAt(fragment, 0);
+        int at = 4;
+        List<ParseContext.Document> docs = new ArrayList<>(kids + 1);
+        for (int i = 0; i < kids; i++) {
+            int object = intAt(fragment, at);
+            int length = intAt(fragment, at + 4);
+            Document child = new Document(java.util.Arrays.copyOfRange(fragment, at + 8, at + 8 + length), length, c.text);
+            child.add(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.NESTED_FIELD_TYPE));
+            child.add(NestedPathFieldMapper.field(settings.getIndexVersionCreated(), c.nestedPaths[object]));
+            child.add(seqID.seqNo);
+            child.add(seqID.seqNoDocValue);
+            child.add(version);
+            docs.add(child);
+            at += 8 + length;
+        }
+        Document root = new Document(java.util.Arrays.copyOfRange(fragment, at, n), n - at, c.text);
+        root.add(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.FIELD_TYPE));
         root.add(seqID.seqNo);
         root.add(seqID.seqNoDocValue);
         root.add(seqID.primaryTerm);
         root.add(version);
         BytesRef ref = source.source().toBytesRef();
         root.add(new StoredField(SourceFieldMapper.NAME, ref.bytes, ref.offset, ref.length));
-        ParsedDocument parsed = new ParsedDocument(version, seqID, source.id(), null, List.of(root), source.source(), source.getMediaType(), null);
+        docs.add(root);
+        ParsedDocument parsed = new ParsedDocument(version, seqID, source.id(), null, docs, source.source(), source.getMediaType(), null);
         if (VERIFY) {
             verify(mapper, source, parsed);
         }
@@ -201,10 +233,12 @@ public final class NativeIngest {
     private Compiled compile(DocumentMapper mapper) {
         try {
             boolean[] text = new boolean[1];
-            int plan = plan(mapper, text);
-            return plan < 0 ? new Compiled(mapper, -1, false) : new Compiled(mapper, plan, text[0]);
+            String[][] nested = new String[1][];
+            int plan = plan(mapper, text, nested);
+            String[] paths = nested[0];
+            return plan < 0 ? new Compiled(mapper, -1, false, null) : new Compiled(mapper, plan, text[0], paths);
         } catch (Exception | LinkageError e) {
-            return new Compiled(mapper, -1, false);
+            return new Compiled(mapper, -1, false, null);
         }
     }
 
@@ -212,16 +246,20 @@ public final class NativeIngest {
         "_id", "_routing", "_seq_no", "_version", "_source", "_index", "_field_names", "_ignored", "_doc_count", "_nested_path", "_feature"
     );
 
-    private static final Set<String> ROOT_KEYS = Set.of("properties", "dynamic", "_meta", "date_detection", "numeric_detection");
+    private static final Set<String> ROOT_KEYS = Set.of(
+        "properties", "dynamic", "_meta", "date_detection", "numeric_detection", "dynamic_templates", "dynamic_date_formats"
+    );
 
-    private int plan(DocumentMapper mapper, boolean[] text) throws IOException {
+    /** One entry of a plan: a field with the entry it is a multi-field of and the entries it copies to, or an object. */
+    private record Entry(String name, FieldMapper mapper, int parent, List<String> copyTo, boolean nested) {}
+
+    private int plan(DocumentMapper mapper, boolean[] text, String[][] nestedPaths) throws IOException {
         if (settings.isDerivedSourceEnabled() || settings.isPluggableDataFormatEnabled()) {
             return -1;
         }
         if (mapper.routingFieldMapper().required()
             || mapper.sourceMapper().enabled() == false
-            || mapper.sourceMapper().isComplete() == false
-            || mapper.hasNestedObjects()) {
+            || mapper.sourceMapper().isComplete() == false) {
             return -1;
         }
         Map<String, Object> root = XContentHelper.convertToMap(mapper.mappingSource().compressedReference(), false, MediaTypeRegistry.JSON).v2();
@@ -233,9 +271,9 @@ public final class NativeIngest {
         if (ROOT_KEYS.containsAll(root.keySet()) == false) {
             return -1;
         }
-        List<String[]> specs = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        List<FieldMapper> fields = new ArrayList<>();
+        List<Entry> entries = new ArrayList<>();
+        Map<String, Integer> index = new HashMap<>();
+        List<FieldMapper> mains = new ArrayList<>();
         for (Mapper m : mapper.mappers()) {
             if (m instanceof MetadataFieldMapper) {
                 if (m instanceof org.opensearch.index.mapper.DataStreamFieldMapper ds) {
@@ -253,28 +291,143 @@ public final class NativeIngest {
                 return -1;
             }
             FieldMapper fm = (FieldMapper) m;
-            fields.add(fm);
-            String name = fm.name();
-            if (name.indexOf('.') >= 0 || seen.add(name) == false) {
-                return -1;
+            if (mapper.mappers().isMultiField(fm.name())) {
+                continue;
             }
-            specs.add(new String[] { name });
+            mains.add(fm);
         }
-        if (specs.isEmpty() || specs.size() > 128) {
+        // The mapping's `object` and `nested` fields, plain ones only; every leaf of it is one of the field mappers.
+        List<String> objects = new ArrayList<>();
+        Set<String> nested = new HashSet<>();
+        Set<String> leaves = new HashSet<>();
+        if (objects(root.get("properties"), "", objects, nested, leaves, 0) == false) {
             return -1;
         }
-        Blob plan = new Blob(256).i32(specs.size());
-        for (FieldMapper fm : fields) {
-            Map<String, Object> params = params(fm);
-            if (params == null || writeField(plan, fm.name(), params, text) == false) {
+        Set<String> names = new HashSet<>();
+        for (FieldMapper fm : mains) {
+            if (names.add(fm.name()) == false) {
                 return -1;
             }
         }
+        if (leaves.equals(names) == false) {
+            return -1;
+        }
+        for (FieldMapper fm : mains) {
+            index.put(fm.name(), entries.size());
+            entries.add(new Entry(fm.name(), fm, -1, fm.copyTo().copyToFields(), false));
+        }
+        for (FieldMapper fm : mains) {
+            for (Mapper sub : fm.multiFields()) {
+                if (sub instanceof FieldMapper == false) {
+                    return -1;
+                }
+                index.put(sub.name(), entries.size());
+                entries.add(new Entry(sub.name(), (FieldMapper) sub, index.get(fm.name()), List.of(), false));
+            }
+        }
+        String[] paths = new String[entries.size() + objects.size()];
+        for (String object : objects) {
+            index.put(object, entries.size());
+            ObjectMapper om = mapper.objectMappers().get(object);
+            if (nested.contains(object)) {
+                if (om == null || om.nested().isNested() == false || om.nested().isIncludeInParent() || om.nested().isIncludeInRoot()) {
+                    return -1;
+                }
+                paths[entries.size()] = om.nestedTypePath();
+            }
+            entries.add(new Entry(object, null, -1, List.of(), nested.contains(object)));
+        }
+        nestedPaths[0] = paths;
+        if (mains.isEmpty() || entries.size() > 256) {
+            return -1;
+        }
+        Blob plan = new Blob(256).i32(entries.size());
+        for (Entry e : entries) {
+            if (e.mapper == null) {
+                plan.string(e.name).u8(e.nested ? NESTED : OBJECT).u8(0).i32(0).i32(0).i32(0).u8(0).u8(0).i32(-1).i32(0);
+                continue;
+            }
+            Map<String, Object> params = params(e.mapper);
+            int[] copies = new int[e.copyTo.size()];
+            for (int i = 0; i < copies.length; i++) {
+                Integer target = index.get(e.copyTo.get(i));
+                if (target == null || entries.get(target).mapper == null || sameScope(e.name, e.copyTo.get(i), nested) == false) {
+                    return -1;
+                }
+                copies[i] = target;
+            }
+            if (params == null || writeField(plan, e.name, params, text) == false) {
+                return -1;
+            }
+            plan.i32(e.parent).i32(copies.length);
+            for (int c : copies) {
+                plan.i32(c);
+            }
+        }
+        plan.i32(settings.getValue(MapperService.INDEX_MAPPING_NESTED_DOCS_LIMIT_SETTING).intValue());
         int[] id = new int[1];
         if (NativeWriter.ingestRegister(plan.toArray(), id) != NativeBridge.OK) {
             return -1;
         }
         return id[0];
+    }
+
+    /** Whether two field paths are in the same document: under the same nearest nested object. */
+    private static boolean sameScope(String a, String b, Set<String> nested) {
+        return scope(a, nested).equals(scope(b, nested));
+    }
+
+    private static String scope(String field, Set<String> nested) {
+        String best = "";
+        for (String n : nested) {
+            if (field.startsWith(n + ".") && n.length() > best.length()) {
+                best = n;
+            }
+        }
+        return best;
+    }
+
+    private static final Set<String> OBJECT_KEYS = Set.of("type", "properties", "dynamic");
+    private static final Set<String> NESTED_KEYS = Set.of("type", "properties", "dynamic", "include_in_parent", "include_in_root");
+
+    /**
+     * Collects the paths of the plain {@code object} and {@code nested} fields under {@code properties}
+     * into {@code objects} (the nested ones also into {@code nested}) and the paths of everything else
+     * into {@code leaves}; false for an object with any other setting (disabled, subobjects, ...) or
+     * one too deep.
+     */
+    private static boolean objects(Object properties, String prefix, List<String> objects, Set<String> nested, Set<String> leaves, int depth) {
+        if (properties == null) {
+            return true;
+        }
+        if (properties instanceof Map<?, ?> == false || depth > 20) {
+            return false;
+        }
+        for (Map.Entry<?, ?> e : ((Map<?, ?>) properties).entrySet()) {
+            if (e.getKey() instanceof String == false || e.getValue() instanceof Map<?, ?> == false) {
+                return false;
+            }
+            String name = (String) e.getKey();
+            Map<?, ?> field = (Map<?, ?>) e.getValue();
+            String path = prefix + name;
+            Object type = field.get("type");
+            boolean isNested = "nested".equals(type);
+            if (type == null || "object".equals(type) || isNested) {
+                if ((isNested ? NESTED_KEYS : OBJECT_KEYS).containsAll(field.keySet()) == false) {
+                    return false;
+                }
+                objects.add(path);
+                if (isNested) {
+                    nested.add(path);
+                }
+                if (objects(field.get("properties"), path + ".", objects, nested, leaves, depth + 1) == false) {
+                    return false;
+                }
+            } else {
+                leaves.add(path);
+            }
+        }
+        return true;
     }
 
     private static boolean dataStreamEnabled(org.opensearch.index.mapper.DataStreamFieldMapper ds) throws IOException {
@@ -318,13 +471,17 @@ public final class NativeIngest {
     );
     private static final Set<String> KEYWORD_KEYS = Set.of(
         "type", "index", "doc_values", "store", "null_value", "eager_global_ordinals", "ignore_above", "index_options", "norms", "similarity",
-        "use_similarity", "normalizer", "split_queries_on_whitespace", "boost", "meta"
+        "use_similarity", "normalizer", "split_queries_on_whitespace", "boost", "meta", "fields", "copy_to"
     );
     private static final Set<String> TEXT_KEYS = Set.of(
         "type", "boost", "index", "store", "meta", "index_options", "term_vector", "norms", "analyzer", "search_analyzer",
         "search_quote_analyzer", "similarity", "eager_global_ordinals", "position_increment_gap", "fielddata",
-        "fielddata_frequency_filter", "index_prefixes", "index_phrases"
+        "fielddata_frequency_filter", "index_prefixes", "index_phrases", "fields", "copy_to"
     );
+    private static final Set<String> GEO_KEYS = Set.of(
+        "type", "index", "doc_values", "store", "ignore_malformed", "ignore_z_value", "null_value", "meta", "boost"
+    );
+    private static final Set<String> BOOLEAN_KEYS = Set.of("type", "index", "doc_values", "store", "null_value", "boost", "meta");
 
     private static boolean metaEmpty(Map<String, Object> p) {
         return p.get("meta") instanceof Map<?, ?> m && m.isEmpty();
@@ -361,6 +518,21 @@ public final class NativeIngest {
             || is(p, "fielddata", false) == false
             || p.get("index_prefixes") != null
             || is(p, "index_phrases", false) == false;
+    }
+
+    private static boolean unsupportedGeo(Map<String, Object> p) {
+        return only(p, GEO_KEYS) == false
+            || is(p, "index", true) == false
+            || is(p, "doc_values", true) == false
+            || is(p, "store", false) == false
+            || is(p, "ignore_malformed", false) == false;
+    }
+
+    private static boolean unsupportedBoolean(Map<String, Object> p) {
+        return only(p, BOOLEAN_KEYS) == false
+            || is(p, "index", true) == false
+            || is(p, "doc_values", true) == false
+            || is(p, "store", false) == false;
     }
 
     private static boolean unsupportedNumber(Map<String, Object> p) {
@@ -462,6 +634,24 @@ public final class NativeIngest {
                 boolean skip = settings.getIndexVersionCreated().onOrAfter(org.opensearch.Version.V_3_3_0)
                     && (name.equals("@timestamp") || settings.getIndexSortConfig().hasPrimarySortOnField(name));
                 schema.absorb((skip ? SortedNumericDocValuesField.indexedField(name, 0) : new SortedNumericDocValuesField(name, 0)).fieldType());
+            }
+            case "geo_point" -> {
+                if (unsupportedGeo(p)) {
+                    return false;
+                }
+                kind = GEO_POINT;
+                flags = 3;
+                schema.absorb(new org.apache.lucene.document.LatLonPoint(name, 0, 0).fieldType());
+                schema.absorb(new org.apache.lucene.document.LatLonDocValuesField(name, 0, 0).fieldType());
+            }
+            case "boolean" -> {
+                if (unsupportedBoolean(p)) {
+                    return false;
+                }
+                kind = BOOLEAN;
+                flags = 3;
+                schema.absorb(org.opensearch.index.mapper.BooleanFieldMapper.Defaults.FIELD_TYPE);
+                schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
             }
             default -> {
                 return false;

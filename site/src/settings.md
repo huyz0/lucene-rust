@@ -13,6 +13,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.search.accelerated` | index, dynamic | `true` | serve this index's eligible searches natively |
 | `index.fetch.accelerated` | index, dynamic | `true` | read stored fields (`_source`, `_id`, `stored_fields`) natively |
 | `index.engine.accelerated` | index, at creation | node default | write this index with the accelerated engine |
+| `index.engine.accelerated_source_parsing` | index, at creation | `true` | read `_source` of mappings with keyword, text, numbers, boolean, date, geo_point, nested, objects, multi-fields and `copy_to` in the library: 1.12x stock's documents per second on a logs bulk, 20% less CPU per document, 1.07x on text and 1.03x on nested. Other documents go to the document mapper; `false` turns it off |
 | `indices.engine.accelerated.default` | node | `true` | the default of the setting above |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false` rolls the node back to OpenSearch's engine |
 | `search.accelerated.direct.enabled` | node, at start | `false` | answer plain searches on a single-shard accelerated index from the REST layer (2-3x on cheap shapes; skips authorization, tasks, slow log and search stats) |
@@ -33,7 +34,6 @@ a setting the plugin adds is not named in this documentation.
 | `index.search.realtime.enabled` | `false` | documents searchable at their acknowledgement; `max_staleness` bounds how old a view may be |
 | `index.codec.adaptive_doc_values` | `auto` | columnar numeric doc values: smaller indices, much faster group-bys on log data |
 | `index.codec.stored_fields.recompress_on_merge` | `off` | `on` or `non_force`: 9-28% smaller stored fields for about 14% of logs indexing throughput, same LZ4 format |
-| `index.engine.accelerated_source_parsing` | `false` | **opt-in**: reads `_source` of simple mappings (keyword, text, numbers, date) in the library; about 1.4x the documents per second, 30% less CPU per document; other documents go to the mapper |
 | `index.merge.reorder.*` | disabled | document reordering at merge for smaller postings; forced merges ~3x slower |
 | `index.segment_partition.field` | unset | segments sorted by a tenant or similar field, so filtered queries read only their share |
 | `index.knn.target_recall` | `0` (off) | the vector search adapts its effort to a recall target |

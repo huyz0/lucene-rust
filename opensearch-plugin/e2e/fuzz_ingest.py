@@ -12,6 +12,15 @@ produces field by field (`native ingest mismatch` on stderr; the script counts t
 
     PLUGIN_URL=http://localhost:9200 STOCK_URL=http://localhost:9201 \\
         python3 opensearch-plugin/e2e/fuzz_ingest.py --seed 1 --docs 20000 --valid 0.6
+
+`--shape objects` fuzzes a mapping with `object` fields (nested two deep), keyword, text and numeric
+fields holding arrays and nulls, and an array of objects: documents with arrays, nulls, nested
+arrays, repeated keys, dotted keys, unmapped keys and values of the wrong type.
+
+`--shape rich` fuzzes `geo_point` (objects, pairs, strings, arrays), `boolean`, a text field with a keyword
+multi-field, `copy_to` from text and keyword fields to a text field, `nested` objects (two deep, with copy_to
+inside them) and plain objects holding booleans and points, with the same kinds of bad values; the read-back
+also compares nested inner hits, bounding-box and `exists` counts.
 """
 import argparse
 import json
@@ -147,6 +156,259 @@ def gen_doc(r):
 
 
 
+OBJECT_PROPS = {
+    "@timestamp": {"type": "date"}, "host": {"type": "keyword"}, "tags": {"type": "keyword"}, "scores": {"type": "long"},
+    "msgs": {"type": "text"}, "ratio": {"type": "double"}, "when": {"type": "date"},
+    "obj": {"properties": {"k": {"type": "keyword"}, "n": {"type": "integer"}, "t": {"type": "text"}, "d": {"type": "date"},
+                           "deep": {"properties": {"x": {"type": "long"}, "tags": {"type": "keyword", "ignore_above": 40}}}}},
+    "objs": {"type": "object", "properties": {"v": {"type": "integer"}, "name": {"type": "keyword"}}},
+}
+OBJECT_LEAVES = ["@timestamp", "host", "tags", "scores", "ratio", "when", "obj.k", "obj.n", "obj.d", "obj.deep.x", "obj.deep.tags", "objs.v", "objs.name"]
+WORDS = ["the", "quick", "brown", "fox", "Jumps", "over", "LAZY", "dog", "a.b", "foo_bar", "x@y.com", "e-mail", "caf\u00e9"]
+
+
+def kw(r):
+    return r.choice(["a", "b", "c", "dup", "", "Caf\u00e9", "x" * r.choice([39, 40, 41, 300]), "line\nbreak", "sp ace", "7", "%d" % r.randrange(5)])
+
+
+def txt(r):
+    return " ".join(r.choice(WORDS) for _ in range(r.randrange(0, 6)))
+
+
+def many(r, one, p_bad=0.0, bad=()):
+    """A value for a multi-valued field: scalar, null, empty, array (with nulls), or an odd shape."""
+    k = r.random()
+    if k < .2:
+        return one(r)
+    if k < .3:
+        return None
+    if k < .4:
+        return []
+    if k < .85:
+        return [None if r.random() < .15 else one(r) for _ in range(r.randrange(1, 6))]
+    return r.choice([[[one(r)]], [one(r), [one(r)]], {"a": one(r)}, [{"a": one(r)}], True, [True], [one(r), {"b": 1}], [[]], {}]) if bad else [one(r), one(r)]
+
+
+def object_doc(r, adversarial):
+    d = {}
+
+    def put(k, v):
+        d[k] = v
+    if r.random() < .95:
+        put("@timestamp", date_val(r) if adversarial and r.random() < .3 else "2026-11-%02dT%02d:00:00.%03dZ" % (r.randrange(1, 29), r.randrange(24), r.randrange(1000)))
+    if r.random() < .8:
+        put("host", r.choice([kw(r), None, ["a", "b"]] if adversarial else [kw(r), None, [kw(r), kw(r)]]))
+    if r.random() < .8:
+        put("tags", many(r, kw, adversarial, True))
+    if r.random() < .8:
+        put("scores", many(r, lambda r: r.choice([0, 1, -1, 2**63 - 1, -2**63, r.randrange(-1000, 1000)]) if not adversarial or r.random() < .9 else r.choice([1.5, "7", 2**63, True]), adversarial, True))
+    if r.random() < .8:
+        put("msgs", many(r, txt, adversarial, True))
+    if r.random() < .5:
+        put("ratio", many(r, lambda r: r.choice([0.5, 1, -2.25, 1e10, 3]), adversarial, True))
+    if r.random() < .4:
+        put("when", many(r, lambda r: "2026-%02d-%02dT00:00:00Z" % (r.randrange(1, 13), r.randrange(1, 29)), adversarial, True))
+    if r.random() < .7:
+        o = {}
+        if r.random() < .8: o["k"] = many(r, kw, adversarial, True)
+        if r.random() < .8: o["n"] = many(r, lambda r: r.choice([0, 5, -7, 2**31 - 1, -2**31, 2**31] if adversarial else [0, 5, -7, 2**31 - 1]), adversarial, True)
+        if r.random() < .6: o["t"] = many(r, txt, adversarial, True)
+        if r.random() < .4: o["d"] = "2026-11-%02dT01:02:03.%dZ" % (r.randrange(1, 29), r.randrange(10))
+        if r.random() < .7:
+            dp = {}
+            if r.random() < .8: dp["x"] = many(r, lambda r: r.randrange(-50, 50), adversarial, True)
+            if r.random() < .8: dp["tags"] = many(r, kw, adversarial, True)
+            o["deep"] = r.choice([dp, dp, dp, None, [dp, dp], []]) if True else dp
+        put("obj", r.choice([o, o, o, None, [o, o], []]))
+    if r.random() < .6:
+        items = [{"v": r.randrange(100), "name": kw(r)} if r.random() < .8 else r.choice([{"v": 1}, {}, None, {"name": None}]) for _ in range(r.randrange(0, 4))]
+        put("objs", r.choice([items, items, {"v": 3, "name": "solo"}, None]))
+    if adversarial:
+        k = r.random()
+        if k < .08: put("unknown", r.choice([1, None, "x", {"a": 1}, [1]]))
+        elif k < .12: put("obj.k", "dotted")
+        elif k < .16: put("obj", {"k": "a", "k": "b"})
+        elif k < .2: put("obj", {"unknown": 1})
+        elif k < .24: put("obj", {"n": "5"})
+        elif k < .28: put("obj", 5)
+        elif k < .32: put("tags", r.choice([1, 2.5, True, [1, 2], ["a", 1]]))
+        elif k < .35: put("host", "dup")
+    items = list(d.items())
+    r.shuffle(items)
+    out = json.dumps(dict(items), ensure_ascii=r.random() < .5)
+    if adversarial and out != "{}" and r.random() < .06:
+        out = out[:-1] + r.choice([',"objs":[{"v":1,"v":2}]', ',"obj":{"k":"a","k":"b"}', ',"tags":["a"],"tags":["b"]', ',"obj":null,"obj":{}', ","]) + "}"
+    return out
+
+
+def gen_object_doc(r):
+    return object_doc(r, adversarial=r.random() > float(os.environ.get("VALID", "0.6")))
+
+
+def readback_objects(node, index):
+    rows, after = [], None
+    while True:
+        q = {"size": 1000, "sort": [{"_seq_no": "asc"}], "docvalue_fields": OBJECT_LEAVES, "_source": False}
+        if after is not None:
+            q["search_after"] = after
+        st, resp = node.req("POST", f"/{index}/_search", q)
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            break
+        rows += [(h["_id"], json.dumps(h.get("fields"), sort_keys=True)) for h in hits]
+        after = hits[-1]["sort"]
+    counts = []
+    count = lambda q: counts.append(node.req("POST", f"/{index}/_count", {"query": q})[1].get("count"))
+    for t in ["a", "b", "c", "dup", "", "7", "0", "Caf\u00e9", "x" * 39, "x" * 40, "x" * 300]:
+        for f in ["tags", "obj.k", "obj.deep.tags", "host", "objs.name"]:
+            count({"term": {f: t}})
+    for w in ["the", "quick", "fox", "jumps", "lazy", "dog", "foo_bar", "cafe", "mail", "e"]:
+        count({"match": {"msgs": w}})
+        count({"match": {"obj.t": w}})
+    for phrase in ["the quick", "dog the", "quick brown fox", "over lazy dog the", "fox quick"]:
+        count({"match_phrase": {"msgs": phrase}})
+        count({"match_phrase": {"obj.t": phrase}})
+    for f in ["scores", "obj.n", "obj.deep.x", "objs.v", "ratio"]:
+        for rng in [{"gte": 0, "lte": 10}, {"gte": 100}, {"lt": 0}, {"gte": 2**31 - 1}]:
+            count({"range": {f: rng}})
+    for rng in [{"gte": "2026-01-01", "lte": "2026-11-15"}, {"gte": "2026-06-01"}]:
+        for f in ["@timestamp", "when", "obj.d"]:
+            count({"range": {f: rng}})
+    for f in OBJECT_LEAVES + ["obj", "obj.deep", "objs", "msgs", "obj.t"]:
+        count({"exists": {"field": f}})
+    return rows, counts
+
+
+RICH_PROPS = {
+    "@timestamp": {"type": "date"}, "host": {"type": "keyword"}, "n": {"type": "long"}, "ok": {"type": "boolean"}, "loc": {"type": "geo_point"},
+    "title": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 40}}},
+    "tag": {"type": "keyword", "copy_to": ["all"]}, "body": {"type": "text", "copy_to": ["all"]}, "all": {"type": "text"},
+    "comments": {"type": "nested", "properties": {
+        "user": {"type": "keyword"}, "stars": {"type": "integer"}, "geo": {"type": "geo_point"}, "flag": {"type": "boolean"},
+        "text": {"type": "text", "copy_to": ["comments.all"]}, "all": {"type": "text"},
+        "reply": {"type": "nested", "properties": {"x": {"type": "long"}, "who": {"type": "keyword"}}}}},
+    "o": {"properties": {"flag": {"type": "boolean"}, "loc": {"type": "geo_point"}, "k": {"type": "keyword"}}},
+}
+RICH_LEAVES = ["@timestamp", "host", "n", "ok", "loc", "title.keyword", "tag", "o.flag", "o.loc", "o.k"]
+
+
+def geo_val(r, adversarial):
+    lat, lon = round(r.uniform(-90, 90), r.choice([0, 2, 5, 8])), round(r.uniform(-180, 180), r.choice([0, 2, 5, 8]))
+    k = r.random()
+    if k < .3: return {"lat": lat, "lon": lon}
+    if k < .5: return [lon, lat]
+    if k < .65: return "%s,%s" % (lat, lon)
+    if k < .7: return "%s, %s" % (lat, lon)
+    if k < .8: return [[lon, lat], [lon / 2, lat / 2]] if r.random() < .5 else [{"lat": lat, "lon": lon}, "%s,%s" % (lat, lon), [lon, lat]]
+    if k < .84: return r.choice([{"lat": 90, "lon": 180}, {"lat": -90, "lon": -180}, [180, 90], [-180, -90], "90,180", {"lat": 0, "lon": 0}, [0, 0], {"lat": 89.99999999, "lon": 179.99999999}])
+    if not adversarial: return {"lat": lat, "lon": lon}
+    return r.choice([[lon, lat, 5.0], {"lat": 91, "lon": 0}, {"lat": 0, "lon": 181}, "drm3btev3e86", "POINT (1 2)", {"lat": "1", "lon": "2"}, {"lat": 1}, [1], "1,2,3", "x,y",
+                     {"lat": 1, "lon": 2, "z": 3}, None, [None], [[1, 2], None], True, 5, [], {}, {"type": "Point", "coordinates": [1, 2]}, "1e1,2", " 1 , 2 ", "-0,-0", [1e-9, 1e-9]])
+
+
+def bool_val(r, adversarial):
+    k = r.random()
+    if k < .7 or not adversarial: return r.random() < .5
+    return r.choice([None, "true", "false", "", 1, 0, [True, False], [True, True], [False, None], [], "T", {"a": True}, [[True]]])
+
+
+def rich_doc(r, adversarial):
+    d = {}
+    if r.random() < .9: d["@timestamp"] = "2026-11-%02dT%02d:00:00.%03dZ" % (r.randrange(1, 29), r.randrange(24), r.randrange(1000)) if r.random() < .8 else r.choice([1700000000000, 1700000000123, 12345, 2026, "x"] if adversarial else [1700000000000, 1700000000123])
+    if r.random() < .8: d["host"] = kw(r)
+    if r.random() < .6: d["n"] = r.choice([0, 1, -5, 2**40])
+    if r.random() < .6: d["ok"] = bool_val(r, adversarial)
+    if r.random() < .6: d["loc"] = geo_val(r, adversarial)
+    if r.random() < .6: d["title"] = many(r, txt, adversarial, True) if r.random() < .5 else txt(r)
+    if r.random() < .5: d["tag"] = many(r, kw, adversarial, True) if r.random() < .5 else kw(r)
+    if r.random() < .5: d["body"] = many(r, txt, adversarial, True) if r.random() < .5 else txt(r)
+    if r.random() < .2: d["all"] = txt(r)
+    if r.random() < .7:
+        def reply():
+            x = {}
+            if r.random() < .7: x["x"] = r.randrange(-5, 5)
+            if r.random() < .5: x["who"] = kw(r)
+            return x
+        def comment():
+            c = {}
+            if r.random() < .8: c["user"] = kw(r)
+            if r.random() < .8: c["stars"] = r.choice([1, 2, 3, 4, 5] if not adversarial or r.random() < .9 else [2**31, "x", 1.5])
+            if r.random() < .3: c["geo"] = geo_val(r, adversarial)
+            if r.random() < .3: c["flag"] = bool_val(r, adversarial)
+            if r.random() < .6: c["text"] = many(r, txt, adversarial, True) if r.random() < .3 else txt(r)
+            if r.random() < .1: c["all"] = txt(r)
+            if r.random() < .4: c["reply"] = r.choice([reply(), [reply() for _ in range(r.randrange(0, 4))], None, [], [None, reply()]])
+            return c
+        d["comments"] = r.choice([comment(), [comment() for _ in range(r.randrange(0, 6))], None, [], [None, comment()], [{}]])
+    if r.random() < .5:
+        o = {}
+        if r.random() < .7: o["flag"] = bool_val(r, adversarial)
+        if r.random() < .5: o["loc"] = geo_val(r, adversarial)
+        if r.random() < .6: o["k"] = kw(r)
+        d["o"] = r.choice([o, o, [o, dict(o)], None])
+    if adversarial:
+        k = r.random()
+        if k < .05: d["unknown"] = r.choice([1, "x", None, {"a": 1}])
+        elif k < .08: d["title.keyword"] = "x"
+        elif k < .11: d["comments"] = r.choice([5, "x", [1], [[{}]], {"user": "a", "user": "b"}])
+        elif k < .14: d["ok"] = [True, False]
+        elif k < .17: d["loc"] = geo_val(r, False)
+    items = list(d.items())
+    r.shuffle(items)
+    out = json.dumps(dict(items), ensure_ascii=r.random() < .5)
+    if adversarial and out != "{}" and r.random() < .05:
+        out = out[:-1] + r.choice([',"ok":true,"ok":false', ',"loc":[1,2],"loc":[3,4]', ',"comments":[],"comments":[]', ',"title":"a","title":"b"', ","]) + "}"
+    return out
+
+
+def gen_rich_doc(r):
+    return rich_doc(r, adversarial=r.random() > float(os.environ.get("VALID", "0.6")))
+
+
+def readback_rich(node, index):
+    rows, after = [], None
+    while True:
+        q = {"size": 500, "sort": [{"_seq_no": "asc"}], "docvalue_fields": RICH_LEAVES, "_source": False,
+             "query": {"bool": {"should": [{"nested": {"path": "comments", "query": {"match_all": {}}, "inner_hits": {
+                 "size": 10, "_source": False, "docvalue_fields": ["comments.user", "comments.stars", "comments.geo", "comments.flag"],
+                 "name": "c"}}}, {"match_all": {}}]}}}
+        if after is not None:
+            q["search_after"] = after
+        st, resp = node.req("POST", f"/{index}/_search", q)
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            break
+        rows += [(h["_id"], json.dumps(h.get("fields"), sort_keys=True), json.dumps(h.get("inner_hits"), sort_keys=True)) for h in hits]
+        after = hits[-1]["sort"]
+    counts = []
+    count = lambda q: counts.append(node.req("POST", f"/{index}/_count", {"query": q})[1].get("count"))
+    for t in ["a", "b", "c", "dup", "", "7", "0", "Caf\u00e9"]:
+        for f in ["host", "tag", "title.keyword", "o.k", "comments.user", "comments.reply.who"]:
+            count({"term": {f: t}})
+    for w in ["the", "quick", "fox", "jumps", "lazy", "dog", "foo_bar", "cafe", "mail"]:
+        for f in ["title", "body", "all", "comments.text", "comments.all"]:
+            count({"match": {f: w}})
+    for phrase in ["the quick", "quick brown fox", "fox quick"]:
+        for f in ["all", "comments.all", "title"]:
+            count({"match_phrase": {f: phrase}})
+    for f in ["ok", "o.flag", "comments.flag"]:
+        for v in [True, False]:
+            count({"term": {f: v}})
+    box = {"top_left": {"lat": 60, "lon": -90}, "bottom_right": {"lat": -60, "lon": 90}}
+    for f in ["loc", "o.loc", "comments.geo"]:
+        count({"geo_bounding_box": {f: box}})
+        count({"geo_distance": {"distance": "5000km", "loc" if f == "loc" else f: {"lat": 10, "lon": 20}}})
+    for rng in [{"gte": 3}, {"lt": 3}, {"gte": 1, "lte": 5}]:
+        count({"nested": {"path": "comments", "query": {"range": {"comments.stars": rng}}}})
+    count({"nested": {"path": "comments", "query": {"bool": {"must": [{"term": {"comments.user": "a"}}, {"range": {"comments.stars": {"gte": 2}}}]}}}})
+    count({"nested": {"path": "comments", "query": {"nested": {"path": "comments.reply", "query": {"range": {"comments.reply.x": {"gte": 0}}}}}}})
+    count({"nested": {"path": "comments", "query": {"match": {"comments.all": "the"}}}})
+    for f in RICH_LEAVES + ["all", "title", "body", "comments", "comments.user", "comments.geo", "comments.flag", "comments.all", "comments.reply", "comments.reply.x"]:
+        count({"exists": {"field": f}})
+    count({"term": {"_nested_path": "comments"}})
+    return rows, counts
+
+
 PROPS = {"@timestamp": {"type": "date"}, "host": {"type": "keyword"}, "status": {"type": "integer"}, "bytes": {"type": "long"},
          "latency_ms": {"type": "float"}, "dbl": {"type": "double"}, "message": {"type": "text"}}
 
@@ -222,21 +484,27 @@ def main():
     ap.add_argument("--docs", type=int, default=5000)
     ap.add_argument("--valid", type=float, default=0.6, help="share of documents whose every value is one the accelerated reader takes")
     ap.add_argument("--dynamic", default="false")
+    ap.add_argument("--shape", default="flat", choices=["flat", "objects", "rich"])
     a = ap.parse_args()
     os.environ["VALID"] = str(a.valid)
     plugin, stock = Node(a.plugin, 300), Node(a.stock, 300)
     r = random.Random(a.seed)
-    docs = [("d%d" % i if r.random() < .9 else "dup%d" % r.randrange(50), gen_doc(r)) for i in range(a.docs)]
+    gen, props, read = {
+        "flat": (gen_doc, PROPS, readback),
+        "objects": (gen_object_doc, OBJECT_PROPS, readback_objects),
+        "rich": (gen_rich_doc, RICH_PROPS, readback_rich),
+    }[a.shape]
+    docs = [("d%d" % i if r.random() < .9 else "dup%d" % r.randrange(50), gen(r)) for i in range(a.docs)]
     outcomes = []
     data = []
     for n, settings in ((plugin, {"index.engine.accelerated_source_parsing": True}), (stock, {})):
         n.req("DELETE", "/fi")
-        st, resp = n.req("PUT", "/fi", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings}, "mappings": {"dynamic": a.dynamic, "properties": PROPS}})
+        st, resp = n.req("PUT", "/fi", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings}, "mappings": {"dynamic": a.dynamic, "properties": props}})
         if st != 200:
             print("create failed on", n.url, json.dumps(resp)[:300])
             return 1
         outcomes.append(results(n, "fi", docs, a.valid, r))
-        data.append(readback(n, "fi"))
+        data.append(read(n, "fi"))
     bad = 0
     for k, (p, s) in enumerate(zip(*outcomes)):
         if p != s and not (p[:2] == s[:2] and "immense term" in str(p[2]) and str(s[2]).startswith(str(p[2]))):
