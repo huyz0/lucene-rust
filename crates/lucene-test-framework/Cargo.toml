@@ -16,8 +16,7 @@ publish = false
 # into its lucene-store (the fault seams the mock directory hooks), and
 # `test-support` into lucene-codecs (stored-fields publication seams); a
 # `-p lucene-ffi` build has none of them, as with the other crates'
-# dev-dependencies. See the architecture skill and
-# PLAN.md section 1.
+# dev-dependencies. See the architecture skill.
 #
 # Not opted into the workspace's arithmetic gate (`[lints] workspace = true`):
 # nothing here reads a length or count off disk; it generates random inputs

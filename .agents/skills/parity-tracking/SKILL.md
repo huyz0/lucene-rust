@@ -60,5 +60,4 @@ become changelogs (it reached 1.25 MB in one file before the split).
 
 ## Deep dive
 
-[docs/parity.md](../../../docs/parity.md), [PLAN.md](../../../PLAN.md) §2
-(phase-by-phase scope).
+[docs/parity.md](../../../docs/parity.md).

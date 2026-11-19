@@ -38,8 +38,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Flushes `docs` (already fully built -- no analysis chain here, see
-/// `PLAN.md` Phase 5 item 1) to a brand-new, stored-fields-only segment named
+/// Flushes `docs` (already fully built -- no analysis chain here) to a brand-new, stored-fields-only segment named
 /// `segment_name` inside `dir`: writes and syncs `<name>.fdt`/`.fdx`/`.fdm`
 /// (stored fields), `<name>.fnm` (field infos), and `<name>.si` (segment
 /// info), then returns the [`SegmentCommitInfo`] a caller can push into a
@@ -63,8 +62,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `SegmentInfo.setUseCompoundFile(true)` /
 /// `Lucene90CompoundFormat.write(...)`, called from `IndexWriter` once a
 /// flushed segment's size falls under `TieredMergePolicy`'s
-/// `noCFSRatio`/`maxCFSSegmentSizeMB` threshold. This port has no merge
-/// policy or segment-size accounting yet (see `PLAN.md` Phase 5), so rather
+/// `noCFSRatio`/`maxCFSSegmentSizeMB` threshold. This path has no merge
+/// policy or segment-size accounting, so rather
 /// than fake a size heuristic that has nothing real to compare against, the
 /// caller decides directly with this boolean -- simpler, and just as
 /// correct for every caller this port has today (both `update_document.rs`
@@ -577,7 +576,7 @@ pub struct SortKeySpec<'a> {
 /// (possibly multi-field) index sort before writing anything, and records
 /// that sort in the resulting `.si` (real Lucene's
 /// `IndexWriterConfig.setIndexSort` + `DocumentsWriterPerThread`'s
-/// sort-on-flush behavior -- see PLAN.md's index-sort task).
+/// sort-on-flush behavior).
 ///
 /// # Scope (see `docs/parity.md` for the full write-up)
 ///

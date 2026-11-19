@@ -5,7 +5,7 @@
 (`GenGeoPoints` -> `geo_points_fixtures.rs`, ~1,180 queries, both
 engines' indexes; `VerifyGeoPoints`), bench (`--bench geo_points`,
 0.98x-3.95x, the two < 1.0 in noise):
-[M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence).
+M9 evidence.
 
 | Java | Rust | Status |
 |---|---|---|

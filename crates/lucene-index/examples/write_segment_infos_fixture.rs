@@ -49,7 +49,7 @@ fn lucene_version() -> LuceneVersion {
     // Matches the version already established (and real-Lucene-verified) by
     // `write_segment_info_fixture.rs` -- kept identical here rather than
     // reading it from the runtime JAR, since both fixtures target the same
-    // pinned Lucene version (see PLAN.md).
+    // pinned Lucene version.
     LuceneVersion {
         major: 10,
         minor: 0,

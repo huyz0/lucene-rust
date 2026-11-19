@@ -60,9 +60,8 @@ Goal: ratio ≥ 1.0 and memory no larger, without losing stage 1's correctness.
   benchmark. Keep the stage-1 structure recognisable where the redesign
   allows, and move the Java-method citations to wherever the logic now lives.
 - **Exit:** every case at or above 1.0, or each one below it written up with
-  its measured cause and why it stays (the model is
-  [`benchmarks/sweep-2026-09.md`](benchmarks/sweep-2026-09.md), "Below 1.0,
-  and why each is left").
+  its measured cause and why it stays (a short table of
+  the query, its ratio and its cause).
 
 ## Done means
 

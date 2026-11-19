@@ -5,7 +5,7 @@
 all shape queries. Tests (`GenGeoShapes` -> `geo_shapes_fixtures.rs`, 1,576
 queries over Lucene's and this port's index; `VerifyGeoShapes`), bench
 (`--bench geo_shapes`, 1.09x-1.76x):
-[M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence).
+M9 evidence.
 
 | Java | Rust | Status |
 |---|---|---|

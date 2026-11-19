@@ -11,7 +11,7 @@
 //! **Not wired into any indexing or query path yet.** This module is a
 //! tested building block only; integrating it into the postings/indexing
 //! chain (where the real allocation savings would materialize) is future
-//! work tracked in `PLAN.md`.
+//! work.
 
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;

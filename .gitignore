@@ -83,3 +83,8 @@ opensearch-plugin/build/
 /crates/lucene-analysis-smartcn/src/resources/bigramdict.mem.z
 /crates/lucene-analysis-stempel/src/resources/stemmer_20000.tbl.z
 /fixtures/corpus/real_polygons.z
+
+# Documentation site (assembled by site/build.sh)
+/site/book/
+/site/src/reference/
+/site/src/contributing/gates/

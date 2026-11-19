@@ -200,7 +200,7 @@ impl<'a> FieldNorms<'a> {
     /// so BM25 scores came out systematically 0.1-0.6% away from Lucene's --
     /// enough to reorder documents at the top-k boundary. the benchmark
     /// cross-check caught it: 19 of 20 queries disagreed with Java on hit sets
-    /// for this reason alone. See `docs/benchmarks/verdict.md`.
+    /// for this reason alone.
     ///
     /// It is also cheaper by an order of magnitude: `open` scans every doc in
     /// the segment, which for a per-query call is O(maxDoc) of pure overhead.

@@ -38,9 +38,8 @@ GET /_plugins/accelerated/stats
 `scripts/fallback-report.py [URL]` turns the counters of every node into
 shares, by reason. Take two readings some time apart under real traffic; the
 difference between them is that period's mix. The reasons are listed under
-[Falls back](#falls-back-and-why). Performance is measured, not assumed:
-`docs/milestones/m5-6-native-read.md` has the full read benchmark (174
-request shapes, native against OpenSearch's path on the same shard).
+[Falls back](#falls-back-and-why). Performance is measured, not assumed: the read benchmark covers 174
+request shapes, native against OpenSearch's path on the same shard.
 
 ## Search
 
@@ -148,7 +147,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/accelerated/stats`.
 | `time_series_order` | is on a time-series shard that visits segments out of order |
 | `timeout`, `cancelled` | had already timed out, or was cancelled, before the native call |
 | `collector_spec` | runs where another plugin replaces the top-docs collector |
-| `postings_format` | is on an index with a postings field in a format the Rust reader does not decode (e.g. `completion`'s `Completion104`); every default format Lucene 9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`, `Lucene103`, `Lucene104`) is served natively since M8 T8.5 |
+| `postings_format` | is on an index with a postings field in a format the Rust reader does not decode (e.g. `completion`'s `Completion104`); every default format Lucene 9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`, `Lucene103`, `Lucene104`) is served natively since Lucene 10.x support landed |
 | `intra_segment` | uses intra-segment concurrent search slices |
 | `reader_*`, `directory_*` | is on a remote-store or wrapped reader the plugin cannot see through |
 | `accelerated_open_failed`, `accelerated_error` | hit a native refusal or error; the node log has the message, and the request re-ran on OpenSearch's path |
@@ -156,7 +155,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/accelerated/stats`.
 ## Not supported
 
 - **Other Lucene versions and codecs.** Segments with Lucene's default codec
-  of 9.0-10.5 are read natively (M8: `Lucene90`..`Lucene104`), so an index
+  of 9.0-10.5 are read natively (`Lucene90`..`Lucene104`), so an index
   upgraded from OpenSearch 2.x is served natively
   (`scripts/verify-opensearch-upgrade.sh`). Not read: Lucene 8 and earlier
   (OpenSearch 3.x cannot open them either), non-default postings formats

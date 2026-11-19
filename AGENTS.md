@@ -2,22 +2,26 @@
 
 Orientation for AI agents on **lucene-rust**. A router + invariants list; it
 does **not** repeat the detail in [`.agents/skills/`](.agents/skills/),
-[`PLAN.md`](PLAN.md), or [`docs/`](docs/). On conflict, the skill/doc wins for
+[`docs/`](docs/) or the documentation site ([`site/`](site/), published at
+<https://huyz0.github.io/lucene-rust/>). On conflict, the skill/doc wins for
 its topic — fix the drift.
 
 ## What this is
 
 A Rust port of Apache Lucene, exposed over an FFI (C ABI, reached from the JVM through Panama FFM) boundary
-so OpenSearch (JVM) can use it as a native search engine. Pinned Lucene
+so OpenSearch (JVM) can use it as a native search and indexing engine. It ships as the OpenSearch 3.9.0
+plugin `accelerated-search` (`opensearch-plugin/`); user-facing names say *accelerated* (our path),
+*standard* or *fallback* (OpenSearch's), and the k-NN engine name is `extended` — never "rust". Pinned Lucene
 version: **10.6.0** (OpenSearch `main`'s `gradle/libs.versions.toml`; the writer
 defaults to the 10.5 index format and writes 10.6's on request -- see
-`docs/parity.md` and `docs/lucene-port-anchor.md`). The Java source of truth lives at `/home/tuong/work/lucene`;
-the OpenSearch checkout at `/home/tuong/work/OpenSearch`.
+`docs/parity.md` and `docs/lucene-port-anchor.md`). Scripts that read Lucene's Java source take a checkout path
+(`LUCENE_CHECKOUT` or an argument); the OpenSearch distribution the end-to-end proofs use is a tarball that
+`scripts/lr` downloads.
 
 The port of Lucene's modules is delivered and OpenSearch serves search and
-indexing from it; what remains is tracked in [`docs/roadmap.md`](docs/roadmap.md).
-The original plan — phases, crate layout, verification strategy, effort
-estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
+indexing from it. What of Lucene is ported, file by file, is the parity ledger
+([`docs/parity.md`](docs/parity.md)) and the class inventory (`docs/inventory/`).
+Crates are listed by `ls crates/`; the Java plugin lives in
 [`opensearch-plugin/`](opensearch-plugin/).
 
 ## Data that is not tracked
@@ -34,12 +38,13 @@ hardcode) and stay tracked.
 ## Invariants (don't break)
 
 1. **Downward-only crate deps.** `util ← store ← codecs ← index ← search ←
-   {facet, grouping, aggs, highlighter, queryparser, suggest, ...} ← ffi`, with
-   `analysis` beside `store`, `spatial3d` and `spatial4j` (geometry; `spatial3d`
+   {facet, grouping, aggs, highlighter, queryparser, suggest, sparse, tensor, ...} ← engine ← ffi`,
+   with `analysis` beside `store`, `spatial3d` and `spatial4j` (geometry; `spatial3d`
    under `index`, `spatial4j` over it) beside `util`, and the vector crates
-   (`vector-quant`, `ivf`) under `index`. There is no `lucene-core` crate: it
-   is `util` to `search`.
-   Siblings never depend on each other. See the **architecture** skill.
+   (`vector-quant`, `ivf`, `disk-hnsw`) under `index` and `search`. There is no
+   `lucene-core` crate: it is `util` to `search`. `lucene-engine` is safe Rust that
+   decides what a request means; `lucene-ffi` is the only crate with an `extern "C"`
+   surface. Siblings never depend on each other. See the **architecture** skill.
 2. **Port by on-disk format, not by class hierarchy.** The Java class graph is
    not the target; the byte-level wire format is. See **architecture** and
    **rust-performance**.
@@ -66,7 +71,7 @@ hardcode) and stay tracked.
    not transliterated from them) prove the decoder's own boundary/error
    handling. See **test-coverage**.
 9. **Keep the gates green** — `cargo fmt --check`, `cargo clippy -- -D
-   warnings`, `cargo llvm-cov --fail-under-lines 95`, the four checker scripts
+   warnings`, `cargo llvm-cov --fail-under-lines 95`, the checker scripts
    and the rustdoc pass must all pass before a task is done. `scripts/gate.sh`
    is the definition; run it as `scripts/docker-test.sh gate`.
 10. **A gate nobody has seen fail is a gate nobody should trust.** When you add
@@ -127,9 +132,9 @@ the hook, the container and this table cannot drift apart:
 | Format | `cargo fmt --all --check` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
-| Port invariants clippy cannot express | `python3 scripts/check-port-invariants.py` (FixedBitSet bounds, sentinel call sites, codec-suffix literals, blocktree `try_*`, per-document doc-values, ledger drift — see [`docs/mechanical-gates.md`](docs/mechanical-gates.md)) |
+| Port invariants clippy cannot express | `python3 scripts/check-port-invariants.py` (FixedBitSet bounds, sentinel call sites, codec-suffix literals, blocktree `try_*`, per-document doc-values — see [`docs/mechanical-gates.md`](docs/mechanical-gates.md)) |
 | Parity ledger (every Rust path/item exists, every source file has a row, index links and row counts, row/file/total budgets) | `python3 scripts/check-parity.py` |
-| Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes; `--module backward-codecs` the same for `lucene-backward-codecs`) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
+| Port inventory (every class of each Lucene module's jar has a status in `docs/inventory/`; `--summary` counts them; `--module <name>` picks a module) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
 | Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
 | Format of the out-of-workspace benchmarks (`fmt --all` stops at the workspace) | `cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml --check` |
@@ -151,11 +156,11 @@ the hook, the container and this table cannot drift apart:
 | Crash campaign (all crash models in parallel, varied conditions, optional `--load`) | `scripts/crash-storm.sh --duration SECS` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
-| OpenSearch plugin, whole proof (real 3.8.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (nodes are plain processes, no Docker; see `opensearch-plugin/README.md`) |
-| Rust engine (M5), one node: Rust vs OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the Rust engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
-| Rust engine (M5), three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
-| OpenSearch's own `InternalEngineTests` on the Rust engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |
-| The derived engine tests are exactly `derive_engine_tests.py`'s output (no hand edits) | `scripts/check-derived-engine-tests.sh` (downloads OpenSearch 3.8.0's sources, pinned by SHA-256; CI `opensearch engine`) |
+| OpenSearch plugin, whole proof (real 3.9.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (nodes are plain processes, no Docker; see `opensearch-plugin/README.md`) |
+| Accelerated engine, one node: it against OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the accelerated engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
+| Accelerated engine, three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
+| OpenSearch's own `InternalEngineTests` on the accelerated engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |
+| The derived engine tests are exactly `derive_engine_tests.py`'s output (no hand edits) | `scripts/check-derived-engine-tests.sh` (downloads OpenSearch's sources, pinned by SHA-256; CI `opensearch engine`) |
 | OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, the bridge's error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` (needs a JDK 25 for Gradle's toolchain, which the capped container lacks: run it on the host) |
 | FFI fuzzing (libFuzzer + ASan; nightly, outside the workspace) | `cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run <target> corpus/<target> seeds/<target>` |
 
@@ -164,46 +169,36 @@ capped. **CI does not use the container** — GitHub Actions runners are already
 isolated VMs, so containing them again would only cost build time; CI runs the
 same commands natively.
 
-The same gate runs in CI on every push and pull request
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
-arm64, plus the two Java jobs (`fixtures`, `write-path`), both pinned to JDK 21 to match the container.
-CI skips the jobs a change cannot affect (a docs-only change runs only the
-docs-reading gates), runs tests through `cargo nextest` with a 10-minute
-per-test limit, and reports one required check, `ci-ok`; see
-[`docs/ci.md`](docs/ci.md). The arm64 lint is worth running locally before
+The gate runs in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) in tiers, because the
+project is public and has no build budget: a pull request runs what the change touches on x64 only,
+with tests plain; a push to `main` adds the coverage gate and the release-profile tests; ARM and the
+heavy post-merge jobs (write-path, fuzz, fixtures, OpenSearch matrices) run by hand from the Actions
+tab (`workflow_dispatch`) and are run before a release. CI skips the jobs a change cannot affect (a
+docs-only change runs only the docs-reading gates), runs tests through `cargo nextest` with a
+10-minute per-test limit, and reports one required check, `ci-ok`; see
+[`docs/ci.md`](docs/ci.md). The documentation site is published by
+[`.github/workflows/docs.yml`](.github/workflows/docs.yml) on pushes to `main`. The arm64 lint is worth running locally before
 touching `lucene-ffi`: `c_char` signedness differs by target, so a whole class of
 defect is invisible on x86_64 alone (see the **ffi-safety** skill). It is a
 check-only build, so it needs no cross C compiler and no linker. The toolchain is pinned in
 [`rust-toolchain.toml`](rust-toolchain.toml) — bump it deliberately, never
 implicitly.
 
-Two caveats worth knowing about the coverage gate. `--fail-under-lines`
-enforces the **workspace total** (line coverage, currently 97.98%), not
-invariant #8's per-file bar. From M2 until the move to Panama FFM one file sat
-below it by construction: the JNI entry points (`jni_bridge.rs`, 0%), which only
-a JVM could call. The FFM bridge has no such file -- the JVM calls plain
-C-ABI functions (`jvm_reader.rs`, `ffm_bridge.rs`), all unit-tested without a
-JVM, and the Java half is exercised by the plugin's `NativeSelfTest` and by
-`scripts/verify-opensearch.sh`. CI reports the per-file view in its job summary
-without failing on it, so the day one drops below 95% it is visible rather than
-enforced. Run coverage through `scripts/coverage.sh`, never bare `cargo
-llvm-cov`: lucene-ffi's cdylib is handed to `llvm-cov` as an object although no
-test loads it, and its zero-count copy of each `#[no_mangle]` function hid the
-executed one (lucene-ffi read 96.0% where it is 98.2%). The per-file view still
-under-reports a file whose lines are split between a crate's unit-test build
-and its integration-test build: `llvm-cov`'s summary takes each function's best
-single copy, not their union (`backward_codecs/postings.rs` reads 94.5%, its
-`--show-missing-lines` union 98.6%). Both are in
+Two caveats about the coverage gate. `--fail-under-lines` enforces the **workspace total**, not
+invariant #8's per-file bar; CI reports the per-file view in its job summary without failing on it.
+Run coverage through `scripts/coverage.sh`, never bare `cargo llvm-cov`: lucene-ffi's cdylib is handed
+to `llvm-cov` as an object although no test loads it, and its zero-count copy of each `#[no_mangle]`
+function hid the executed one. The per-file view also under-reports a file whose lines are split
+between a crate's unit-test build and its integration-test build (`llvm-cov` takes each function's
+best single copy, not their union). Both are in
 [`docs/mechanical-gates.md`](docs/mechanical-gates.md#coverage-objects).
 
-When reading `cargo llvm-cov --summary-only` output, note that it prints three
-`Cover` columns — Regions, Functions, then **Lines**. Only the third is what
-`--fail-under-lines` and invariant #8 mean. Region coverage is always lower
-(97.39% vs 97.98% at the workspace level) and names different files.
+`cargo llvm-cov --summary-only` prints three `Cover` columns — Regions, Functions, then **Lines**. Only
+the third is what `--fail-under-lines` and invariant #8 mean.
 
 **Commits**: `commit-msg` allows only `feat|fix|docs|test|chore|refactor|
 perf|build|ci` + optional `(scope)` + lowercase description, and requires a
-`Co-Authored-By:` trailer. Single dev — work directly on `main`. See the
+`Co-Authored-By:` trailer. Work on a branch and open a pull request against `main`. See the
 **git-workflow** skill.
 
 ## Finding code (cheapest first)
@@ -229,7 +224,7 @@ tokens (measured on this workspace):
 
 ## Where to look (task → skill)
 
-Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
+Skills are the process source of truth; `docs/` has the deep-dives.
 
 | Task | Skill |
 |------|-------|
@@ -243,7 +238,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |
 | Arithmetic on a length/count read off disk | `code-review` + [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md) |
-| Indexing a `FixedBitSet`, returning a `-1` sentinel, editing `docs/sweep/m2/LEDGER.md` | [`docs/mechanical-gates.md`](docs/mechanical-gates.md) |
+| Indexing a `FixedBitSet`, returning a `-1` sentinel | [`docs/mechanical-gates.md`](docs/mechanical-gates.md) |
 | Editing skills | `manage-skills` |
 
 ## Workflow
@@ -260,6 +255,5 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 - **Before declaring work done**, after the gate is green, run the Tier 2
   semantic review: spawn the `quality-reviewer` subagent or run
   `/quality-review`.
-- **Update `PLAN.md`/the parity ledger/skills in the same change** — drift is a
-  bug.
-- **Roadmap**: build in phase order, [`PLAN.md`](PLAN.md) §2.
+- **Update the parity ledger, the docs (`docs/`, `site/`) and the skills in the same change** —
+  drift is a bug. A new setting must be named in the docs (`scripts/check-settings-docs.py`).

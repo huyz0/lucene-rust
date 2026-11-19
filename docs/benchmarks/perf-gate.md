@@ -1,7 +1,7 @@
-# The nightly performance gate (M6 T6.2)
+# The nightly performance gate 
 
-[M1](../milestones/m1-performance-gate.md)'s harness, made a standing gate:
-`.github/workflows/nightly-perf.yml` runs the M1 query mix
+The query-mix harness as a standing gate:
+`.github/workflows/nightly-perf.yml` runs the query mix
 (`benchmarks/queries.tsv`) on both corpora (`merged`, `segmented`, 1M
 documents from `scripts/bench-corpus.sh`) every night, through
 `scripts/bench-gate.py`, which wraps `scripts/bench-compare.sh`.
@@ -61,7 +61,7 @@ least 1.0× took these changes:
 
 Where the remaining quarter goes -- per-block costs in term and boolean
 top-k, position decoding in phrases, term expansion in regexps -- is measured
-in [`slow-tail-2026-09.md`](slow-tail-2026-09.md).
+stays the place to look when a query drops under 1.0.
 
 The first two gate runs on the new build each failed one query, q68 and then
 q64, both at 0.92–1.00× after three passes. Those were the last two fixes.
@@ -128,7 +128,7 @@ the gate script changes.
 - A slowdown both engines share. Both run on the same machine and corpus,
   so a slower machine, or a change that slows both, leaves the ratio unchanged.
 - A query shape outside `benchmarks/queries.tsv`. The REST-level shapes are
-  measured separately (`docs/milestones/m5-6-native-read.md`).
+  measured separately.
 - A regression on a machine class with no baseline. Ratios vary with the CPU,
   so the development machine's baselines (`benchmarks/baseline/local/`) do
   not gate the hosted runner. Until a runner-recorded baseline is committed

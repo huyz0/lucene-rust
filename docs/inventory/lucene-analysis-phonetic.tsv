@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-phonetic: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-phonetic (see its docstring for the statuses).
-# M12 T12.3 (Commons Codec phonetic encoders behind token filters); docs/milestones/m12-language-analysis.md.
+# M12 T12.3 (Commons Codec phonetic encoders behind token filters).
 # class	status	detail
 analysis/phonetic/BeiderMorseFilter	ported	crates/lucene-analysis-phonetic/src/filters.rs::BeiderMorseFilter
 analysis/phonetic/BeiderMorseFilterFactory	ported	crates/lucene-analysis-phonetic/src/factory.rs::BeiderMorseFilterFactory

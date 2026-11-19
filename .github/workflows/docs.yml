@@ -1,0 +1,55 @@
+# Builds the documentation site (site/, mdBook) and publishes it to GitHub Pages.
+#
+# Runs only for pushes to main that change the site or the docs it is built from,
+# and on demand. Pull requests do not build it (the page check in `ci.yml` is
+# not affected); build it locally with `site/build.sh`. One small job, no
+# artifacts kept beyond the deployed pages.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/*.md'
+      - 'docs/benchmarks/*.md'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: cache mdbook
+        id: mdbook
+        uses: actions/cache@v4
+        with:
+          path: ~/mdbook
+          key: mdbook-0.4.52
+      - name: install mdbook
+        if: steps.mdbook.outputs.cache-hit != 'true'
+        run: cargo install mdbook --version 0.4.52 --locked --root ~/mdbook
+      - name: build the site
+        run: |
+          export PATH="$HOME/mdbook/bin:$PATH"
+          site/build.sh
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/book
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -32,8 +32,7 @@ ready.
 - **Doc links resolve**: `[`links`]` in doc comments are gated
   (`rustdoc::broken_intra_doc_links`), but a symbol in *plain backticks* is
   not. When a change removes a `fn` or a `struct`, grep `crates/`,
-  `docs/parity/` and `PLAN.md` for its name -- three stale references were
-  found that way in c41.
+  and `docs/parity/` for its name; stale references have been found that way.
 - **Port → benchmark → optimise** (see `port-workflow`): new ported code is
   the closest-to-Java port, citing the Java methods it ports; a diff that
   finishes an area states its benchmark ratio against Lucene and, if below

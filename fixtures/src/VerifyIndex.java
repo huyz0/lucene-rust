@@ -68,7 +68,7 @@ import java.util.Map;
  *       equal, for a doc-values sort).
  * </ol>
  *
- * <p>The tolerance is the milestone's: {@code PLAN.md} requires the same
+ * <p>The tolerance is the one the port holds throughout: the same
  * {@code f32} operations in the same order, not bit-identical results across
  * compilers. The program also reports how many scores were bit-identical,
  * because a drift that stays under the tolerance is still worth seeing.

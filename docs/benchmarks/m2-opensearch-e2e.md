@@ -1,6 +1,6 @@
 # M2 end to end: OpenSearch with the Rust query phase
 
-Milestone [M2](../milestones/m2-opensearch-read-path.md), task T2.7: does the
+Does the
 engine-level result hold with a real JVM and a real OpenSearch node in the
 loop, and what does one crossing of the JNI boundary cost?
 
@@ -117,7 +117,7 @@ left: counting to 10,000 costs the dense term and disjunction queries
 
 ## Consistency with the standalone result
 
-M1.6's sweep (`sweep-2026-09.md`) left every query in the M1 mix at or above
+The standalone sweep left every query in the query mix at or above
 Lucene: 1.03–46×. Through OpenSearch the same shapes are 1.00–1.48× over REST
 and 1.08–3.3× in process (up to 11× in an earlier run) — the same direction, compressed by the parts of a
 request neither engine changes. The discrepancy the milestone asked to watch

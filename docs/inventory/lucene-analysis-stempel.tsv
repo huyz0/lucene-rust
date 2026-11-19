@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-stempel: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-stempel (see its docstring for the statuses).
-# M12 T12.2 (Polish stemming over the Egothor trie table); docs/milestones/m12-language-analysis.md.
+# M12 T12.2 (Polish stemming over the Egothor trie table).
 # class	status	detail
 analysis/pl/PolishAnalyzer	ported	crates/lucene-analysis-stempel/src/polish.rs::PolishAnalyzer
 analysis/stempel/StempelFilter	ported	crates/lucene-analysis-stempel/src/filter.rs::StempelFilter

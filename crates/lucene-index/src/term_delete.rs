@@ -8,7 +8,7 @@
 //! # Why this lives in `lucene-index`, not `lucene-search`
 //!
 //! The dependency graph is strictly downward: `util ← store ← codecs ← index
-//! ← search ← core ← ffi` (see the `architecture` skill and `PLAN.md` §1).
+//! ← search ← core ← ffi` (see the `architecture` skill).
 //! `crates/lucene-search/Cargo.toml` depends on `lucene-index`, so
 //! `lucene-index` depending back on `lucene-search` would invert that edge
 //! into a cycle. `lucene-search`'s own `term_doc_ids` (in

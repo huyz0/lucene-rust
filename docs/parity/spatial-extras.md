@@ -7,7 +7,7 @@ Spatial4j 0.8 and s2-geometry-library-java 1.0.0 it uses (`lucene-util`;
 contexts answer POLYGON with Spatial4j's `UnsupportedOperationException`.
 Tests (`GenSpatial4j`, `GenSpatialPrefixTree`, `GenSpatialStrategies`,
 `VerifySpatialExtras`), bench (`--bench spatial_extras`, 1.01x-1.38x):
-[M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence).
+M9 evidence.
 
 | Java | Rust | Status |
 |---|---|---|

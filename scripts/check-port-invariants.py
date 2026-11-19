@@ -588,47 +588,6 @@ def rule_doc_values_per_doc(files, problems, stats):
 
 
 # --------------------------------------------------------------------------
-# Rule 6: the sweep ledger has exactly one list to plan from
-# --------------------------------------------------------------------------
-#
-# The sweep ledger (`LEDGER` below) carries a reconciled "Open work,
-# prioritised" section and, below it, a frozen archive of where each finding
-# was first raised. Closing the prioritised entry and leaving its archive twin
-# open made the two lists drift apart.
-#
-# The invariant is the smallest one that makes the failure impossible to
-# express: **the file contains no `- [ ]`.** An archive entry is `- [x]`
-# (closed, with the evidence), `- [~]` (obsolete) or `- [->]` (open, and
-# tracked as a numbered open-work item, which it names). The prioritised list
-# itself is numbered, not checkboxed, so it is unaffected.
-#
-# This is a rule about a document, not about code. It lives here because there
-# is no other gate a document can fail.
-
-LEDGER = "docs/sweep/m2/LEDGER.md"
-OPEN_BOX = re.compile(r"^\s*- \[ \]")
-
-
-def rule_ledger_single_list(_files, problems, stats):
-    path = os.path.join(ROOT, LEDGER)
-    if not os.path.exists(path):
-        problems.append(f"{LEDGER}: missing (this rule assumes the sweep ledger exists)")
-        return
-    with open(path, encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            if OPEN_BOX.match(line):
-                stats["ledger_open_boxes"] += 1
-                problems.append(
-                    f"{LEDGER}:{lineno}: an unticked `- [ ]`. The archive below "
-                    f"\"Open work, prioritised\" is not a to-do list: close it "
-                    f"(`- [x]`, naming the batch and the evidence in the tree), "
-                    f"mark it obsolete (`- [~]`), or point it at its numbered "
-                    f"open-work item (`- [->]`). "
-                    f"(docs/mechanical-gates.md#ledger-single-list)"
-                )
-
-
-# --------------------------------------------------------------------------
 # Rule 7: a writer marks its buffer as holding blocks only after the
 # sorted-blocks-need-a-parent-field check
 # --------------------------------------------------------------------------
@@ -1191,7 +1150,6 @@ RULES = (
     ("codec-suffix-literal", rule_codec_suffix_literal),
     ("blocktree-infallible", rule_blocktree_infallible),
     ("doc-values-per-doc", rule_doc_values_per_doc),
-    ("ledger-single-list", rule_ledger_single_list),
     ("block-guard", rule_block_guard),
     ("alloc-from-doc", rule_alloc_from_doc),
     ("toplevel-whole-reader", rule_toplevel_whole_reader),
@@ -1223,7 +1181,6 @@ def main(argv):
         "suffix_sites": 0,
         "blocktree_sites": 0,
         "dv_loop_sites": 0,
-        "ledger_open_boxes": 0,
         "block_flag_sites": 0,
         "alloc_doc_sites": 0,
         "toplevel_sites": 0,

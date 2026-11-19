@@ -10,8 +10,7 @@ is ours to change -- **after** the area has a closest-to-Java port that passes
 its differential tests and a benchmark against Lucene (stages 1 and 2 of the
 `port-workflow` skill). These rules are the toolbox for stage 3: apply the one
 the profile implicates, re-run the same tests and benchmark, repeat until the
-ratio is at least 1.0. A port left slower than Java is a bug, not a milestone
--- see PLAN.md §3.5.
+ratio is at least 1.0. A port left slower than Java is a bug, not a milestone.
 
 ## Rules
 
@@ -41,14 +40,13 @@ ratio is at least 1.0. A port left slower than Java is a bug, not a milestone
 
 ## Enforced by
 
-- Nothing mechanical (perf regressions don't fail `cargo test`). Each PLAN.md
-  phase's exit criteria include profiling the new component against Java on
-  the same workload before moving to the next phase — treat that as the gate.
+- Nothing mechanical (perf regressions don't fail `cargo test`). Profile the
+  new component against Java on the same workload before moving to the next
+  area — treat that as the gate.
 - Code review: an area finished with a ratio below 1.0 and no written-up
   cause, or a redesign that landed before the area's faithful port and
   benchmark existed, is a review failure (`port-workflow`).
 
 ## Deep dive
 
-[PLAN.md](../../../PLAN.md) §3.5 (full rationale), §7 (dedicated SIMD/perf
-hardening phase).
+[docs/porting-workflow.md](../../../docs/porting-workflow.md), `docs/benchmarks/`.

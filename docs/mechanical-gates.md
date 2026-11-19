@@ -3,13 +3,10 @@
 Companion to [`docs/arithmetic-gate.md`](arithmetic-gate.md). That document
 covers the one defect class this port has a *lint* for
 (`clippy::arithmetic_side_effects`). This one covers the rules it names but
-cannot express, plus the two record-keeping rules a Tier-2 review found by eye.
+cannot express, plus the record-keeping rules a Tier-2 review found by eye.
 They are enforced by [`scripts/check-port-invariants.py`](../scripts/check-port-invariants.py),
 [`scripts/check-parity.py`](../scripts/check-parity.py) and a rustdoc pass, all
-three in [`scripts/gate.sh`](../scripts/gate.sh) and in CI. One of them guards a
-*document* rather than code -- see [`ledger-single-list`](#ledger-single-list);
-it is here because the drift it prevents has cost this sweep more batches than
-any single code defect has.
+three in [`scripts/gate.sh`](../scripts/gate.sh) and in CI.
 
 ## Why the blind spots are written down first
 
@@ -49,7 +46,6 @@ the installed Java writer fixture also exercises real zero-token segments.
 | [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define, or a backticked `scripts/..`/`tools/..` path in its Status column that does not exist | other prose outside a row's Rust column; an item that exists but no longer does what the row says; a tool path written without backticks or outside `scripts/`/`tools/` |
 | [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 550 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
 | [`parity bench-clause`](#parity-bench-clause) | `check-parity.py` | a **ported** row of a `lucene-analysis-<module>` crate naming an item `benchmarks/rust-runner/src` imports (`use lucene_analysis_<module>::..`) with no `Bench` clause | a clause whose ratio is stale or wrong; a bench case that reaches the port through an item no row names; every crate outside the M12 language modules |
-| [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
 | [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
@@ -362,36 +358,6 @@ and only review catches a "previously" or a superseded gap that the next
 sentence contradicts. Nothing checks that a row sits in the right area file,
 that its prose is still true, or that a link's target still says what the
 link claims. Links with an absolute URL or only an anchor are not checked.
-
-## ledger-single-list
-
-**Rule.** `docs/sweep/m2/LEDGER.md` contains no `- [ ]`.
-
-The ledger has one reconciled list to plan from ("Open work, prioritised") and,
-below it, a frozen archive of where each finding was first raised. Batches
-repeatedly closed the prioritised entry and left its archive twin open. That is
-the drift `c34-ledger-reconcile` was run to remove -- and **16 duplicate open
-boxes survived that reconciliation and misled six later batches**, which is
-what makes prose an inadequate enforcement mechanism for this.
-
-The invariant is the smallest one that makes the failure impossible to express.
-Every archive entry is:
-
-| marker | meaning |
-|---|---|
-| `- [x]` | closed; the entry names the batch **and the evidence in the tree** |
-| `- [~]` | obsolete; the premise stopped being true |
-| `- [->]` | still open, and tracked as a numbered open-work item, which it names |
-
-The prioritised list itself is numbered rather than checkboxed, so it is
-unaffected.
-
-**Blind spots.** It cannot tell whether a `- [x]` is *true* (c31's report
-claimed a conversion it never made), nor whether a `- [->]` points at the right
-item, nor whether a prioritised entry's prose still describes the tree. Those
-stay human, and the ledger's own preamble names the two habits that catch them:
-verify against the tree rather than a batch report, and treat a recorded
-blocker as a claim with an expiry date.
 
 ## port-inventory
 
@@ -854,9 +820,8 @@ did that for `postings::LEVEL1_FACTOR`, `collector::rank_order`,
 `[...]`.** A symbol named in plain backticks -- which is most of them in this
 tree, and all of them in `.md` files -- is invisible to it. That gap is what
 the `parity ::item` rule covers for `docs/parity.md`, and what nothing covers
-for `PLAN.md` or for prose in Rust comments. When a diff removes a `fn` or a
-`struct`, grep `crates/`, `docs/parity.md` and `PLAN.md` for its name by hand;
-`docs/sweep/` is an archive and is deliberately exempt.
+for prose in Rust comments. When a diff removes a `fn` or a
+`struct`, grep `crates/` and `docs/parity.md` for its name by hand.
 
 ## release-profile
 
@@ -990,7 +955,7 @@ statement (a lambda-heavy initializer).
 
 `python3 scripts/check-dev-notes.py` (`--list` prints hits and exits 0).
 Code comments say what the code does; milestone and task ids (`M12`,
-`T12.4`), sweep batch names, links into `docs/milestones` or `docs/sweep`,
+`T12.4`), sweep batch names, links into process documents,
 PR or task numbers and ledger references belong in git history and `docs/`.
 The check reads comment lines only, in tracked `.rs`, `.java`, `.py`, `.sh`,
 `.gradle`, `.toml` and `.yml` files outside `docs/`. **Seen to fail** with
@@ -1006,7 +971,6 @@ All of them are in `scripts/gate.sh` and therefore in
 ```
 python3 scripts/check-port-invariants.py --verbose      # counts per rule
 python3 scripts/check-port-invariants.py --only=sentinel-callers
-python3 scripts/check-port-invariants.py --only=ledger-single-list
 python3 scripts/check-parity.py
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
   cargo doc --workspace --no-deps --document-private-items

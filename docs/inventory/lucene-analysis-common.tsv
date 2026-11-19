@@ -1,7 +1,7 @@
 # Lucene 10.5.0 lucene-analysis-common: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-common (see its docstring for the statuses).
 # M11 is complete here: every class is ported, or not-needed or not-supported (M12 T12.6) with the reason.
-# (docs/milestones/m11-analysis-common.md). Factories (T11.7) are the configuration layer.
+# Factories (T11.7) are the configuration layer.
 # class	status	detail
 analysis/ar/ArabicAnalyzer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicAnalyzer
 analysis/ar/ArabicNormalizationFilter	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicNormalizationFilter

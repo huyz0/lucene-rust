@@ -6,7 +6,7 @@ OpenSearch 3.9.0's `geo_bounding_box`, `geo_distance`, `geo_polygon`,
 `geo_shape` and `_geo_distance` sort: read by `opensearch-plugin/.../GeoEncoder.java`,
 decoded by `lucene-engine/src/query_blob.rs`, run as `DocumentClause`s, cached by
 node bytes. Tests: `opensearch-plugin/e2e/geo_matrix.py` and
-`NativeSelfTest.geo` ([M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence)).
+`NativeSelfTest.geo` (M9 evidence).
 
 | Java | Rust | Status |
 |---|---|---|
