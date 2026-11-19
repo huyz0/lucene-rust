@@ -7,10 +7,5 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_EMBEDDED_DATA").is_none() {
         return;
     }
-    ensure_data(
-        "stempel",
-        &[
-            "src/resources/stemmer_20000.tbl.z",
-        ],
-    );
+    ensure_data("stempel", &["src/resources/stemmer_20000.tbl.z"]);
 }
