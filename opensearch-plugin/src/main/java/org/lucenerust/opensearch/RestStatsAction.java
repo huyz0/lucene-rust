@@ -45,6 +45,20 @@ public final class RestStatsAction extends BaseRestHandler {
         return List.of(new Route(RestRequest.Method.GET, "/_plugins/accelerated/stats"));
     }
 
+    /** The plain counters, in the order the endpoint has always listed them. */
+    private void counters(XContentBuilder b) throws java.io.IOException {
+        b.field("accelerated_queries", stats.nativeCount());
+        b.field("live_queries", stats.liveCount());
+        b.field("direct_searches", stats.directCount());
+        b.field("accelerated_errors", stats.errorCount());
+        b.field("script_errors", stats.scriptErrorCount());
+        b.field("accelerated_fetches", stats.fetchCount());
+        b.field("accelerated_sequential_fetches", stats.sequentialFetchCount());
+        b.field("accelerated_doc_values", stats.docValuesCount());
+        b.field("accelerated_highlights", stats.highlightCount());
+        b.field("accelerated_sources_without_vectors", stats.sourcesWithoutVectorsCount());
+    }
+
     @Override
     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) {
         return channel -> {
@@ -52,15 +66,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.startObject();
             b.field("library", libraryPath);
             b.field("abi_version", NativeBridge.abiVersion());
-            b.field("accelerated_queries", stats.nativeCount());
-            b.field("live_queries", stats.liveCount());
-            b.field("accelerated_errors", stats.errorCount());
-            b.field("script_errors", stats.scriptErrorCount());
-            b.field("accelerated_fetches", stats.fetchCount());
-            b.field("accelerated_sequential_fetches", stats.sequentialFetchCount());
-            b.field("accelerated_doc_values", stats.docValuesCount());
-            b.field("accelerated_highlights", stats.highlightCount());
-            b.field("accelerated_sources_without_vectors", stats.sourcesWithoutVectorsCount());
+            counters(b);
             // k-NN hits a request's later phases (fetch, scroll pages) took from its first rewrite.
             b.startObject("knn_hits");
             b.field("kept", org.lucenerust.opensearch.knn.KnnHitsMemo.keptCount());

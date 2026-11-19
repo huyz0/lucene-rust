@@ -15,6 +15,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.engine.accelerated` | index, at creation | node default | write this index with the accelerated engine |
 | `indices.engine.accelerated.default` | node | `true` | the default of the setting above |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false` rolls the node back to OpenSearch's engine |
+| `search.accelerated.direct.enabled` | node, at start | `false` | answer plain searches on a single-shard accelerated index from the REST layer (2-3x on cheap shapes; skips authorization, tasks, slow log and search stats) |
 
 ## Memory
 

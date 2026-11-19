@@ -18,7 +18,11 @@ final class SearchFlags {
      * cost every search paid twice. One small entry per index ever searched on this node.
      */
     static Flags of(SearchContext ctx) {
-        org.opensearch.index.IndexSettings settings = ctx.indexShard().indexSettings();
+        return of(ctx.indexShard().indexSettings());
+    }
+
+    /** {@link #of(SearchContext)} for an index's settings. */
+    static Flags of(org.opensearch.index.IndexSettings settings) {
         long version = settings.getIndexMetadata().getSettingsVersion();
         String uuid = settings.getUUID();
         Flags f = FLAGS.get(uuid);
