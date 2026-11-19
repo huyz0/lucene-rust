@@ -238,6 +238,14 @@ fn bench_tessellate(w: Duration, m: Duration) {
 /// `checkSelfIntersections` -- `GeoMicro.tessellateReal`.
 fn bench_tessellate_real(w: Duration, m: Duration) {
     use lucene_util::geo::simple_wkt_shape_parser::{self, WktGeometry};
+    if !std::path::Path::new("fixtures/corpus/real_polygons.z").exists() {
+        // Not tracked: built from pinned sources by the fetch script.
+        let ok = std::process::Command::new("python3")
+            .args(["scripts/fetch-data.py", "--pack", "tessellator"])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "scripts/fetch-data.py --pack tessellator failed");
+    }
     let packed = std::fs::read("fixtures/corpus/real_polygons.z").unwrap();
     let corpus =
         String::from_utf8(miniz_oxide::inflate::decompress_to_vec_zlib(&packed).unwrap()).unwrap();

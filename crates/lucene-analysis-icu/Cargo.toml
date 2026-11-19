@@ -2,6 +2,7 @@
 name = "lucene-analysis-icu"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 
 # lucene-analysis-icu: Lucene's analysis-icu module -- ICU

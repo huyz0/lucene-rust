@@ -667,8 +667,17 @@ fn to_xy(p: &Polygon) -> Result<XYPolygon, GeoError> {
 #[test]
 fn tessellator_matches_lucene_on_real_world_polygons() {
     use lucene_util::geo::tessellator::{self, Triangle};
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus/real_polygons.z");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("fixtures/corpus/real_polygons.z");
+    if !path.exists() {
+        // Not tracked: built from pinned sources by the fetch script.
+        let ok = std::process::Command::new("python3")
+            .arg(root.join("scripts/fetch-data.py"))
+            .args(["--pack", "tessellator"])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "scripts/fetch-data.py --pack tessellator failed");
+    }
     let packed = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let corpus =
         String::from_utf8(miniz_oxide::inflate::decompress_to_vec_zlib(&packed).unwrap()).unwrap();

@@ -2,6 +2,7 @@
 name = "lucene-analysis-smartcn"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 
 # lucene-analysis-smartcn: Chinese word segmentation -- the

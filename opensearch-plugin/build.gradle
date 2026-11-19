@@ -138,7 +138,16 @@ def writeBuildProperties = tasks.register('writeBuildProperties') {
     }
 }
 sourceSets.main.resources.srcDir(buildProperties)
-tasks.named('processResources') { dependsOn writeBuildProperties }
+
+// The ml-commons tokenizer data under src/main/resources/analysis is not
+// tracked: scripts/fetch-data.py downloads it, pinned by SHA-256.
+def fetchAnalysisData = tasks.register('fetchAnalysisData', Exec) {
+    workingDir repoRoot
+    commandLine 'python3', "${repoRoot}/scripts/fetch-data.py", '--pack', 'ml-analysis'
+    outputs.files(file("${projectDir}/src/main/resources/analysis/bert-uncased.zip"),
+                  file("${projectDir}/src/main/resources/analysis/mbert-uncased.zip"))
+}
+tasks.named('processResources') { dependsOn writeBuildProperties, fetchAnalysisData }
 
 def checkDist = tasks.register('checkOpensearchDist') {
     doLast {
