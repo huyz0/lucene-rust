@@ -1230,7 +1230,9 @@ enum Norms<'a> {
 /// remembered, instead of decoding, weighting, rounding and re-encoding per
 /// document (`MultiNormsLeafSimScorer`'s per-document work). The value
 /// remembered is exactly what [`Norms::norm`]'s arithmetic gives for that
-/// pair, under `advanceExact`'s rule (`batch == false`).
+/// pair under `advanceExact`'s rule (`batch == false`); `longValues`' rule
+/// (`batch`) differs only for a document whose fields sum to exactly zero,
+/// which [`DenseMemo::norm`] tells apart.
 struct DenseMemo<'a> {
     bytes: [&'a [u8]; 2],
     weights: [f32; 2],
@@ -1261,10 +1263,10 @@ impl<'a> DenseMemo<'a> {
         }))
     }
 
-    /// The combined norm of `doc`, or `None` when some field's byte array
-    /// does not cover it (the general path answers).
+    /// The combined norm of `doc` under `batch`'s rule, or `None` when some
+    /// field's byte array does not cover it (the general path answers).
     #[inline]
-    fn norm(&mut self, doc: i32) -> Option<i64> {
+    fn norm(&mut self, doc: i32, batch: bool) -> Option<i64> {
         let a = *self.bytes[0].get(doc as usize)?;
         let key = if self.two {
             let b = *self.bytes[1].get(doc as usize)?;
@@ -1283,7 +1285,20 @@ impl<'a> DenseMemo<'a> {
             }
             *slot = u16::from(encode_multi_norm(acc, false) as u8);
         }
-        Some(i64::from(*slot as u8 as i8))
+        let norm = i64::from(*slot as u8 as i8);
+        if batch && norm == 0 {
+            // `longValues` reads 1 for a document whose weighted lengths sum to exactly zero, which
+            // encodes as 0 here, as does any sum that rounds to zero: only the first reads 1.
+            let table = length_table();
+            let mut acc = self.weights[0] * table[usize::from(a)];
+            if self.two {
+                acc += self.weights[1] * table[key >> 8];
+            }
+            if acc == 0.0 {
+                return Some(1);
+            }
+        }
+        Some(norm)
     }
 }
 
@@ -1306,10 +1321,8 @@ impl Norms<'_> {
                 None => 1,
             }),
             Norms::Multi(fields, memo) => {
-                if !batch {
-                    if let Some(norm) = memo.as_mut().and_then(|m| m.norm(doc)) {
-                        return Ok(norm);
-                    }
+                if let Some(norm) = memo.as_mut().and_then(|m| m.norm(doc, batch)) {
+                    return Ok(norm);
                 }
                 if fields.is_empty() {
                     return Ok(1);
