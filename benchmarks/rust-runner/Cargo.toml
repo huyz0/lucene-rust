@@ -81,3 +81,7 @@ codegen-units = 1
 [[bin]]
 name = "logs-write"
 path = "src/logs_write.rs"
+
+[[bin]]
+name = "ingest-bench"
+path = "src/ingest_bench.rs"

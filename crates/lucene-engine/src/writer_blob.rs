@@ -193,7 +193,7 @@ fn presized_terms(c: &Cursor<'_>, n: usize) -> InvertedTerms {
             }
         }
     }
-    let mut terms = InvertedTerms::with_capacity(n, bytes, positions);
+    let mut terms = InvertedTerms::recycled(n, bytes, positions);
     terms.reserve_offsets_and_payloads(offsets, payloads);
     terms
 }

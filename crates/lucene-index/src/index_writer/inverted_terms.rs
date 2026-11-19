@@ -124,6 +124,20 @@ impl<'a> Payloads<'a> {
     }
 }
 
+thread_local! {
+    /// Emptied [`InvertedTerms`] waiting for the next document this thread
+    /// decodes: a document's fields are taken in by the writer on the thread
+    /// that decoded them, so each decode finds the arrays the last document
+    /// gave back instead of allocating a few per field.
+    static POOL: std::cell::RefCell<Vec<InvertedTerms>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How many emptied [`InvertedTerms`] a thread keeps.
+const POOL_TERMS: usize = 64;
+/// The largest one a thread keeps (heap bytes held): a big document's arrays
+/// go back to the allocator rather than staying with the thread.
+const POOL_TERMS_BYTES: usize = 64 << 10;
+
 fn len_u32(len: usize) -> u32 {
     u32::try_from(len).unwrap_or(u32::MAX)
 }
@@ -143,6 +157,35 @@ impl InvertedTerms {
             positions: Vec::with_capacity(occurrences),
             ..Self::default()
         }
+    }
+
+    /// [`Self::with_capacity`] from the arrays this thread's earlier documents
+    /// gave back through [`Self::recycle`], when there are any.
+    pub fn recycled(terms: usize, bytes: usize, occurrences: usize) -> Self {
+        let Some(mut t) = POOL.with(|p| p.borrow_mut().pop()) else {
+            return Self::with_capacity(terms, bytes, occurrences);
+        };
+        t.ends.reserve(terms);
+        t.hashes.reserve(terms);
+        t.bytes.reserve(bytes);
+        t.positions.reserve(occurrences);
+        t
+    }
+
+    /// Empties these terms and keeps their arrays for the next
+    /// [`Self::recycled`] on this thread.
+    pub fn recycle(mut self) {
+        if self.ends.capacity() == 0 || self.ram_bytes() > POOL_TERMS_BYTES {
+            return;
+        }
+        self.clear();
+        // A thread that is being torn down has no pool; the arrays are freed.
+        let _ = POOL.try_with(|p| {
+            let mut p = p.borrow_mut();
+            if p.len() < POOL_TERMS {
+                p.push(self);
+            }
+        });
     }
 
     /// Room for `offsets` more offset pairs and `payloads` more payloads.

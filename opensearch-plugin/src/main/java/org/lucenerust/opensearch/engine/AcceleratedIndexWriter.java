@@ -1084,6 +1084,11 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         return registry;
     }
 
+    /** Source ingest for this writer's index, or null when its documents are partitioned. */
+    NativeIngest newIngest(org.opensearch.index.IndexSettings settings) {
+        return partitionField == null ? new NativeIngest(registry, encoder, settings) : null;
+    }
+
     long handle() {
         return handle;
     }

@@ -905,6 +905,14 @@ public class AcceleratedEngine extends Engine {
         return localCheckpointTracker.generateSeqNo();
     }
 
+    private final SourceParsing sourceParsing = new SourceParsing();
+
+    @Override
+    public Index prepareIndex(org.opensearch.index.mapper.DocumentMapperForType m, org.opensearch.index.mapper.SourceToParse s, long seqNo, long term, long version, org.opensearch.index.VersionType vt, Operation.Origin origin, long autoIdTs, boolean retry, long ifSeqNo, long ifTerm) {
+        Index p = sourceParsing.prepare(engineConfig, documentIndexWriter, m, s, seqNo, term, version, vt, origin, autoIdTs, retry, ifSeqNo, ifTerm);
+        return p != null ? p : super.prepareIndex(m, s, seqNo, term, version, vt, origin, autoIdTs, retry, ifSeqNo, ifTerm);
+    }
+
     @Override
     public IndexResult index(Index index) throws IOException {
         assert Objects.equals(index.uid().field(), IdFieldMapper.NAME) : index.uid().field();
