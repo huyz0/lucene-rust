@@ -119,6 +119,17 @@ fn count_forward(b: &[u8], mut a: usize, mut r: usize, limit: usize) -> usize {
 fn count_back(b: &[u8], a: usize, r: usize, a_low: usize, r_low: usize) -> usize {
     let max = (a - a_low).min(r - r_low);
     let mut n = 0;
+    // Eight bytes at a time: the bytes nearest `a` and `r` are the most significant ones of a
+    // little-endian load, so the leading zero bytes of the xor count the agreeing ones.
+    while n + 8 <= max {
+        let x = u64::from_le_bytes(b[a - n - 8..a - n].try_into().unwrap());
+        let y = u64::from_le_bytes(b[r - n - 8..r - n].try_into().unwrap());
+        let diff = x ^ y;
+        if diff != 0 {
+            return n + (diff.leading_zeros() / 8) as usize;
+        }
+        n += 8;
+    }
     while n < max && b[a - n - 1] == b[r - n - 1] {
         n += 1;
     }
