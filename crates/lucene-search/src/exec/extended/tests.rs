@@ -441,31 +441,37 @@ fn dense_memo_is_the_general_multi_norm_for_every_byte_pair() {
         let mut memo = DenseMemo::new(&fields).expect("both fields are dense");
         let mut general = Norms::Multi(fields, None);
         for pass in 0..2 {
-            for doc in 0..n as i32 {
-                let want = general.norm(doc, false).unwrap();
-                assert_eq!(
-                    memo.norm(doc),
-                    Some(want),
-                    "{wa}/{wb} doc {doc} pass {pass}"
-                );
+            for batch in [false, true] {
+                for doc in 0..n as i32 {
+                    let want = general.norm(doc, batch).unwrap();
+                    assert_eq!(
+                        memo.norm(doc, batch),
+                        Some(want),
+                        "{wa}/{wb} doc {doc} pass {pass} batch {batch}"
+                    );
+                }
             }
         }
-        assert_eq!(memo.norm(n as i32), None);
-        assert_eq!(memo.norm(-1), None);
+        assert_eq!(memo.norm(n as i32, false), None);
+        assert_eq!(memo.norm(-1, true), None);
     }
     let fields = vec![(a.cursor(), 3.5f32)];
     let mut memo = DenseMemo::new(&fields).expect("one dense field");
     let mut general = Norms::Multi(fields, None);
     for doc in 0..256 {
-        assert_eq!(memo.norm(doc), Some(general.norm(doc, false).unwrap()));
+        for batch in [false, true] {
+            assert_eq!(
+                memo.norm(doc, batch),
+                Some(general.norm(doc, batch).unwrap())
+            );
+        }
     }
     // Three fields, or a field that is not dense one-byte, have none.
     let three = vec![(a.cursor(), 1.0), (b.cursor(), 1.0), (a.cursor(), 1.0)];
     assert!(DenseMemo::new(&three).is_none());
     let unnormed = crate::field_norms::FieldNorms::unnormed(10, 1.0);
     assert!(DenseMemo::new(&[(unnormed.cursor(), 1.0)]).is_none());
-    // `Norms::norm` answers from the memo under `advanceExact`'s rule
-    // only; `longValues`' rule reads the fields.
+    // `Norms::norm` answers from the memo under either rule.
     let fields = vec![(a.cursor(), 1.0f32), (b.cursor(), 1.0f32)];
     let memo = DenseMemo::new(&fields);
     let mut with_memo = Norms::Multi(fields, memo);
