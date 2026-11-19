@@ -1,6 +1,6 @@
 //! Encoders for Lucene's `DataOutput` wire primitives — the write-side
 //! counterpart of [`crate::data_input::DataInput`], format-compatible with
-//! Lucene 10.x. First piece of the write path (PLAN.md Phase 5): an
+//! Lucene 10.x. First piece of the write path: an
 //! in-memory byte-buffer sink only, no `Directory::createOutput`/fsync/
 //! rename lifecycle yet — every codec writer built on this returns owned
 //! `Vec<u8>`s that a caller can hand to any `Directory` once one exists.

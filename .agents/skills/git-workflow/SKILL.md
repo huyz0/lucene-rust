@@ -5,7 +5,7 @@ description: "WHAT: Commit message format, the gate-before-done rule, and hooks.
 
 # Git workflow
 
-Single developer, work directly on `main` (no feature branches). Every commit
+Work on a branch and open a pull request against `main`. Every commit
 leaves the tree green.
 
 ## Rules

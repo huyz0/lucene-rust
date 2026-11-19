@@ -1,8 +1,8 @@
 //! Many indexing threads, one index -- Java's `DocumentsWriter`
 //! (`DocumentsWriterPerThreadPool`, `DocumentsWriterFlushControl`,
 //! `DocumentsWriterFlushQueue`) plus the executor half of
-//! `ConcurrentMergeScheduler`, in the shape `PLAN.md` §3.5 point 6 sets:
-//! ownership instead of `synchronized`.
+//! `ConcurrentMergeScheduler`, with ownership in place of
+//! `synchronized`.
 //!
 //! # Who owns what
 //!
@@ -15,8 +15,8 @@
 //! - **The control plane** -- the wrapped [`IndexWriter`]: segment list, file
 //!   deleter, the buffered-deletes stream, merges' bookkeeping -- behind one
 //!   `Mutex`, taken only to ticket or publish a segment, start or finish a
-//!   merge, or commit. `PLAN.md` allows `Mutex` "only on control-plane
-//!   state", and this is that state. Deletes do not take it (below).
+//!   merge, or commit. The only `Mutex` guarding shared state is on this control-plane
+//!   state. Deletes do not take it (below).
 //! - **Building a segment** -- inverting the documents, writing every file,
 //!   resolving the buffer's own deletes -- happens on the thread whose slot
 //!   filled up, **with no lock held** (`DocumentsWriterPerThread.flush` runs

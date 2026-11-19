@@ -4,7 +4,7 @@
 `docs/inventory/lucene-grouping.tsv` (`check-port-inventory.py --module
 grouping`). Tests: `fixtures/src/GenGrouping.java` ->
 `lucene-grouping/tests/grouping_fixtures.rs` (668 searches equal;
-[M10 evidence](../milestones/m10-joins-grouping-queries.md#ledger-evidence)). Unit: `lucene-grouping/src/tests.rs`.
+M10 evidence). Unit: `lucene-grouping/src/tests.rs`.
 
 | Java | Rust | Status |
 |---|---|---|
@@ -20,4 +20,4 @@ grouping`). Tests: `fixtures/src/GenGrouping.java` ->
 | `GroupFacetCollector` (`GroupedFacetResult`, `FacetEntry`, `mergeSegmentResults`), `TermGroupFacetCollector` (`SV`, `MV`) | `lucene-grouping/src/facet.rs::{GroupedFacetResult, FacetEntry, TermGroupFacetCollector}` | **ported** M10 T10.4: `groupOrd * (valueCount + 1) + facetOrd` keys in `int` math, `BIG_TERM` prefix bounds, `MV` missing ordinal, `currentMin`. Tests: 82 facet searches. |
 | `GroupingSearch` | `lucene-grouping/src/search.rs::{GroupingSearch, GroupingSearchResult}` | **ported** M10 T10.4 for selectors and blocks, `CachingCollector` caching (count or RAM, with/without scores). Differs: a selector per collector, from a factory (Java shares one); replaying a score-less cache into a score-reading pass: `Error::IllegalState` (Java: `NullPointerException`). |
 | `Sort` / `FieldComparator` as grouping drives them (`getComparator(numHits, Pruning.NONE)`: `copy`, `compare`, `setBottom`, `compareBottom`, `value`, `compareValues`; `RelevanceComparator`, `DocComparator`, numeric comparators, `TermOrdValComparator`) | `lucene-grouping/src/sort.rs::{GroupSortValue}` | **partial** M10 T10.4: slots hold `value(slot)` compared by `compareValues` (keyword: ordinals in a segment, terms across). Keys: score, doc, `LONG`/`INT`/`DOUBLE`/`FLOAT` (`NUMERIC`/`SORTED_NUMERIC` + selector), `STRING` (`SORTED`/`SORTED_SET`). Gap: `STRING_VAL`, custom keys: `Error::Unsupported`. |
-| Benchmark | `scripts/bench-micro.sh --bench grouping` (`GroupingMicro.java` / `micro_grouping.rs`) | 200 000 docs, four segments, digests = Lucene's: facets 2.30x/2.67x, all groups and heads 2.63x, distinct values 2.43x, cached 1.55x, long range 1.26x, by relevance 1.19x-1.23x, field-sorted 1.12x-1.20x, blocks 1.05x-1.17x (within noise; profile: `docs/milestones/m10-joins-grouping-queries.md`). |
+| Benchmark | `scripts/bench-micro.sh --bench grouping` (`GroupingMicro.java` / `micro_grouping.rs`) | 200 000 docs, four segments, digests = Lucene's: facets 2.30x/2.67x, all groups and heads 2.63x, distinct values 2.43x, cached 1.55x, long range 1.26x, by relevance 1.19x-1.23x, field-sorted 1.12x-1.20x, blocks 1.05x-1.17x (within noise). |

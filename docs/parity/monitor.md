@@ -2,7 +2,7 @@
 
 [Index](../parity.md). `org.apache.lucene.monitor`: queries registered once, a document batch
 matched against all of them through a presearcher over each query's term tree. Four sub-tasks
-(T13.5a-d, [m13](../milestones/m13-search-application-modules.md)); T13.5a is the query analysis
+(T13.5a-d, m13); T13.5a is the query analysis
 and T13.5b the presearcher built from it.
 
 | Java | Rust | Status |

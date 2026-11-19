@@ -25,8 +25,8 @@ other.
   `lucene-ffi` is the only crate allowed to depend on everything (it is the
   boundary: handles, the panic guard, raw reads and the `extern "C"` shims),
   and nothing in `lucene-engine` may depend on it. Code that needs no pointer
-  and no handle belongs in the engine. See PLAN.md §1 for the full table.
-- **Nothing depends on a `lucene-analysis-<m>` crate** (PLAN.md §1): each
+  and no handle belongs in the engine.
+- **Nothing depends on a `lucene-analysis-<m>` crate** (one crate per language module): each
   language module depends on `lucene-util` and `lucene-analysis`, and is a
   leaf -- not another module, not `lucene-search` or above (the
   out-of-workspace `benchmarks/rust-runner` is the one consumer). Shared
@@ -34,8 +34,8 @@ other.
   to `lucene-index` is allowed, the one Lucene's `analysis-icu` has to
   `lucene-core`: `ICUCollationDocValuesField` is a `SortedDocValuesField`
   (Java: a `Field`), so `lucene-analysis-icu` depends on `lucene-index` for
-  that type alone (M12, Architecture).
-- **`lucene-test-framework` is a dev-dependency only** (PLAN.md §1, M14.h).
+  that type alone.
+- **`lucene-test-framework` is a dev-dependency only**.
   A crate may name it under `[dev-dependencies]`, never `[dependencies]` or
   `[build-dependencies]`, so it never reaches `lucene-ffi`'s library: `cargo
   tree -p lucene-ffi -e normal,build` must not list it. It depends on the
@@ -52,7 +52,7 @@ other.
   Java-format concept (e.g. `codec_util.rs`, `segment_info.rs`,
   `segment_infos.rs` — each maps to one Java file or format).
 - **Read path before write path.** Don't add write-side (encode) support for a
-  format until its phase (PLAN.md §2) says so — flag it in the parity ledger (`docs/parity/`) as
+  format unless it is needed — flag it in the parity ledger (`docs/parity/`) as
   deferred instead of half-implementing it.
 
 ## Enforced by
@@ -74,5 +74,4 @@ other.
 
 ## Deep dive
 
-[PLAN.md](../../../PLAN.md) §1 (crate table) and §3.5 (Rust-first design
-principles).
+`ls crates/`, and each crate's `Cargo.toml` for the exact edges.

@@ -1,4 +1,4 @@
-//! lucene-store: Directory/IndexInput abstractions. See /PLAN.md.
+//! lucene-store: Directory/IndexInput abstractions.
 
 // Unit tests call `unsafe` entry points with pointers they own; the contract
 // is stated once on each function, not repeated at every call.

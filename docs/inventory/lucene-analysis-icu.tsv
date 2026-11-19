@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-icu: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-icu (see its docstring for the statuses).
-# M12 T12.4 (ICU4J normalisation, folding, transforms, script-aware tokenization and collation, over a port of the ICU4J 77.1 runtime reading ICU's data); docs/milestones/m12-language-analysis.md.
+# M12 T12.4 (ICU4J normalisation, folding, transforms, script-aware tokenization and collation, over a port of the ICU4J 77.1 runtime reading ICU's data).
 # class	status	detail
 analysis/icu/ICUCollationAttributeFactory	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationAttributeFactory
 analysis/icu/ICUCollationDocValuesField	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationDocValuesField

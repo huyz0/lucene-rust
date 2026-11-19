@@ -5,7 +5,7 @@ block joins (T10.2), query-time joins (T10.3). Inventory:
 `docs/inventory/lucene-join.tsv`. Tests: `VerifyJoin` (`verify-write-path.sh`),
 `block_join_merge_stress.rs`, `scripts/op-stream-fuzz.sh`, unit
 (`lucene-index/src/index_writer/block_tests.rs`, `lucene-search/src/join/tests.rs`)
-([M10 evidence](../milestones/m10-joins-grouping-queries.md#ledger-evidence)).
+(M10 evidence).
 
 | Java | Rust | Status |
 |---|---|---|

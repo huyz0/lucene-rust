@@ -6,7 +6,7 @@ x/y/z and cell relations derive from it, so all is held to
 Java's bits: fdlibm trig; generators run with
 HotSpot sin/cos/tan intrinsics off. Tests (`GenGeo3d`, `GenGeo3dMath`),
 benches (`--bench geo3d` 1.01x-1.41x, `--bench geo3d_points`
-1.18x-1.74x): [M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence).
+1.18x-1.74x): M9 evidence.
 
 | Java | Rust | Status |
 |---|---|---|

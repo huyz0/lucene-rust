@@ -1,7 +1,7 @@
 //! Port of `org.apache.lucene.codecs.lucene99.Lucene99SegmentInfoFormat` (`.si` files).
 //!
-//! Both directions ported: [`parse`] (read path, PLAN.md Phase 2) and
-//! [`write()`] (write path, PLAN.md Phase 5) are exact byte-level inverses of
+//! Both directions ported: [`parse`] (read path) and
+//! [`write()`] (write path) are exact byte-level inverses of
 //! each other.
 //!
 //! Wire format (all ints little-endian; header/footer per `codec_util`):

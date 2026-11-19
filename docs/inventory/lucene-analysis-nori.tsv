@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-nori: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-nori (see its docstring for the statuses).
-# M12 T12.1 (Korean morphological analysis over mecab-ko-dic (the Viterbi lattice, user dictionary, decompounding)); docs/milestones/m12-language-analysis.md.
+# M12 T12.1 (Korean morphological analysis over mecab-ko-dic (the Viterbi lattice, user dictionary, decompounding)).
 # class	status	detail
 analysis/ko/DecompoundToken	ported	crates/lucene-analysis-nori/src/token.rs::Token (Kind::Decompound)
 analysis/ko/DictionaryToken	ported	crates/lucene-analysis-nori/src/token.rs::Token (Kind::Dictionary)

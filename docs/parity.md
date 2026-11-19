@@ -29,7 +29,7 @@ Every area file is one table, `| Java | Rust | Status |`:
   **Bench:** (current `scripts/bench-micro.sh` ratio, Rust speed / Java
   speed, so above 1.0 is faster). History -- which batch did what, superseded
   claims, test-count logs -- is not kept here: it is `git log` and
-  [`docs/sweep/`](sweep/).
+  `git log`.
 
 ## Status vocabulary
 
@@ -43,7 +43,6 @@ Every area file is one table, `| Java | Rust | Status |`:
 | **generated** | Produced by a script from Lucene's own sources (tables, automata). |
 | **native** / **falls back** | Plugin rows only: served by Rust, or left to Lucene with the reason OpenSearch's stats count. |
 
-Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s.
 
 ## Areas
 
@@ -124,5 +123,5 @@ joins, grouping, functions) and `engine.md` are the exceptions, grouped by
 feature because a feature spans crates. Next to the rows for the same Java
 class; bump the row count above. A row past 2,000 characters or a file past
 80 KB fails the check: split the row (read side / write side, one class per
-row) or the area, and link [`docs/sweep/`](sweep/) for rationale instead of
+row) or the area, and leave the rationale to `git log` instead of
 writing it out.

@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-morfologik: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-morfologik (see its docstring for the statuses).
-# M12 T12.3 (Morfologik FSA dictionary lookup); docs/milestones/m12-language-analysis.md.
+# M12 T12.3 (Morfologik FSA dictionary lookup).
 # class	status	detail
 analysis/morfologik/MorfologikAnalyzer	ported	crates/lucene-analysis-morfologik/src/analyzer.rs::MorfologikAnalyzer
 analysis/morfologik/MorfologikFilter	ported	crates/lucene-analysis-morfologik/src/filter.rs::MorfologikFilter

@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-kuromoji: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-kuromoji (see its docstring for the statuses).
-# M12 T12.1 (Japanese morphological analysis over IPADIC (the Viterbi lattice, user dictionary, n-best)); docs/milestones/m12-language-analysis.md.
+# M12 T12.1 (Japanese morphological analysis over IPADIC (the Viterbi lattice, user dictionary, n-best)).
 # class	status	detail
 analysis/ja/JapaneseAnalyzer	ported	crates/lucene-analysis-kuromoji/src/analyzer.rs::JapaneseAnalyzer
 analysis/ja/JapaneseBaseFormFilter	ported	crates/lucene-analysis-kuromoji/src/base_form.rs::JapaneseBaseFormFilter

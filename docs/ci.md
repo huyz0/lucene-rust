@@ -151,3 +151,11 @@ does.
 - **Skipping CI on `main` after a green pull request.** The merge commit was
   already tested, but `main` can move between a PR's run and its merge, so
   `main` still runs; `cancel-in-progress` already stops a superseded run.
+
+## The documentation site
+
+`.github/workflows/docs.yml` builds `site/` (mdBook, `site/build.sh`) and publishes it to GitHub Pages.
+It runs on pushes to `main` that change `site/`, `docs/*.md` or `docs/benchmarks/*.md`, and on demand,
+never on pull requests: one job, about a minute with the cached `mdbook` binary. A pull request that
+only touches documentation still runs `checks`; build the site locally with `site/build.sh` to see
+it before merging.

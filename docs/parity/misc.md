@@ -2,8 +2,7 @@
 
 [Index](../parity.md). `org.apache.lucene.misc`: the index and search utilities the jar ships
 beside core. This file records what is ported; the rest of the jar's 30 classes are each
-`todo:M14` in `docs/inventory/lucene-misc.tsv` and fall to the M14.b-i sub-milestones
-(`docs/milestones/m14-remaining-modules-and-tooling.md`).
+`todo:M14` in `docs/inventory/lucene-misc.tsv` and stay unported.
 
 | Java | Rust | Status |
 |---|---|---|

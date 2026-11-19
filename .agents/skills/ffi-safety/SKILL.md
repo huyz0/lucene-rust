@@ -75,6 +75,5 @@ test. This boundary gets more scrutiny than anything else in the workspace.
 
 ## Deep dive
 
-[PLAN.md](../../../PLAN.md) §2 Phase 4 (FFI layer design), risk #3 in §4
-(native crash blast radius: a fault in Rust takes the JVM with it, whether
-the call came through JNI or FFM).
+The native crash blast radius: a fault in Rust takes the JVM with it, so the
+boundary is narrow, guarded and fuzzed (`crates/lucene-ffi/fuzz`).

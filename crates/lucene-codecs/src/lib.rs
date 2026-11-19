@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-codecs: see /PLAN.md for scope.
+//! lucene-codecs.
 
 // Every module below is audited against the arithmetic gate
 // (`clippy::arithmetic_side_effects`, denied crate-wide via

@@ -1,7 +1,7 @@
-# The accelerated engine in OpenSearch (M5)
+# The accelerated engine in OpenSearch 
 
 An OpenSearch 3.9.0 shard whose `IndexWriter` is the Rust one. Searches still
-go through M2's path (see [`accelerated-queries.md`](accelerated-queries.md)):
+go through the query-phase path (see [`accelerated-queries.md`](accelerated-queries.md)):
 native per query where it can be, Lucene otherwise. This page covers what the
 engine is, how to turn it on, what it refuses and where it behaves differently
 from OpenSearch's own engine.
@@ -158,7 +158,7 @@ false` on such indices, or add their fields to the creation mapping:
 **Replication.** Both modes work. With document replication, primaries and
 replicas both run the accelerated engine. With segment replication, the primary runs
 the accelerated engine and its replicas run OpenSearch's `NRTReplicationEngine`,
-which copies the accelerated writer's segments and serves them through M2's native
+which copies the accelerated writer's segments and serves them through the native
 reads. A promoted replica becomes a Rust primary on the segments it copied.
 
 A plugin engine is not a segment-replication primary on OpenSearch 3.8 by

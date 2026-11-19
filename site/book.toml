@@ -1,0 +1,21 @@
+[book]
+title = "Accelerated Search for OpenSearch"
+description = "A native search and indexing engine for OpenSearch, compatible with stock Lucene indices."
+authors = ["lucene-rust contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/huyz0/lucene-rust"
+edit-url-template = "https://github.com/huyz0/lucene-rust/edit/main/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+site-url = "/lucene-rust/"
+no-section-label = true
+
+[output.html.search]
+limit-results = 20

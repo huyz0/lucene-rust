@@ -9,7 +9,7 @@ a dependency the shipped library links is not under a licence listed here.
 - **Licence: Apache-2.0.** Every workspace crate declares `license =
   "Apache-2.0"` (the checker enforces it).
 - **Why Apache-2.0:** this is a port of Apache Lucene 10.5.0, a derivative work
-  of it, so it carries Lucene's licence and its notices (`PLAN.md` §3).
+  of it, so it carries Lucene's licence and its notices.
 - **[`LICENSE`](../LICENSE)** is Lucene 10.5.0's own `LICENSE.txt`, verbatim:
   the Apache License 2.0 followed by the licences of third-party code inside
   Lucene. What was ported touches these:
@@ -436,7 +436,7 @@ The list M6's work order named has drifted since it was written:
 
 ## Prior art
 
-- **Tantivy** (MIT) is prior art to study, never a dependency (`PLAN.md` §1).
+- **Tantivy** (MIT) is prior art to study, never a dependency.
   No Tantivy crate is in `Cargo.lock`.
 - The single mention of it in the source is a comment in
   `crates/lucene-codecs/src/regexp.rs` crediting the *idea* of caching a

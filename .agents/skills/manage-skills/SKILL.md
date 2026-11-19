@@ -11,7 +11,7 @@ The skill system makes lucene-rust AI-native: an agent finds the right rule by
 ## Rules
 
 - **Pointer-only, not a rulebook.** A `SKILL.md` routes to the deep-dive
-  (`PLAN.md`, `docs/`, `fixtures/README.md`) and names the gate that enforces
+  (`docs/`, `fixtures/README.md`) and names the gate that enforces
   it. Keep it **under 100 lines** and don't duplicate doc content — on
   conflict, the doc wins; fix the drift.
 - **Frontmatter is the trigger.** Exactly two keys: `name` and `description`.
@@ -37,5 +37,5 @@ The skill system makes lucene-rust AI-native: an agent finds the right rule by
 .claude/skills -> ../.agents/skills   # symlink so Claude Code discovers them
 ```
 
-Deep detail lives in `PLAN.md`/`docs/`/`fixtures/README.md`; this folder only
+Deep detail lives in `docs/` and `fixtures/README.md`; this folder only
 routes to it.

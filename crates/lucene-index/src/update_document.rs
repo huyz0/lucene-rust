@@ -55,7 +55,7 @@
 //!
 //! [`crate::segment_writer::flush_stored_only_segment`] only ever writes
 //! stored-fields-only segments (this port has no write-side postings format
-//! yet — see `PLAN.md` Phase 5 item 2). That means a segment this port wrote
+//! yet). That means a segment this port wrote
 //! itself has no `.tim`/`.tip`/`.doc` files, so a delete-by-term issued
 //! against *only self-written segments* can never actually match anything —
 //! there is nothing to resolve against. This is not a bug in

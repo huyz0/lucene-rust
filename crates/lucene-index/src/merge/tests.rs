@@ -1576,7 +1576,7 @@ fn numeric_doc_values_merge_across_two_sources_with_deletions() {
 /// wire an overlay-writing update path into `IndexWriter` without also
 /// teaching the merge call site to resolve "effective" (overlay-folded)
 /// values before constructing `MergeSource`, updates would be silently
-/// lost across a merge. See `docs/parity.md` and `PLAN.md` for the full
+/// lost across a merge. See `docs/parity.md` for the full
 /// scope writeup.
 ///
 /// `IndexWriter` writes doc-values updates as real Lucene generations, not
@@ -5105,8 +5105,7 @@ fn stored_field_content_stays_attached_to_the_right_doc_after_reordering() {
 
 #[test]
 fn doc_values_norms_and_term_vectors_follow_the_sort_key_not_source_concatenation() {
-    // Task #205 (the doc-values/norms/term-vectors long-tail item from
-    // PLAN.md's Phase 8 backlog): confirms `merge_sorted_stored_only_
+    // Confirms `merge_sorted_stored_only_
     // segments` physically reorders BINARY doc-values, norms, and term
     // vectors by sort key -- not just stored fields -- exactly like
     // `three_sources_k_way_merge_by_sort_key` proves for stored fields

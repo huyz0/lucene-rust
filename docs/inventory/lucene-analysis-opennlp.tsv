@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-opennlp: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-opennlp (see its docstring for the statuses).
-# M12 T12.5 (OpenNLP model loading and inference, over a port of the OpenNLP 2.5.3 runtime reading its model packages); docs/milestones/m12-language-analysis.md. NLPNERTaggerOp: M14.
+# M12 T12.5 (OpenNLP model loading and inference, over a port of the OpenNLP 2.5.3 runtime reading its model packages). NLPNERTaggerOp: M14.
 # class	status	detail
 analysis/opennlp/OpenNLPChunkerFilter	ported	crates/lucene-analysis-opennlp/src/filters.rs::OpenNlpChunkerFilter
 analysis/opennlp/OpenNLPChunkerFilterFactory	ported	crates/lucene-analysis-opennlp/src/factory.rs::OpenNlpChunkerFilterFactory

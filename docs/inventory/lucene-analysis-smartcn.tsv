@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-smartcn: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-smartcn (see its docstring for the statuses).
-# M12 T12.2 (Chinese word segmentation (HHMM over the bundled core and bigram dictionaries)); docs/milestones/m12-language-analysis.md.
+# M12 T12.2 (Chinese word segmentation (HHMM over the bundled core and bigram dictionaries)).
 # class	status	detail
 analysis/cn/smart/AnalyzerProfile	not-needed	locates analysis.data.dir for the .dct fallback, which Java takes only when the jar's .mem resources fail to load; here they are compiled in
 analysis/cn/smart/CharType	ported	crates/lucene-analysis-smartcn/src/utility.rs::char_type

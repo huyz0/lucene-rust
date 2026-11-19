@@ -1,12 +1,11 @@
 # OpenSearch: which searches run native
 
-The accelerated-search OpenSearch plugin (`opensearch-plugin/`, milestone
-[M2](milestones/m2-opensearch-read-path.md)) runs the **query phase** of a shard
+The accelerated-search OpenSearch plugin (`opensearch-plugin/`) runs the **query phase** of a shard
 search in Rust when the request is inside the table below, and on Lucene
 otherwise — per query, transparently. The fetch phase and the get API are
 OpenSearch's own code, but their stored-fields reads (`_source`, `_id`,
 `stored_fields`, highlighting's source) come from the native reader through an
-index reader wrapper (read path R6; `index.fetch.accelerated`, default
+index reader wrapper (`index.fetch.accelerated`, default
 on). `docvalue_fields`, indexing, refresh and every other API are OpenSearch's
 own code, unchanged.
 
@@ -24,11 +23,10 @@ that the plugin's own counters show the query ran where this table says.
 A request runs native when **all** of these hold:
 
 - the index has `index.search.accelerated: true` (the default);
-- it is a top-hits request, by score or by a sort the native side encodes
-  (`docs/milestones/m5-6-native-read.md`, R4), with or without
+- it is a top-hits request, by score or by a sort the native side encodes, with or without
   `search_after`, `post_filter`, `timeout`, a `scroll`, `terminate_after`
-  (where Lucene collects document by document: see the milestone's R7), and
-  aggregations the native side plans (R5: the metrics, `terms`, the histograms,
+  (where Lucene collects document by document), and
+  aggregations the native side plans (the metrics, `terms`, the histograms,
   ranges, `filter(s)`, `global` and `cardinality`, nested in any combination), and
   `min_score`, `collapse` on a keyword or numeric field (`NativeCollapse`)
   `rescore` with `query` rescorers (`NativeRescore`) and `profile` (`NativeProfile`) -- but
@@ -47,7 +45,7 @@ A request runs native when **all** of these hold:
   `terms` (`PrefixQuery`, `WildcardQuery`, `RegexpQuery` with its default
   flags, `TermInSetQuery` under Lucene's default
   constant-score rewrite, also as the index side of an
-  `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
+  `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (a
   `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range`
   and `term` on every numeric type, `date` and `ip` (`PointRangeQuery` of
   any width; a `long`, `date` or `double` range with doc values keeps its
@@ -56,8 +54,8 @@ A request runs native when **all** of these hold:
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
-  relation, inline or `indexed_shape`; M9 T9.6, the rows below), and the M10
-  shapes (T10.7, the second table below): `nested`, the `span_*` queries,
+  relation, inline or `indexed_shape`; the rows below), and the join and grouping
+  shapes (the second table below): `nested`, the `span_*` queries,
   `intervals`, `combined_fields` and `function_score` -- at most 32
   deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
@@ -65,9 +63,9 @@ A request runs native when **all** of these hold:
   `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
-  `Lucene103`, `Lucene104`; M8 T8.5), the engine's zstd term-block format
+  `Lucene103`, `Lucene104`), the engine's zstd term-block format
   `ZstdTerms104` (`index.codec.terms_compression: zstd`), or a completion format
-  (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
+  (`Completion90`-`Completion104`, a `completion` field's) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
   to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
   `completion` fields: its searches run native, while the suggesters
@@ -97,8 +95,8 @@ frequency when nothing is deleted, without counting.
 | `bool` with only `filter` | `BoostQuery(ConstantScoreQuery(…), 0)` | 1.29× |
 | nested `bool` | `BooleanQuery` in `BooleanQuery` | 1.01× |
 | `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | 1.01× |
-| `query_string` / `simple_query_string` with ranges, fuzzy terms, prefixes, phrases, regexps (M13 T13.6) | `TermRangeQuery`, `FuzzyQuery`'s blended-statistics rewrite, and the shapes above | 1.05×-1.49× (seven rows; see below) |
-| `range` on a `keyword` (M13 T13.6) | `TermRangeQuery` (via `IndexOrDocValuesQuery`) | 1.08×-1.26× (1.24×-1.32× as a `bool` `filter`) |
+| `query_string` / `simple_query_string` with ranges, fuzzy terms, prefixes, phrases, regexps | `TermRangeQuery`, `FuzzyQuery`'s blended-statistics rewrite, and the shapes above | 1.05×-1.49× (seven rows; see below) |
+| `range` on a `keyword` | `TermRangeQuery` (via `IndexOrDocValuesQuery`) | 1.08×-1.26× (1.24×-1.32× as a `bool` `filter`) |
 | `bool` `must` + `should`, `minimum_should_match: 1` | `BooleanQuery` `MUST` + `SHOULD` with a minimum | 1.01× |
 | any query with `boost` ≠ 1 | `BoostQuery` | 1.06× |
 | `bool` with a boosted clause | `BooleanQuery` of `BoostQuery` | 1.16× |
@@ -147,24 +145,22 @@ node, both engines on the same 100k-document, two-segment index
 40`); above 1.0 means native is faster. At this size a round trip is 2-9 ms,
 most of it OpenSearch's own request handling, so REST ratios compress toward
 1.0 and move by about ±0.05 between runs; the in-process numbers for the same
-shapes on a 1M-document corpus built like this index are in
-[`milestones/m5-6-native-read.md`](milestones/m5-6-native-read.md).
+shapes on a 1M-document corpus built like this index are ~1.1-3.3x.
 One row is under 1.0 over REST: sloppy `match_phrase` (0.88×; 1.03–1.24×
 in process for most sloppy shapes, 0.84–0.91× for `(ps 1 t2 t3)`). Rows
 between 0.95× and 1.0× (`minimum_should_match: 2`, a rare term with an exact
 total, a text `prefix` filter) are within the run-to-run spread of about
 ±0.05; in process they run 1.1× or better.
 
-The geo rows (M9 T9.6) are medians over their request shapes in
+The geo rows are medians over their request shapes in
 `opensearch-plugin/e2e/geo_matrix.py` (range in brackets), REST round trips
 on one shard of 100,000 points and shapes (`phase_bench.py` with `GEO=1
 REST=1`); by the query-phase counters the same shapes measure median 1.88×.
 The `geo_shape` rows under 1.0 are queries both engines answer from their
 query caches, a ~2 ms response whose query phase is tens of microseconds,
-where the native call's fixed cost shows -- see
-[`milestones/m9-geo-and-spatial.md`](milestones/m9-geo-and-spatial.md).
+where the native call's fixed cost shows.
 
-### M10 shapes (T10.7)
+### Join and grouping shapes
 
 | Request (DSL) | Rewritten Lucene query | Native |
 |---|---|---|
@@ -192,9 +188,9 @@ where the native call's fixed cost shows -- see
 | a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
 | any scoring query on a field mapped with `similarity`: `BM25` (any `k1`, `b`, `discount_overlaps`), `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet`, `LMJelinekMercer` | the same queries, under OpenSearch's per-field similarity | yes: each scored field's similarity sent in front of the query (`SimilarityEncoder`, `similarity.rs`), scored by the port of the same Lucene class |
 
-`index.search.accelerated_shapes` (`fast`/`all`) predates read path
-R1, when mixed booleans measured slower and were routed to Lucene
-(`slower_shape`); since R1 every encodable shape runs native under both
+`index.search.accelerated_shapes` (`fast`/`all`) predates the planner that handles mixed booleans: it used to route those
+to Lucene when they measured slower
+(`slower_shape`); now every encodable shape runs native under both
 values.
 
 ## Falls back to Lucene
@@ -237,8 +233,8 @@ Each fallback is counted by reason at `GET /_plugins/accelerated/stats`.
 | `collector_spec` | another plugin registered a replacement top-docs collector |
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
-| `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `ZstdTerms104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
+| `slower_shape` | a correct native shape routed to Lucene by measurement; none since the planner learned mixed booleans |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `ZstdTerms104` and the completion formats `Completion90`-`Completion104` (the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `accelerated_open_failed`, `accelerated_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
@@ -408,15 +404,15 @@ unified highlighter's reader has.
   including on an index with `completion` fields, which used to fall back
   whole (`postings_format`);
 - the stored fields the highlighters read their text from (the fetch
-  phase's native stored-fields reader, R6) and term vectors (`fvh`); the
+  phase's native stored-fields reader) and term vectors (`fvh`); the
   suggesters' own reads (the completion FST, the term dictionary) are
   Lucene's, through the same reader;
 - `query_string` and `simple_query_string`: OpenSearch's parser builds the
   Lucene query, and its shapes encode by the rules above (term ranges since
-  M13; escaped wildcards and regexps with any flags since 2026-10-30),
+  a later release; escaped wildcards and regexps with any flags since 2026-10-30),
   except a phrase with position gaps (stopwords the analyzer removed).
 
-The M13 rows were measured on Docker Desktop (Windows host), the e2e
+The newer rows were measured on Docker Desktop (Windows host), the e2e
 `single` index, 60 interleaved rounds a mode over one keep-alive
 `TCP_NODELAY` connection, two runs (ranges are across them): `query_string`
 keyword range 1.13×-1.23×, open text range 1.13×-1.49×, fuzzy + prefix +

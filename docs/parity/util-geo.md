@@ -5,7 +5,7 @@ encodings and Tessellator triangles are what `LatLonPoint`/`LatLonShape`
 index, so all is held to Java's bits. Tests: `GenGeo.java`,
 `GenGeoTessellator.java`, `GenGeoParsers.java` ->
 `crates/lucene-util/tests/geo_fixtures.rs`. Bench `--bench geo`: 1.01x-3.54x
-([M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence)).
+(M9 evidence).
 
 | Java | Rust | Status |
 |---|---|---|

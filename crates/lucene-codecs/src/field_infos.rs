@@ -4,7 +4,7 @@
 //! `.fnm` maps field names to field numbers plus everything the rest of the
 //! codec needs to interpret those numbers in other per-field files (postings,
 //! doc values, points, vectors): this is why doc values / postings parsing
-//! needs `FieldInfos` read first (see PLAN.md Phase 2).
+//! needs `FieldInfos` read first.
 //!
 //! Wire format (vint/string/map-of-strings per `lucene_store::data_input`;
 //! `DocValuesGen` is a plain little-endian i64, everything else a byte or vint;

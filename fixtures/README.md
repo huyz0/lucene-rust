@@ -406,7 +406,7 @@ byte for byte locally and differed on an AMD CI runner.
 
 ## Verifying the write path (reverse direction)
 
-Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
+Every generator above is Java-writes-Rust-reads. The write path
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
@@ -981,7 +981,7 @@ outright.
   `Lucene99HnswVectorsReader.search`) and the exact brute-force top-10 over
   the same vectors. The first is what a faithful port must reproduce
   doc-for-doc; the second is the denominator of the recall figure both
-  engines are measured on in `docs/sweep/m2/c5-vectors.md`.
+  engines are measured on.
 
   It also records the first ten `new SplittableRandom(42).nextDouble()`
   draws. HNSW level assignment is `(int)(-ln(U) * ml)` over exactly that

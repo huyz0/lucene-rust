@@ -8,7 +8,7 @@
 //! `Lucene103BlockTreeTermsReader`/`Writer` (package
 //! `o.a.l.codecs.lucene103.blocktree`) — *not* the `lucene90.blocktree`
 //! classes, which live in `backward-codecs` and are out of scope for this
-//! port (see PLAN.md's "pin one Lucene version" rule). The `.tip` term index
+//! port (one pinned Lucene version). The `.tip` term index
 //! in this version is **not an FST** — Lucene 10.x replaced it with a
 //! purpose-built binary trie (`TrieReader`/`TrieBuilder`), a flatter,
 //! pointer-chasing encoding of the same "prefix trie whose leaves are term

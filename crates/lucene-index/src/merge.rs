@@ -285,8 +285,7 @@
 //! path and no `MatchingReaders` consultation: the merged ordinal space is
 //! new on every merge, and Lucene re-writes the data file too.
 //!
-//! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
-//! currently-true scope line.
+//! See `docs/parity.md` for the exact scope line.
 
 use std::collections::{HashMap, HashSet};
 

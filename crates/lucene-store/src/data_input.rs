@@ -1,7 +1,7 @@
 //! Decoders for Lucene's `DataInput` wire primitives (vint, vlong, zigzag,
 //! group-varint, little-endian fixed-width), format-compatible with Lucene 10.x.
 //!
-//! Design notes (see PLAN.md §3.5): this is a trait with provided methods over a
+//! Design notes: this is a trait with provided methods over a
 //! minimal byte-cursor core, and `SliceInput` is the monomorphized zero-copy
 //! implementation used for mmap'd regions — decode loops inline fully, no dyn.
 
