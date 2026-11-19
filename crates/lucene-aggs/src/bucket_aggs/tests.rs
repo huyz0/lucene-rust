@@ -213,6 +213,7 @@ fn windowed(vals: Vec<i64>, multi: Option<Vec<u32>>) -> Leaf<'static> {
         key_cache: KeyCache::default(),
         date_grid: None,
         grid_tried: false,
+        calendar_buckets: Default::default(),
         zone_ords: Vec::new(),
         folded: 0,
         missing: None,
@@ -3573,4 +3574,60 @@ fn a_filter_with_a_function_query_is_prepared_reader_wide() {
     let matched = count(&function(), all());
     assert!(matched > 0, "the fixture has documents with i >= 1");
     assert_eq!(count(&all(), function()), matched);
+}
+
+/// `gallop` is `partition_point` for any hint, ascending or not.
+#[test]
+fn galloping_finds_the_partition_point_from_any_hint() {
+    let v: Vec<i32> = (0..500).map(|i| i * 3 + (i % 7)).collect();
+    for hint in [0usize, 1, 17, 250, 499, 500, 9999] {
+        for doc in [-5, 0, 1, 2, 3, 700, 1000, 1497, 1498, 1600, 5000] {
+            let cell = std::cell::Cell::new(hint);
+            assert_eq!(
+                gallop(&v, &cell, |d| d <= doc),
+                v.partition_point(|&d| d <= doc),
+                "hint {hint} doc {doc}"
+            );
+            assert_eq!(cell.get(), v.partition_point(|&d| d <= doc));
+        }
+    }
+    assert_eq!(gallop(&[], &std::cell::Cell::new(3), |_| true), 0);
+}
+
+/// A calendar day table answers the bucket each day was put under, in any zone shift, and grows
+/// both ways; days outside the span it keeps are simply unknown.
+#[test]
+fn calendar_days_answer_the_buckets_put_in() {
+    const DAY: i64 = 86_400_000;
+    for shift in [0i64, 19_800_000, -18_000_000, 3 * 3_600_000] {
+        let r = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Month),
+            zone_ms: shift,
+            offset: 0,
+        };
+        let mut days = CalendarDays::default();
+        // Buckets met out of order, so the table grows at the front and the back.
+        let starts = [
+            1_700_000_000_000i64,
+            1_650_000_000_000,
+            1_800_000_000_000,
+            1_600_000_000_000,
+        ];
+        for (ord, &v) in starts.iter().enumerate() {
+            let (from, to) = r.bucket(v).unwrap();
+            days.put(from, to, shift, ord as u32);
+        }
+        for (ord, &v) in starts.iter().enumerate() {
+            let (from, to) = r.bucket(v).unwrap();
+            for t in [from, from + 1, from + DAY, to - 1, to - DAY / 2] {
+                assert_eq!(
+                    days.get(t, shift).map(|x| x.0),
+                    Some(ord as u32),
+                    "shift {shift} {t}"
+                );
+            }
+            assert_ne!(days.get(to, shift).map(|x| x.0), Some(ord as u32));
+        }
+        assert_eq!(days.get(1_000_000_000_000, shift), None);
+    }
 }

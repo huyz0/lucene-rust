@@ -407,3 +407,64 @@ pub(super) fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
         }
     }
 }
+
+/// A day no bucket has been seen for yet.
+pub(super) const NO_DAY: u32 = u32::MAX - 1;
+/// Most days a [`CalendarDays`] table spans (about 180 years).
+pub(super) const CALENDAR_DAYS: i64 = 1 << 16;
+
+/// The bucket ordinal of each local day, for a rounding whose buckets start at local midnight
+/// (a calendar month, quarter or year, in a fixed zone and offset): days are filled a whole
+/// bucket at a time as buckets are first seen.
+#[derive(Default)]
+pub(super) struct CalendarDays {
+    /// The day of `table[0]`, counted from the epoch in local time.
+    pub(super) base: i64,
+    pub(super) table: Vec<u32>,
+}
+
+impl CalendarDays {
+    const DAY: i64 = 86_400_000;
+
+    /// The ordinal held for `v`'s day, `shift` being the zone's offset from UTC less the
+    /// rounding's offset.
+    #[inline(always)]
+    pub(super) fn get(&self, v: i64, shift: i64) -> Option<(u32, i64)> {
+        let local = v.checked_add(shift)?;
+        let day = local.div_euclid(Self::DAY);
+        let at = day.wrapping_sub(self.base) as u64;
+        let o = *self.table.get(usize::try_from(at).ok()?)?;
+        (o != NO_DAY).then_some((o, day))
+    }
+
+    /// Records that every day of the bucket `from..to` (UTC) has ordinal `ord`.
+    pub(super) fn put(&mut self, from: i64, to: i64, shift: i64, ord: u32) {
+        let (Some(a), Some(b)) = (from.checked_add(shift), to.checked_add(shift)) else {
+            return;
+        };
+        let (first, end) = (a.div_euclid(Self::DAY), b.div_euclid(Self::DAY));
+        if end <= first || end - first > 400 {
+            return;
+        }
+        if self.table.is_empty() {
+            self.base = first;
+        }
+        let lo = first.min(self.base);
+        let hi = end.max(self.base.saturating_add(self.table.len() as i64));
+        if hi - lo > CALENDAR_DAYS {
+            return;
+        }
+        if lo < self.base {
+            let mut grown = vec![NO_DAY; (self.base - lo) as usize];
+            grown.append(&mut self.table);
+            self.table = grown;
+            self.base = lo;
+        }
+        self.table.resize((hi - self.base) as usize, NO_DAY);
+        for d in first..end {
+            if let Some(slot) = self.table.get_mut((d - self.base) as usize) {
+                *slot = ord;
+            }
+        }
+    }
+}
