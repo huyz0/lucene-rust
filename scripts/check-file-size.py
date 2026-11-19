@@ -22,7 +22,7 @@ LIMIT = 3000
 # Files over LIMIT production lines, with their size when listed.
 OVER = {
     "crates/lucene-index/src/index_writer.rs": 13140,
-    "crates/lucene-aggs/src/bucket_aggs.rs": 5925,
+    "crates/lucene-aggs/src/bucket_aggs.rs": 5819,
     "crates/lucene-codecs/src/postings.rs": 6840,
     "crates/lucene-index/src/merge.rs": 5738,
     "crates/lucene-index/src/check_index.rs": 5677,

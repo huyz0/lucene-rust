@@ -1387,6 +1387,19 @@ impl ScriptScores<'_> {
         out: &mut [f64],
         has: &mut [bool],
     ) -> Result<()> {
+        self.fill_columns_with(docs, scores, true, out, has)
+    }
+
+    /// [`Self::fill_columns`]; `check_scores`: a score script's results are checked as
+    /// `ScriptScorer` checks them (an aggregation's values are not scores).
+    fn fill_columns_with(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        check_scores: bool,
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
         let Some((t, _)) = &self.typed else {
             unreachable!("a typed script")
         };
@@ -1403,7 +1416,7 @@ impl ScriptScores<'_> {
         // In document order, as Java scores them: a score check fails
         // before a later document's exception.
         let upto = failed.as_ref().map_or(out.len(), |(k, ..)| *k);
-        if !env.source.filter {
+        if check_scores && !env.source.filter {
             for (k, o) in out[..upto].iter_mut().enumerate() {
                 *o = f64::from(checked(*o as f32, docs[k])?);
             }
@@ -1863,43 +1876,8 @@ impl lucene_aggs::bucket_aggs::ScriptValuesSource for PainlessAggValues {
 /// A [`PainlessAggValues`] on one segment; `.1`: its values are longs.
 pub struct AggLeaf<'c>(pub ScriptScores<'c>, pub bool);
 
-/// `ScriptLongValues`: a number's `longValue`, a boolean as `1` or `0`.
-pub fn agg_long(v: &Value) -> Result<i64> {
-    Ok(match v {
-        Value::Bool(b) => i64::from(*b),
-        Value::Byte(n) => i64::from(*n),
-        Value::Short(n) => i64::from(*n),
-        Value::Int(n) => i64::from(*n),
-        Value::Long(n) => *n,
-        Value::Float(n) => *n as i64,
-        Value::Double(n) => *n as i64,
-        other => {
-            return Err(Error::IllegalArgument(format!(
-            "{AGGREGATION_ERROR}Unsupported script value [{}], expected a number, date, or boolean",
-            other.java_to_string()
-        )))
-        }
-    })
-}
-
-/// `ScriptDoubleValues.toDoubleValue`.
-pub fn agg_double(v: &Value) -> Result<f64> {
-    Ok(match v {
-        Value::Bool(b) => f64::from(u8::from(*b)),
-        Value::Byte(n) => f64::from(*n),
-        Value::Short(n) => f64::from(*n),
-        Value::Int(n) => f64::from(*n),
-        Value::Long(n) => *n as f64,
-        Value::Float(n) => f64::from(*n),
-        Value::Double(n) => *n,
-        other => {
-            return Err(Error::IllegalArgument(format!(
-            "{AGGREGATION_ERROR}Unsupported script value [{}], expected a number, date, or boolean",
-            other.java_to_string()
-        )))
-        }
-    })
-}
+mod agg_convert;
+pub use agg_convert::{agg_double, agg_long};
 
 impl AggLeaf<'_> {
     /// The script's result in the current state, as the node's encoding
@@ -1947,15 +1925,27 @@ impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
         vals: &mut [i64],
         bits: &mut [u64],
     ) -> Result<bool> {
-        let Some(e) = &self.0.expr else {
-            return Ok(false);
-        };
         const BATCH: usize = 256;
         let zeros = [0.0f32; BATCH];
         let mut out = [0.0f64; BATCH];
         let mut has = [false; BATCH];
+        // A Painless script whose every instruction has a column form (a `double` or `boolean`
+        // result) runs a batch at a time too: its value is exactly what `run_object` would
+        // return, as `agg_double` / `agg_long` read it.
+        let typed_batch = self.0.expr.is_none()
+            && self.0.scores.is_none()
+            && !self.0.env.source.needs_score
+            && matches!(&self.0.typed, Some((t, _)) if t.batchable());
+        if self.0.expr.is_none() && !typed_batch {
+            return Ok(false);
+        }
         for chunk in docs.chunks(BATCH) {
-            e.fill_batch(&mut self.0.env, chunk, &zeros, &mut out, &mut has)?;
+            if typed_batch {
+                self.0
+                    .fill_columns_with(chunk, &zeros, false, &mut out, &mut has)?;
+            } else if let Some(e) = &self.0.expr {
+                e.fill_batch(&mut self.0.env, chunk, &zeros, &mut out, &mut has)?;
+            }
             for (&doc, &x) in chunk.iter().zip(&out) {
                 let at = doc.wrapping_sub(base) as u32 as usize;
                 let v = Value::Double(x);

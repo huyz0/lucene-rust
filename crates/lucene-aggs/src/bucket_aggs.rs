@@ -1384,6 +1384,9 @@ struct Leaf<'a> {
     /// grid ([`DateGrid`]); `grid_tried` once one was attempted.
     date_grid: Option<Box<DateGrid>>,
     grid_tried: bool,
+    /// The buckets of a calendar month, quarter or year seen so far, by local day: a date's
+    /// bucket is one division and a load, where rounding it takes a calendar walk.
+    calendar_buckets: CalendarDays,
     /// [`zone_window`]'s buckets for the current window, kept for reuse.
     zone_ords: Vec<u32>,
     /// Windows [`zone_window`] answered in this segment, added to
@@ -1430,116 +1433,6 @@ struct TextState {
 
 /// One segment of a `nested` (`children` and the buffer) or a
 /// `reverse_nested` (`last`).
-struct NestedLeaf {
-    /// The parent bitset's documents, ascending (deleted ones too, as the
-    /// bitset holds them).
-    parents: Vec<i32>,
-    /// The child filter's documents, ascending, and the iterator over them:
-    /// `docID()` is `children[pos]`, -1 before the first `advance`.
-    children: Vec<i32>,
-    pos: Option<usize>,
-    /// The document whose buckets are buffered, and those buckets.
-    current: i32,
-    buffer: Vec<u32>,
-    /// `reverse_nested`'s `bucketOrdToLastCollectedParentDoc`.
-    last: FastMap<u32, i32>,
-}
-
-impl NestedLeaf {
-    /// `childDocs.docID()`.
-    //
-    // SENTINEL: `-1` = "not yet advanced", `DocIdSetIterator.docID()`'s own
-    // value before the first move; its one reader, `parent_and_child`, only
-    // compares it with the previous parent (`<= prev`), where `-1` is at or
-    // below every one, so the iterator advances, as in Java.
-    fn doc_id(&self) -> i32 {
-        match self.pos {
-            None => -1,
-            Some(p) => self.children.get(p).copied().unwrap_or(i32::MAX),
-        }
-    }
-
-    /// `advance(target)`: the first child at or past `target`.
-    fn advance(&mut self, target: i32) -> i32 {
-        let from = self.pos.unwrap_or(0);
-        let rest = self.children.get(from..).unwrap_or(&[]);
-        self.pos = Some(from + rest.partition_point(|&d| d < target));
-        self.doc_id()
-    }
-
-    fn next_doc(&mut self) -> i32 {
-        self.pos = Some(self.pos.map_or(0, |p| p + 1));
-        self.doc_id()
-    }
-
-    /// `BitSet.prevSetBit(doc)`: the last parent at or before `doc`.
-    //
-    // SENTINEL: `-1` = "no parent at or before `doc`", `prevSetBit`'s own;
-    // `parent_and_child` tests it (`== -1`) and otherwise uses it as the
-    // block's lower bound, where `-1` means "from the segment's start".
-    fn prev_parent(&self, doc: i32) -> i32 {
-        let i = self.parents.partition_point(|&d| d <= doc);
-        i.checked_sub(1)
-            .and_then(|i| self.parents.get(i))
-            .copied()
-            .unwrap_or(-1)
-    }
-
-    /// `BitSet.nextSetBit(doc)`: the first parent at or after `doc`.
-    fn next_parent(&self, doc: i32) -> i32 {
-        let i = self.parents.partition_point(|&d| d < doc);
-        self.parents.get(i).copied().unwrap_or(i32::MAX)
-    }
-
-    /// `NestedAggregator.getParentAndChildId`: the block-level parent of
-    /// `doc`, and the iterator's next child under it.
-    fn parent_and_child(&mut self, doc: i32) -> (i32, i32) {
-        let mut prev = self.prev_parent(doc);
-        let current = if prev == -1 {
-            self.next_parent(0)
-        } else if prev == doc {
-            prev = if doc == 0 {
-                -1
-            } else {
-                self.prev_parent(doc - 1)
-            };
-            doc
-        } else {
-            self.next_parent(prev + 1)
-        };
-        let mut child = self.doc_id();
-        if child <= prev {
-            child = self.advance(prev + 1);
-        }
-        (current, child)
-    }
-}
-
-/// `processBufferedChildBuckets`: the buffered document's children, each
-/// handed every buffered bucket in turn.
-fn flush_nested(
-    node: &AggNode,
-    docs: &mut Vec<u64>,
-    subs: &mut [State],
-    leaf: &mut Leaf<'_>,
-) -> Result<()> {
-    let Some(n) = leaf.nested.as_deref_mut() else {
-        return Ok(());
-    };
-    if n.buffer.is_empty() {
-        return Ok(());
-    }
-    let (parent, mut child) = n.parent_and_child(n.current);
-    while child < parent {
-        for &b in &n.buffer {
-            collect_bucket(node, docs, subs, &mut leaf.subs, child, b)?;
-        }
-        child = n.next_doc();
-    }
-    n.buffer.clear();
-    Ok(())
-}
-
 /// A sorted `top_hits`' segment: what each bucket's collector opens its
 /// leaf over, and the leaves opened.
 struct FedSegment<'a> {
@@ -2135,6 +2028,7 @@ fn open_leaf<'a>(
         key_cache: KeyCache::default(),
         date_grid: None,
         grid_tried: false,
+        calendar_buckets: CalendarDays::default(),
         zone_ords: Vec::new(),
         folded: 0,
         missing: node.missing(),
@@ -2188,6 +2082,7 @@ fn end_segment(node: &AggNode, state: &mut State, leaf: &mut Leaf<'_>) -> Result
     }
     if let (AggNode::Nested { .. }, State::Fixed { docs, subs, .. }) = (node, &mut *state) {
         flush_nested(node, docs, subs, leaf)?;
+        drain_nested(node, subs, leaf)?;
     }
     for ((n, s), l) in node
         .subs()
@@ -2198,28 +2093,6 @@ fn end_segment(node: &AggNode, state: &mut State, leaf: &mut Leaf<'_>) -> Result
         end_segment(n, s, l)?;
     }
     Ok(())
-}
-
-/// A `nested` or `reverse_nested`'s bitsets over the segment.
-fn nested_leaf(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Box<NestedLeaf>>> {
-    let (parents, children) = match node {
-        AggNode::Nested {
-            parents, children, ..
-        } => (parents, Some(children)),
-        AggNode::ReverseNested { parents, .. } => (parents, None),
-        _ => return Ok(None),
-    };
-    Ok(Some(Box::new(NestedLeaf {
-        parents: lucene_search::top_field::nested_docs(seg, parents)?,
-        children: match children {
-            Some(c) => lucene_search::top_field::nested_docs(seg, c)?,
-            None => Vec::new(),
-        },
-        pos: None,
-        current: -1,
-        buffer: Vec::new(),
-        last: FastMap::default(),
-    })))
 }
 
 /// A `composite`'s sources opened over the segment, and its `after`
@@ -2363,6 +2236,8 @@ fn collect_bucket(
 }
 mod key_ords;
 use key_ords::*;
+mod nested_join;
+use nested_join::*;
 
 /// The hash `CardinalityAggregator` collects for a numeric value: `mix64` of
 /// a long, or of a double's `doubleToLongBits`.
@@ -2760,6 +2635,12 @@ fn collect_window(
             let mut cache = std::mem::take(&mut leaf.key_cache);
             let mut grid = leaf.date_grid.take();
             let mut grid_tried = leaf.grid_tried;
+            let mut calendar = std::mem::take(&mut leaf.calendar_buckets);
+            let calendar_shift = rounding.zone_ms.checked_sub(rounding.offset);
+            let calendar_unit = matches!(
+                rounding.kind,
+                RoundingKind::Unit(DateUnit::Month | DateUnit::Quarter | DateUnit::Year)
+            );
             // Dates the grid places, in any order: its table answers, and only
             // a bucket not yet seen is made the long way.
             let top_level = owners.iter().all(|&o| o == 0);
@@ -2832,7 +2713,14 @@ fn collect_window(
                                     }
                                     _ => None,
                                 };
-                                if let Some((from, width, o)) = found {
+                                let known = if found.is_none() && calendar_unit && owning == 0 {
+                                    calendar_shift.and_then(|sh| calendar.get(v, sh))
+                                } else {
+                                    None
+                                };
+                                if let Some((o, _)) = known {
+                                    o
+                                } else if let Some((from, width, o)) = found {
                                     cur = Some((from, from.wrapping_add(width), o, 0));
                                     o
                                 } else {
@@ -2851,6 +2739,11 @@ fn collect_window(
                                         NOT_KEPT
                                     };
                                     cur = bucket.map(|(from, to)| (from, to, ord, owning));
+                                    if let (true, 0, Some((from, to)), Some(sh)) =
+                                        (calendar_unit, owning, bucket, calendar_shift)
+                                    {
+                                        calendar.put(from, to, sh, ord);
+                                    }
                                     if owning == 0 {
                                         if !grid_tried {
                                             grid_tried = true;
@@ -2887,6 +2780,7 @@ fn collect_window(
             }
             leaf.date_grid = grid;
             leaf.grid_tried = grid_tried;
+            leaf.calendar_buckets = calendar;
             leaf.key_cache = cache;
             win_docs.truncate(kept);
             win_ords.truncate(kept);

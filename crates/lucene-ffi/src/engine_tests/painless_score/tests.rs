@@ -792,6 +792,74 @@ fn aggregation_scripts_read_what_opensearch_reads() {
     assert_eq!(ffi_close_jvm_reader(h), 0);
 }
 
+/// **Aggregation scripts, a batch at a time.** A script whose every instruction has a column
+/// form is read through `fill_docs` (one batch machine run for a window of documents): each
+/// document's value there is the value `values` reads for it, and a script that cannot run
+/// as columns is left to `values` (`Ok(false)`).
+#[test]
+fn aggregation_scripts_read_in_batches_what_they_read_one_by_one() {
+    use lucene_aggs::bucket_aggs::ScriptValuesSource;
+    let tmp = TempDir::new("painless-score-agg-batch");
+    for e in std::fs::read_dir(fixture("index")).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+    }
+    let h = open(&tmp);
+    let handle = crate::jvm_reader::lookup(h, "reader").unwrap();
+    let (mut wrong, mut batched) = (Vec::new(), 0);
+    for case in cases() {
+        if !case.filter && case.sort.is_none() {
+            continue;
+        }
+        let mut spec = case.spec.clone();
+        spec[0] = 5;
+        let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec), false, None) else {
+            continue;
+        };
+        for seg in handle.reader.segment_readers() {
+            let n = seg.max_doc;
+            let mut leaf = values.open(seg).unwrap();
+            let one: Vec<Option<Vec<i64>>> = (0..n)
+                .map(|doc| {
+                    let mut out = Vec::new();
+                    leaf.values(doc, &mut out).ok().map(|()| out)
+                })
+                .collect();
+            let docs: Vec<i32> = (0..n).collect();
+            let mut vals = vec![0i64; n as usize];
+            let mut bits = vec![0u64; (n as usize).div_ceil(64)];
+            let mut leaf = values.open(seg).unwrap();
+            match leaf.fill_docs(0, &docs, &mut vals, &mut bits) {
+                Ok(true) => {
+                    batched += 1;
+                    for doc in 0..n as usize {
+                        let Some(want) = &one[doc] else {
+                            continue;
+                        };
+                        let has = bits[doc >> 6] >> (doc & 63) & 1 == 1;
+                        let got: Vec<i64> = if has { vec![vals[doc]] } else { vec![] };
+                        if &got != want {
+                            wrong.push(format!("{} doc {doc}: {got:?}, want {want:?}", case.source));
+                            break;
+                        }
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    // A document that throws: the one-by-one read throws on it too.
+                    if one.iter().all(Option::is_some) {
+                        wrong.push(format!("{}: batch threw {e}, one by one did not", case.source));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(batched >= 5, "{batched} scripts read in batches");
+    drop(handle);
+    assert_eq!(ffi_close_jvm_reader(h), 0);
+}
+
 /// **Script values prefix.** `AGG_SCRIPT_VALUES` puts a script on the
 /// bucket node after it, with its mode (doubles or longs), beside a
 /// `missing` in either order; a second one, another mode, or a node
