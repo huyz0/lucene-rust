@@ -32,6 +32,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.search.realtime.enabled` | `false` | documents searchable at their acknowledgement; `max_staleness` bounds how old a view may be |
 | `index.codec.adaptive_doc_values` | `auto` | columnar numeric doc values: smaller indices, much faster group-bys on log data |
 | `index.codec.stored_fields.recompress_on_merge` | `off` | `on` or `non_force`: 9-28% smaller stored fields for about 14% of logs indexing throughput, same LZ4 format |
+| `index.engine.accelerated_source_parsing` | `false` | **opt-in**: reads `_source` of simple mappings (keyword, text, numbers, date) in the library; about 1.4x the documents per second, 30% less CPU per document; other documents go to the mapper |
 | `index.merge.reorder.*` | disabled | document reordering at merge for smaller postings; forced merges ~3x slower |
 | `index.segment_partition.field` | unset | segments sorted by a tenant or similar field, so filtered queries read only their share |
 | `index.knn.target_recall` | `0` (off) | the vector search adapts its effort to a recall target |

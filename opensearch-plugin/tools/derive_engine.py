@@ -393,6 +393,19 @@ def derive_engine(src: str) -> str:
     )
     p.sub("import org.apache.lucene.document.LongPoint;\n", "")
 
+    # Documents of an index with `index.engine.accelerated_source_parsing` are read in the library where
+    # the mapping allows (SourceParsing); every other document, and the rest of Engine#prepareIndex, is OpenSearch's.
+    p.sub(
+        "    @Override\n    public IndexResult index(Index index) throws IOException {",
+        "    private final SourceParsing sourceParsing = new SourceParsing();\n\n"
+        "    @Override\n"
+        "    public Index prepareIndex(org.opensearch.index.mapper.DocumentMapperForType m, org.opensearch.index.mapper.SourceToParse s, long seqNo, long term, long version, org.opensearch.index.VersionType vt, Operation.Origin origin, long autoIdTs, boolean retry, long ifSeqNo, long ifTerm) {\n"
+        "        Index p = sourceParsing.prepare(engineConfig, documentIndexWriter, m, s, seqNo, term, version, vt, origin, autoIdTs, retry, ifSeqNo, ifTerm);\n"
+        "        return p != null ? p : super.prepareIndex(m, s, seqNo, term, version, vt, origin, autoIdTs, retry, ifSeqNo, ifTerm);\n"
+        "    }\n\n"
+        "    @Override\n    public IndexResult index(Index index) throws IOException {",
+    )
+
     # Package-private in Engine: not overridable from this package.
     p.drop_block("    final boolean assertSearcherIsWarmedUp(String source, SearcherScope scope) {")
     return NOTICE + p.text

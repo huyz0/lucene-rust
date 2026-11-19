@@ -100,7 +100,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [ffi.md](parity/ffi.md) | `lucene-ffi` and `lucene-engine`: handles, errors, statuses and the analysis entry points | 15 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (the `unified`, `plain` and `fvh` highlighters native as `accelerated_unified`, `accelerated_plain`, `accelerated_fvh`; suggesters stay OpenSearch's) | 25 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
-| [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 17 |
+| [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 18 |
 
 ## Supported, in one paragraph
 

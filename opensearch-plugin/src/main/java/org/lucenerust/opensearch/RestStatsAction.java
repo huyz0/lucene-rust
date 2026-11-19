@@ -120,6 +120,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("accelerated", analyzed[0]);
             b.field("fallback", analyzed[1]);
             b.endObject();
+            org.lucenerust.opensearch.engine.NativeIngest.stats(b);
             // Memory the library holds outside the heap, its bound, and the requests it stopped.
             long[] memory = NativeMemory.stats();
             if (memory != null) {

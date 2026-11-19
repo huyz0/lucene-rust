@@ -124,6 +124,14 @@ final class Blob {
         return this;
     }
 
+    /** {@code n} bytes of {@code b} from {@code off} as is, no length in front. */
+    Blob raw(byte[] b, int off, int n) {
+        ensure(n);
+        System.arraycopy(b, off, buf, len, n);
+        len += n;
+        return this;
+    }
+
     Blob bytes(BytesRef b) {
         return bytes(b.bytes, b.offset, b.length);
     }

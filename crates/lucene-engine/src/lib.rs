@@ -25,6 +25,7 @@ pub mod clauses;
 pub mod fetch;
 pub mod function_score;
 pub mod handle;
+pub mod ingest;
 pub mod invert;
 pub mod join;
 pub mod knn;

@@ -63,6 +63,18 @@ public final class NativeWriter {
             "ffi_jvm_analysis_register",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
         );
+        static final MethodHandle INGEST_REGISTER = bind(
+            "ffi_jvm_ingest_register",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle INGEST_PARSE = bind(
+            "ffi_jvm_ingest_parse",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle INGEST_VERIFY = bind(
+            "ffi_jvm_ingest_verify",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
         static final MethodHandle WRITER_COMMIT = bind(
             "ffi_engine_writer_commit",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
@@ -356,6 +368,65 @@ public final class NativeWriter {
                 outId[0] = id.get(JAVA_LONG, 0);
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Registers a mapping's field plan for {@link #ingestParse}, its id in {@code outId[0]}. */
+    public static int ingestRegister(byte[] plan, int[] outId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment id = s.alloc(Integer.BYTES);
+            int rc = (int) H.INGEST_REGISTER.invokeExact(s.bytes(plan), (long) plan.length, id);
+            if (rc == OK) {
+                outId[0] = id.get(JAVA_INT, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Reads {@code src[off, off + len)} against a registered plan into {@code out}: 0 when the
+     * document is refused, else the fragment's length, which is not written when it exceeds {@code out}.
+     */
+    public static int ingestParse(int plan, byte[] src, int off, int len, byte[] out) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.alloc(len);
+            MemorySegment.copy(src, off, in, JAVA_BYTE, 0, len);
+            MemorySegment room = s.alloc(out.length);
+            MemorySegment n = s.alloc(Long.BYTES);
+            int rc = (int) H.INGEST_PARSE.invokeExact(plan, in, (long) len, room, (long) out.length, n);
+            if (rc != OK) {
+                return 0;
+            }
+            int length = (int) n.get(JAVA_LONG, 0);
+            if (length > 0 && length <= out.length) {
+                MemorySegment.copy(room, JAVA_BYTE, 0, out, 0, length);
+            }
+            return length;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Compares two single-document operation blobs as decoded documents; null when they agree. */
+    public static String ingestVerify(byte[] expected, byte[] actual) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment msg = s.alloc(4096);
+            MemorySegment n = s.alloc(Long.BYTES);
+            int rc = (int) H.INGEST_VERIFY.invokeExact(s.bytes(expected), (long) expected.length, s.bytes(actual), (long) actual.length, msg, 4096L, n);
+            if (rc != OK) {
+                return "verify failed with status " + rc;
+            }
+            int length = (int) n.get(JAVA_LONG, 0);
+            if (length == 0) {
+                return null;
+            }
+            byte[] text = new byte[Math.min(length, 4096)];
+            MemorySegment.copy(msg, JAVA_BYTE, 0, text, 0, text.length);
+            return new String(text, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }
