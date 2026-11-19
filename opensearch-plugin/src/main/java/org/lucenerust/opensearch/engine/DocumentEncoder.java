@@ -97,6 +97,15 @@ final class DocumentEncoder {
 
     private static final NativeField JAVA = new NativeField(-1, false);
 
+    /** Field {@code name}'s analysis in Rust, or null when it stays in the JVM. */
+    NativeField nativeAnalysis(String name) {
+        if (nativeFields == null) {
+            return null;
+        }
+        NativeField f = nativeField(name);
+        return f == JAVA ? null : f;
+    }
+
     DocumentEncoder(
         FieldRegistry registry,
         Analyzer analyzer,
@@ -520,6 +529,8 @@ final class DocumentEncoder {
                 ws.pointCount++;
             }
         }
+        NativeIngest.Document ingested = doc instanceof NativeIngest.Document d ? d : null;
+        stored += NativeIngest.splice(ingested, b, 0);
         b.patchI32(storedAt, stored);
 
         int invertedCount = 0;
@@ -529,7 +540,7 @@ final class DocumentEncoder {
                 invertedCount++;
             }
         }
-        b.i32(invertedCount);
+        b.i32(invertedCount + NativeIngest.entries(ingested, 1));
         for (int o = 0; o < ws.order.size(); o++) {
             PerField pf = ws.order.get(o);
             if (pf.nativeField != null) {
@@ -550,8 +561,11 @@ final class DocumentEncoder {
             }
         }
 
-        b.i32(ws.numericDvCount + ws.binaryDvCount).append(ws.numericDv).append(ws.binaryDv);
-        b.i32(ws.pointCount).append(ws.points);
+        NativeIngest.splice(ingested, b, 1);
+        b.i32(ws.numericDvCount + ws.binaryDvCount + NativeIngest.entries(ingested, 2)).append(ws.numericDv).append(ws.binaryDv);
+        NativeIngest.splice(ingested, b, 2);
+        b.i32(ws.pointCount + NativeIngest.entries(ingested, 3)).append(ws.points);
+        NativeIngest.splice(ingested, b, 3);
         return vectors;
     }
 

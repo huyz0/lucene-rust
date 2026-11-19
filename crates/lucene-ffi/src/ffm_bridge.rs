@@ -677,6 +677,113 @@ pub unsafe extern "C" fn ffi_jvm_analysis_register(
     })
 }
 
+/// [`lucene_engine::ingest::register`]: a mapping's field plan, its id into `*out_id`.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes and `out_id` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_ingest_register(
+    blob: *const u8,
+    blob_len: usize,
+    out_id: *mut i32,
+) -> i32 {
+    guard(|| {
+        if out_id.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let id = lucene_engine::ingest::register(blob)?;
+        // SAFETY: caller contract.
+        unsafe { *out_id = i32::try_from(id).map_err(|_| FfiStatus::InvalidArgument)? };
+        Ok(())
+    })
+}
+
+/// [`lucene_engine::ingest::parse`]: `src` read against plan `plan`. `*out_len` is 0
+/// when the document is refused (the JVM's mapper takes it), else the fragment's
+/// length, which is in `out` when it is at most `out_cap` and otherwise not written.
+///
+/// # Safety
+/// `src` valid for `src_len` bytes, `out` for `out_cap`, `out_len` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_ingest_parse(
+    plan: i32,
+    src: *const u8,
+    src_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && out_cap != 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        unsafe { *out_len = 0 };
+        let plan = u32::try_from(plan)
+            .ok()
+            .and_then(lucene_engine::ingest::plan)
+            .ok_or(FfiStatus::InvalidHandle)?;
+        // SAFETY: caller contract.
+        let src = unsafe { bytes_from_raw(src, src_len)? };
+        thread_local! {
+            static FRAGMENT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        FRAGMENT.with(|f| {
+            let mut f = f.borrow_mut();
+            if lucene_engine::ingest::parse(&plan, src, &mut f) {
+                // SAFETY: caller contract.
+                unsafe {
+                    *out_len = f.len();
+                    if f.len() <= out_cap {
+                        std::ptr::copy_nonoverlapping(f.as_ptr(), out, f.len());
+                    }
+                }
+            }
+        });
+        Ok(())
+    })
+}
+
+/// [`lucene_engine::ingest::verify`]: two single-document operation blobs compared as
+/// decoded documents; `*out_len` is 0 when they agree, else the length of the difference
+/// written (truncated to `out_cap`) into `out`.
+///
+/// # Safety
+/// Each pointer valid for its length, `out_len` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_ingest_verify(
+    expected: *const u8,
+    expected_len: usize,
+    actual: *const u8,
+    actual_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && out_cap != 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let (expected, actual) = unsafe {
+            (
+                bytes_from_raw(expected, expected_len)?,
+                bytes_from_raw(actual, actual_len)?,
+            )
+        };
+        let text = lucene_engine::ingest::verify(expected, actual)?.unwrap_or_default();
+        let n = text.len().min(out_cap);
+        // SAFETY: caller contract.
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), out, n);
+            *out_len = n;
+        }
+        Ok(())
+    })
+}
+
 /// [`lucene_engine::painless_score::check`]: whether the native runtime runs a
 /// score script exactly as Painless would, decided before anything runs.
 /// Writes nothing (a null buffer) when it does, else the reason as UTF-8.

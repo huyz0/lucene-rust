@@ -800,6 +800,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
         settings.addAll(org.lucenerust.opensearch.engine.SeqNoSettings.settings());
+        settings.add(org.lucenerust.opensearch.engine.NativeIngest.SOURCE_PARSING);
         if (stockMl == false) {
             settings.addAll(MlSettings.all());
         }

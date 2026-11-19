@@ -131,6 +131,30 @@ Segment-replication replicas and realtime-buffered documents show `_seq_no` as
 points too.
 Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
 
+## Reading `_source` in the library
+
+`index.engine.accelerated_source_parsing` (default `false`, fixed at creation) makes
+the engine read a document's `_source` in the library instead of through
+OpenSearch's document mapper and the plugin's field encoder. It applies to an
+index whose mapping is made only of `keyword` (with `ignore_above`), `text` with
+the standard analyzer, `integer`, `long`, `float`, `double` and `date` fields at
+their default parameters, and no partition field. The check runs for every
+document, and a document the library does not reproduce digit for digit goes to
+OpenSearch's mapper unchanged: an unmapped field (dynamic mapping, so the cluster
+state flow is as stock), `null`, an array, an object, a repeated key, a number or
+date in a shape the library does not reproduce, an `ignore_above` or oversized
+keyword, `_routing`, a comment or trailing text, or a source that is not JSON.
+`GET _plugins/_accelerated/stats` counts documents handled and refused
+(`source_parsing`). Stored fields, doc values, postings, points and the `_source`
+bytes are the same as the mapper's: the system property `accelerated.ingest.verify` runs both
+paths on every document and counts any difference, and
+`opensearch-plugin/e2e/fuzz_ingest.py` compares a plugin node with stock on random
+valid and malformed documents.
+On a logs bulk (4 clients, 5,000-document requests, one shard, three million
+documents, with merges) it indexes 106.6k documents/s at 25.9 CPU-seconds per
+million against 75.7k and 36.8 with the setting off and 89.7k and 30.7 on stock
+OpenSearch.
+
 ## What it refuses
 
 When an index is created:
