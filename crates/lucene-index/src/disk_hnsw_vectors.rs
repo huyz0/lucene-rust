@@ -102,12 +102,12 @@ pub(crate) fn write(
     ]))
 }
 
-/// [`write`] for a merge: first waits, with the merges already running, for
+/// [`write()`] for a merge: first waits, with the merges already running, for
 /// room under the process bound for the node records and their adjacency
 /// (about 1.7 times the vectors, measured on 300k x 128-d).
 ///
 /// # Errors
-/// As [`write`].
+/// As [`write()`].
 pub(crate) fn write_merged(
     format: KnnVectorsFormat,
     fields: &[DiskField<'_>],

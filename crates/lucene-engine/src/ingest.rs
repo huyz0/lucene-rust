@@ -412,7 +412,7 @@ impl Sections {
         self.parked.push(std::mem::replace(&mut self.d, fresh));
     }
 
-    /// Ends the child document begun by [`enter`]: its fragment joins [`kids`] and reading
+    /// Ends the child document begun by [`Self::enter`]: its fragment joins `kids` and reading
     /// goes on in its parent.
     fn leave(&mut self, plan: &Plan, object: usize) {
         flush_deferred(plan, self);
