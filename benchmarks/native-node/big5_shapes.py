@@ -25,7 +25,8 @@ def _mappings(d=None):
     return json.loads(_render(os.path.join(d, "index.json")))["mappings"]
 
 
-MAPPING = _mappings() if os.path.exists(os.path.join(os.environ.get("BIG5_DIR", "/data/big5"), "index.json")) else {}
+_MAP = os.path.join(os.environ.get("BIG5_DIR", "/data/big5"), "mapping.json")  # prep renders the template once (jinja2 is not importable under -I)
+MAPPING = json.load(open(_MAP)) if os.path.exists(_MAP) else {}
 
 
 def prep(a):
@@ -69,6 +70,7 @@ def prep(a):
             continue
         Q[o["name"]] = [o["name"]] * int(os.environ.get("REPEAT", "20"))
         bodies[o["name"]] = o["body"]
+    json.dump(_mappings(src), open(os.path.join(src, "mapping.json"), "w"))
     json.dump(Q, open(os.path.join(out, "queries.json"), "w"))
     json.dump(bodies, open(os.path.join(out, "bodies.json"), "w"))
     print(f"{docs} docs in {len(files)} bulk files, {len(Q)} operations")
