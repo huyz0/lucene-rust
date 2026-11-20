@@ -25,6 +25,9 @@ pub mod clauses;
 pub mod fetch;
 pub mod function_score;
 pub mod handle;
+// ARITH: offsets index a source slice already bounded by its length, counters
+// are capped by MAX_FIELDS and entry sizes by the i32 section length checks.
+#[allow(clippy::arithmetic_side_effects)]
 pub mod ingest;
 pub mod invert;
 pub mod join;

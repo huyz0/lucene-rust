@@ -839,7 +839,8 @@ fn aggregation_scripts_read_in_batches_what_they_read_one_by_one() {
                         let has = bits[doc >> 6] >> (doc & 63) & 1 == 1;
                         let got: Vec<i64> = if has { vec![vals[doc]] } else { vec![] };
                         if &got != want {
-                            wrong.push(format!("{} doc {doc}: {got:?}, want {want:?}", case.source));
+                            wrong
+                                .push(format!("{} doc {doc}: {got:?}, want {want:?}", case.source));
                             break;
                         }
                     }
@@ -848,7 +849,10 @@ fn aggregation_scripts_read_in_batches_what_they_read_one_by_one() {
                 Err(e) => {
                     // A document that throws: the one-by-one read throws on it too.
                     if one.iter().all(Option::is_some) {
-                        wrong.push(format!("{}: batch threw {e}, one by one did not", case.source));
+                        wrong.push(format!(
+                            "{}: batch threw {e}, one by one did not",
+                            case.source
+                        ));
                     }
                 }
             }

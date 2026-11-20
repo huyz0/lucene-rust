@@ -1,15 +1,20 @@
 //! Compares two operation blobs as the documents they decode to, so a test can check source
 //! ingest against the JVM's mapper path field for field.
 
+use lucene_index::index_writer::ExplicitDocument;
+
 use crate::status::Status;
 use crate::writer_blob::{decode_op, Op};
 
 fn entries(op: &[u8]) -> Result<Vec<[Vec<String>; 4]>, Status> {
-    let Op::Add { docs, .. } = decode_op(op)? else {
+    let (Op::Add { docs, .. } | Op::SoftUpdate { docs, .. }) = decode_op(op)? else {
         return Err(Status::InvalidArgument);
     };
-    Ok(docs
-        .iter()
+    Ok(describe(&docs))
+}
+
+fn describe(docs: &[ExplicitDocument]) -> Vec<[Vec<String>; 4]> {
+    docs.iter()
         .map(|doc| {
             let mut sections = [
                 doc.stored
@@ -33,18 +38,26 @@ fn entries(op: &[u8]) -> Result<Vec<[Vec<String>; 4]>, Status> {
             }
             sections
         })
-        .collect())
+        .collect()
 }
 
 /// `None` when both blobs decode to the same documents, else the first difference.
 pub fn verify(expected: &[u8], actual: &[u8]) -> Result<Option<String>, Status> {
-    let (e, a) = (entries(expected)?, entries(actual)?);
+    Ok(compare(entries(expected)?, entries(actual)?))
+}
+
+/// `None` when the blob decodes to the documents `actual`, else the first difference.
+pub fn verify_docs(expected: &[u8], actual: &[ExplicitDocument]) -> Result<Option<String>, Status> {
+    Ok(compare(entries(expected)?, describe(actual)))
+}
+
+fn compare(e: Vec<[Vec<String>; 4]>, a: Vec<[Vec<String>; 4]>) -> Option<String> {
     if e.len() != a.len() {
-        return Ok(Some(format!(
+        return Some(format!(
             "the mapper's operation has {} documents, the fast path's {}",
             e.len(),
             a.len()
-        )));
+        ));
     }
     for (n, (e, a)) in e.iter().zip(&a).enumerate() {
         for (i, name) in ["stored", "inverted", "doc values", "points"]
@@ -54,11 +67,11 @@ pub fn verify(expected: &[u8], actual: &[u8]) -> Result<Option<String>, Status> 
             if e[i] != a[i] {
                 let only_expected: Vec<_> = e[i].iter().filter(|x| !a[i].contains(x)).collect();
                 let only_actual: Vec<_> = a[i].iter().filter(|x| !e[i].contains(x)).collect();
-                return Ok(Some(format!(
+                return Some(format!(
                     "document {n}, {name}: only in the mapper's: {only_expected:?}; only in the fast path's: {only_actual:?}"
-                )));
+                ));
             }
         }
     }
-    Ok(None)
+    None
 }

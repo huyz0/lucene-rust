@@ -18,7 +18,6 @@
  "org/lucenerust/opensearch/engine/AcceleratedEngine.java": 2123,
  "org/lucenerust/opensearch/engine/AcceleratedEngine.java#AcceleratedEngine@3": 163,
  "org/lucenerust/opensearch/engine/AcceleratedEngine.java#index": 137,
- "org/lucenerust/opensearch/engine/DocumentEncoder.java#document@2": 139,
  "org/lucenerust/opensearch/highlight/NativeFvhHighlighter.java#prepare": 146,
  "org/lucenerust/opensearch/highlight/NativePlainHighlighter.java#highlight": 136,
  "org/lucenerust/opensearch/highlight/NativeUnifiedHighlighter.java#highlight": 125,
