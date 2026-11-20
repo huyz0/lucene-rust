@@ -229,9 +229,10 @@ LANGUAGE_MODULES_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_C
 # its text from this jar's europarl.lines.txt.gz.
 LUCENE_TEST_FRAMEWORK_JAR=$(lucene_resolve_jar lucene-test-framework)
 export LUCENE_TEST_FRAMEWORK_JAR
-# Committed generator inputs that are neither generated nor fixtures
-# themselves: GenGeoTessellatorReal's real-world polygon corpus
-# (scripts/gen-tessellator-corpus.py builds it).
+# A generator input that is neither generated nor a fixture, and not tracked:
+# GenGeoTessellatorReal's real-world polygon corpus, built (and pinned by
+# SHA-256) by scripts/gen-tessellator-corpus.py when it is missing.
+python3 scripts/fetch-data.py --pack tessellator
 export FIXTURES_CORPUS="$FIXTURES/corpus"
 
 # --- compile -----------------------------------------------------------------
