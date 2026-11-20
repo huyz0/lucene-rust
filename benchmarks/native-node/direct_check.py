@@ -129,11 +129,20 @@ for label, path, body in [
     ("size above 100", P, {"size": 101, "query": {"term": {"tag": "t3"}}}),
     ("highlight", P, {"highlight": {"fields": {"title": {}}}, "query": {"match": {"title": "word3"}}}),
     ("request param", "/dc/_search?request_cache=false&search_type=dfs_query_then_fetch", {"query": {"term": {"tag": "t3"}}}),
-    ("wildcard index", "/d*/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}),
 ]:
     ok &= check(label, path, body, False)
 bn.req("POST", "/_aliases", {"actions": [{"add": {"index": "dc", "alias": "dca"}}]})
-ok &= check("alias", "/dca/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, False)
+ok &= check("alias", "/dca/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, True)
+bn.req("POST", "/_aliases", {"actions": [{"add": {"index": "dc", "alias": "dcf", "filter": {"term": {"tag": "t3"}}}}]})
+ok &= check("filtered alias", "/dcf/_search?request_cache=false", {"query": {"match_all": {}}}, False)
+ok &= check("alias with a filtered sibling on the index", "/dca/_search?request_cache=false", {"query": {"match_all": {}}}, False)
+bn.req("POST", "/_aliases", {"actions": [{"remove": {"index": "dc", "alias": "dcf"}}]})
+put("uniq1", {}, mapping, docs[:500])
+ok &= check("wildcard to one index", "/uniq*/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, True)
+ok &= check("wildcard matching several indices", "/dc*,uniq*/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, False)
+ok &= check("list of two indices", "/dc,uniq1/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, False)
+bn.req("POST", "/_aliases", {"actions": [{"add": {"index": "dc", "alias": "dcboth"}}, {"add": {"index": "uniq1", "alias": "dcboth"}}]})
+ok &= check("alias over two indices", "/dcboth/_search?request_cache=false", {"query": {"term": {"tag": "t3"}}}, False)
 put("dcr", {}, mapping, docs[:200], routing="r1")
 ok &= check("hits with _routing", "/dcr/_search?request_cache=false", {"query": {"match_all": {}}}, True)
 put("dcm", {"index.number_of_shards": 3}, mapping, docs[:300])
