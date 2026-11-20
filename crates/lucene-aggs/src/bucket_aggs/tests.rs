@@ -3631,3 +3631,73 @@ fn calendar_days_answer_the_buckets_put_in() {
         assert_eq!(days.get(1_000_000_000_000, shift), None);
     }
 }
+
+/// A keyword `cardinality` over a segment every document of which matches, none deleted, takes the terms
+/// dictionary whole; a segment with deletions is read document by document. Either way the distinct terms are
+/// those of the live matches, which `terms` lists.
+#[test]
+fn a_keyword_cardinality_over_whole_segments_equals_the_live_terms() {
+    let reader = fixture("terms_aggs_index");
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let with_deletes = segments.iter().filter(|s| s.live_docs.is_some()).count();
+    assert!(
+        with_deletes > 0 && with_deletes < segments.len(),
+        "the fixture has segments of both kinds"
+    );
+    let node = |field: &str| AggNode::Cardinality {
+        field: field.to_string(),
+        kind: CardinalityKind::Keyword,
+        precision: None,
+    };
+    for field in ["kw", "mkw", "hk", "sk"] {
+        // Each segment alone, then all of them: the live terms of the matches.
+        let mut slices: Vec<Vec<usize>> = (0..segments.len()).map(|i| vec![i]).collect();
+        slices.push((0..segments.len()).collect());
+        for slice in slices {
+            let got = run(
+                &reader,
+                &all(),
+                &[node(field)],
+                std::slice::from_ref(&slice),
+            )
+            .unwrap()
+            .remove(0)
+            .remove(0);
+            let AggResult::Cardinality(mut got) = got else {
+                panic!("{got:?}")
+            };
+            let got: HashSet<Vec<u8>> = got
+                .pop()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| match v {
+                    CardinalityValue::Term(t) => t,
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            let chosen: Vec<_> = slice.iter().map(|&i| &segments[i]).collect();
+            let want: HashSet<Vec<u8>> = crate::terms_agg::terms_sliced(
+                &segments,
+                reader.segment_readers(),
+                &all(),
+                field,
+                usize::MAX,
+                std::slice::from_ref(&slice),
+            )
+            .unwrap()
+            .remove(0)
+            .buckets
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+            assert_eq!(
+                got,
+                want,
+                "{field} over segments {slice:?} ({} with deletions)",
+                chosen.iter().filter(|s| s.live_docs.is_some()).count()
+            );
+        }
+    }
+}
