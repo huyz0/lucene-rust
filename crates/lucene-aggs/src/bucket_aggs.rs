@@ -1097,40 +1097,6 @@ fn buckets_made(nodes: &[AggNode], states: &[State]) -> usize {
     made
 }
 
-/// `nodes`' fresh states, each nested keyed aggregation's key table bound to
-/// `limit` keys (a top-level one holds at most the field's values, which
-/// the caller's reservation covers).
-fn new_states(nodes: &[AggNode], limit: usize) -> Vec<State> {
-    let mut states: Vec<State> = nodes.iter().map(State::new).collect();
-    for state in &mut states {
-        bound_nested(state, limit);
-    }
-    states
-}
-
-/// Binds the key tables of `state`'s sub-aggregations, at every depth, to
-/// `limit` keys.
-fn bound_nested(state: &mut State, limit: usize) {
-    let (State::Keyed { subs, .. } | State::Fixed { subs, .. }) = state else {
-        return;
-    };
-    for sub in subs {
-        if let State::Keyed { ords, .. } = sub {
-            ords.cap = if limit == usize::MAX { 0 } else { limit.max(1) };
-        }
-        bound_nested(sub, limit);
-    }
-}
-
-/// Whether a nested key table refused a key for its bound.
-fn refused_for_bound(states: &[State]) -> bool {
-    states.iter().any(|state| match state {
-        State::Keyed { ords, subs, .. } => ords.over || refused_for_bound(subs),
-        State::Fixed { subs, .. } => refused_for_bound(subs),
-        _ => false,
-    })
-}
-
 /// The collected state of one aggregation (`BucketsAggregator` and kin).
 enum State {
     Metric(MetricCol),
@@ -2268,6 +2234,8 @@ fn collect_bucket(
     }
     Ok(())
 }
+mod key_bound;
+use key_bound::*;
 mod key_ords;
 use key_ords::*;
 mod nested_join;
@@ -4661,13 +4629,7 @@ pub fn aggregate_tree_cached(
                 // memory bound (or a cancel) stops it here.
                 lucene_util::memory::checkpoint()?;
                 if globals.bucket_limit != usize::MAX {
-                    let made = buckets_made(nodes, states);
-                    if made > globals.bucket_limit || refused_for_bound(states) {
-                        return Err(lucene_search::Error::TooManyBuckets(
-                            made.max(globals.bucket_limit.saturating_add(1)),
-                            globals.bucket_limit,
-                        ));
-                    }
+                    check_limit(nodes, states, globals.bucket_limit)?;
                 }
                 for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
                     if l.done || l.zoned {
@@ -4980,12 +4942,7 @@ pub fn aggregate_tree_cached(
                     for (&b, f) in missed.iter().zip(fresh) {
                         // A block whose key table refused a key holds a
                         // truncated answer: it fails here, never cached.
-                        if refused_for_bound(&f) {
-                            return Err(lucene_search::Error::TooManyBuckets(
-                                buckets_made(nodes, &f).max(globals.bucket_limit.saturating_add(1)),
-                                globals.bucket_limit,
-                            ));
-                        }
+                        check_limit(nodes, &f, globals.bucket_limit)?;
                         let part = segment_cache::SegmentPart::of(nodes, f, i, globals)?;
                         // A part its deadline cut short is this request's
                         // alone.
@@ -5005,13 +4962,7 @@ pub fn aggregate_tree_cached(
             // Buckets counted from the points, read from the cache, or made
             // after the last window's check, are counted here, before any
             // result is built.
-            let made = buckets_made(nodes, &states);
-            if made > globals.bucket_limit || refused_for_bound(&states) {
-                return Err(lucene_search::Error::TooManyBuckets(
-                    made.max(globals.bucket_limit.saturating_add(1)),
-                    globals.bucket_limit,
-                ));
-            }
+            check_limit(nodes, &states, globals.bucket_limit)?;
             let mut terms = TermLookup::new(readers);
             let mut results = nodes
                 .iter()
