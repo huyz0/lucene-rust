@@ -411,6 +411,10 @@ JDK25_OWNED='^analysis_date_locales/(dates_jdk25\.txt|numbers_jdk25\.tsv)$'
 # opensearch-plugin/tools/painless-corpus/ScoreCorpus.java (an index and the
 # scores OpenSearch gives it, verified by painless_score.rs).
 OPENSEARCH_OWNED='^(seismic|opensearch_zstd|painless-score)/'
+# Written by the real Faiss library (python faiss-cpu, not linked into any
+# build) through scripts/gen-faiss-fixtures.py, with the results Faiss itself
+# returns; crates/lucene-faiss reads them.
+FAISS_OWNED='^faiss/'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
@@ -418,6 +422,7 @@ while IFS= read -r rel; do
   if [[ "$rel" =~ $BWC_OWNED ]]; then continue; fi
   if [[ "$rel" =~ $JDK25_OWNED ]]; then continue; fi
   if [[ "$rel" =~ $OPENSEARCH_OWNED ]]; then continue; fi
+  if [[ "$rel" =~ $FAISS_OWNED ]]; then continue; fi
   echo "  EXTRA in committed fixtures, produced by no generator: $rel"
   extra=$((extra+1)); status=1
 done < <(cd "$OUT" && find . -type f | sed 's|^\./||' | sort)
