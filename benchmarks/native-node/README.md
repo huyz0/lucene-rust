@@ -69,3 +69,15 @@ A search on the fast paths takes 0.3-3 ms, and a client that costs 1-4 ms per re
 `split.py BASE LABEL OUT [N]` runs every shape of `ab.py` and `families.py` (plus two floor shapes: `match_none`, a size-0 term count) serially on one keep-alive connection and records per shape the round-trip p50, the node's CPU per request (`/proc`), and, on the plugin, the native query-phase and fetch time per request, the number of requests that fell back to Java and why, the disk read volume and major page faults per request. The Java request path is the round trip minus native and fetch time; `SHAPES=a,b` selects by substring of `family/name`, and a shape slower than 50 ms gets fewer samples (about 3 s each). `loop.py BASE SHAPE SECS [CLIENTS]` is a closed loop of one shape for a profiler. `direct_check.py BASE` compares the direct-search path with OpenSearch's own on a node started with `NODE_ARGS="-E search.accelerated.direct.enabled=true"`: equal ids, scores, totals and sources, and which requests were answered directly.
 
 A bare `GET /` costs about 0.3 ms through this client and a one-shard search about 0.9-1.0 ms on both engines, so cheap shapes are bound by the request path, not the engine. An async-profiler run of that path (`-e cpu`, `-t`) shows no hot spot: netty, REST parsing, the search action, shard context, the query phase's pool hand-off, the fetch phase and the response objects each take 5-15%.
+
+## Neural, sparse, semantic, hybrid, MMR and rerank (no Docker, no libtorch)
+
+`neural-ab.py` starts a fresh stock node (its bundled k-NN, neural-search and ml-commons) and a plugin node as plain processes through `opensearch-plugin/e2e/nodectl.py`, pinned to `NODE_CPUS`, deploys the `fixtures/ml` tiny models (BERT text embedding, sparse encoder, cross-encoder; ONNX, served over local HTTP) and times 13 shapes on one keep-alive socket: k-NN (plain, filtered, k=100), `neural`, `neural_sparse` (model and analyzer), semantic field, MMR, a match baseline, hybrid (min_max and rrf, with a precomputed vector and with `neural`) and rerank, plus pipeline and semantic-field ingest. Sides alternate each round and the report is the best median. The tarball is downloaded once and checked against a pinned SHA-256 (`nodectl.py`); stock ml-commons fetches its ONNX runtime from DJL at the first model deploy, so behind a TLS-intercepting proxy run with `KEEP_JAVA_TOOL_OPTIONS=1`. About 12 minutes for 2 rounds of 4000 documents and 300 queries per shape. Run it by hand, not in PR CI.
+
+```
+gradle -p opensearch-plugin bundlePlugin -x torchShim      # or native_setup, above
+KEEP_JAVA_TOOL_OPTIONS=1 taskset -c 3 python3 -I benchmarks/native-node/neural-ab.py run out.json --docs 4000 --queries 300 --rounds 2
+python3 benchmarks/native-node/neural-ab.py report out.json
+```
+
+`SHAPES="neural|rerank"` narrows it, `SIDES=plugin` skips stock. The mmr shape alone turns on the system-generated search processors (`enabled_system_generated_factories`): left on for every shape they slow `neural` on both nodes by about 2x and hid the engines' difference.
