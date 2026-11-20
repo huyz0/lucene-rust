@@ -310,6 +310,78 @@ pub extern "C" fn ffi_engine_writer_apply_prepared(handle: u64, id: u64) -> i32 
     })
 }
 
+thread_local! {
+    /// The document the calling thread last read with `ffi_jvm_ingest_prepare`, as
+    /// `(token, plan, documents)`: the engine applies it on the thread that prepared it, right
+    /// after, so a thread holds at most one and an unused one is dropped by the next.
+    pub(crate) static INGESTED: std::cell::RefCell<Option<(u64, u32, lucene_engine::ingest::Prepared)>> =
+        const { std::cell::RefCell::new(None) };
+}
+pub(crate) static NEXT_INGESTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Applies the document [`INGESTED`] holds under `token` (see `ffi_jvm_ingest_prepare`) with
+/// the values the engine assigned it: `kind` 0 adds, 1 replaces the live documents of `id`
+/// (their `soft_field` becomes `soft_value`) as `softUpdateDocuments` does. A thread holding
+/// no such document is [`FfiStatus::InvalidHandle`]: the caller prepares it again.
+///
+/// # Safety
+/// `soft_field` valid for `soft_len` bytes.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_engine_writer_apply_ingested(
+    handle: u64,
+    token: u64,
+    kind: u8,
+    soft_field: *const u8,
+    soft_len: usize,
+    soft_value: i64,
+    seq_no: i64,
+    primary_term: i64,
+    version: i64,
+) -> i32 {
+    guard(|| {
+        yield_to_searches();
+        // SAFETY: caller contract.
+        let soft_field = unsafe { bytes_from_raw(soft_field, soft_len)? };
+        let held = INGESTED.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.take() {
+                Some(held) if held.0 == token => Some(held),
+                other => {
+                    *slot = other;
+                    None
+                }
+            }
+        });
+        let Some((_, plan, prepared)) = held else {
+            return Err(FfiStatus::InvalidHandle);
+        };
+        let plan = lucene_engine::ingest::plan(plan).ok_or(FfiStatus::InvalidHandle)?;
+        let id = prepared.id().to_vec();
+        let docs = prepared.finish(&plan, seq_no, primary_term, version);
+        crate::purge::writing();
+        let op = if kind == 0 {
+            Op::Add {
+                partition: None,
+                docs,
+                vectors: None,
+            }
+        } else {
+            let soft_field = std::str::from_utf8(soft_field).map_err(|_| FfiStatus::InvalidUtf8)?;
+            Op::SoftUpdate {
+                partition: None,
+                term: lucene_index::buffered_updates::Term::new("_id", id),
+                soft_field: soft_field.to_owned(),
+                soft_value,
+                docs,
+                vectors: None,
+            }
+        };
+        apply_op(handle, op)
+    })
+}
+
 /// Forgets a prepared operation that will not be applied.
 #[no_mangle]
 pub extern "C" fn ffi_engine_prepared_free(id: u64) -> i32 {

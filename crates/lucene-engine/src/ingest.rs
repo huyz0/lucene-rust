@@ -100,6 +100,8 @@ pub struct Plan {
     next: Vec<AtomicU16>,
     /// `index.mapping.nested_objects.limit`: nested documents one document may have.
     nested_limit: u32,
+    /// The metadata fields' numbers, when the plan was registered with them ([`prepare`] needs them).
+    meta: Option<prepared::Meta>,
 }
 
 /// A set of plan field indices.
@@ -160,7 +162,10 @@ impl Plan {
     /// `i32 count`, then per field `i32 len, name, u8 kind, u8 flags, i32 field
     /// number, i32 ignore_above, i32 analyzer, u8 index options, u8 norm mode, i32
     /// parent (the field it is a multi-field of, or -1), i32 n, n x i32 copy_to
-    /// targets`, then `i32` nested document limit.
+    /// targets`, then `i32` nested document limit, and optionally the metadata: `6 x i32` field
+    /// numbers (`_id`, `_seq_no`, `_primary_term`, `_version`, `_source`, `_nested_path`), `u8` whether
+    /// `_seq_no` is a point too, `i32 n`, and `n x (i32 len, bytes)` the `_nested_path` term of each
+    /// nested object.
     fn decode(blob: &[u8]) -> Result<Plan, Status> {
         let mut r = Reader { buf: blob, pos: 0 };
         let n = usize::try_from(r.i32()?).map_err(|_| invalid("count"))?;
@@ -211,6 +216,29 @@ impl Plan {
             });
         }
         let nested_limit = u32::try_from(r.i32()?).map_err(|_| invalid("nested limit"))?;
+        let meta = if r.pos == blob.len() {
+            None
+        } else {
+            let (id, seq_no, primary_term) = (r.i32()?, r.i32()?, r.i32()?);
+            let (version, source, nested_path) = (r.i32()?, r.i32()?, r.i32()?);
+            let seq_point = r.u8()? != 0;
+            let count = usize::try_from(r.i32()?).map_err(|_| invalid("nested path count"))?;
+            let mut nested_paths = Vec::with_capacity(count.min(MAX_FIELDS));
+            for _ in 0..count {
+                let len = usize::try_from(r.i32()?).map_err(|_| invalid("nested path"))?;
+                nested_paths.push(r.take(len)?.to_vec().into_boxed_slice());
+            }
+            Some(prepared::Meta {
+                id,
+                seq_no,
+                primary_term,
+                version,
+                source,
+                nested_path,
+                seq_point,
+                nested_paths,
+            })
+        };
         if r.pos != blob.len() {
             return Err(invalid("trailing bytes"));
         }
@@ -259,6 +287,7 @@ impl Plan {
             slots,
             next,
             nested_limit,
+            meta,
         })
     }
 
@@ -1472,8 +1501,10 @@ fn numeric(sec: &mut Sections, f: &Field, v: i64) {
     }
 }
 
+mod prepared;
 mod verify;
-pub use verify::verify;
+pub use prepared::{prepare, Prepared};
+pub use verify::{verify, verify_docs};
 
 #[cfg(test)]
 mod tests;

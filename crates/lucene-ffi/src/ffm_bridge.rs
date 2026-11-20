@@ -746,6 +746,111 @@ pub unsafe extern "C" fn ffi_jvm_ingest_parse(
     })
 }
 
+/// [`lucene_engine::ingest::prepare`]: `src` read against plan `plan` into the documents of
+/// the document whose encoded `_id` is `id`, held for this thread's
+/// `ffi_engine_writer_apply_ingested`. `out` (of `out_cap` slots) receives `[token, documents,
+/// weight]` then the plan index of each nested child's object; the token is 0 when the document
+/// is refused (the JVM's mapper takes it), which includes one with more children than `out` has
+/// slots for.
+///
+/// # Safety
+/// `src` valid for `src_len` bytes, `id` for `id_len`, `out` for `out_cap` `i64` writes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_ingest_prepare(
+    plan: i32,
+    src: *const u8,
+    src_len: usize,
+    id: *const u8,
+    id_len: usize,
+    out: *mut i64,
+    out_cap: usize,
+) -> i32 {
+    guard(|| {
+        if out.is_null() || out_cap < 3 {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        unsafe { *out = 0 };
+        let plan_id = u32::try_from(plan).map_err(|_| FfiStatus::InvalidHandle)?;
+        let plan = lucene_engine::ingest::plan(plan_id).ok_or(FfiStatus::InvalidHandle)?;
+        // SAFETY: caller contract.
+        let (src, id) = unsafe { (bytes_from_raw(src, src_len)?, bytes_from_raw(id, id_len)?) };
+        if let Some(prepared) = lucene_engine::ingest::prepare(&plan, src, id)?
+            .filter(|p| p.objects.len().saturating_add(3) <= out_cap)
+        {
+            let token = crate::engine_writer::NEXT_INGESTED
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY: caller contract.
+            unsafe {
+                *out = i64::try_from(token).map_err(|_| FfiStatus::InvalidArgument)?;
+                *out.add(1) =
+                    i64::try_from(prepared.len()).map_err(|_| FfiStatus::InvalidArgument)?;
+                *out.add(2) =
+                    i64::try_from(prepared.weight).map_err(|_| FfiStatus::InvalidArgument)?;
+                for (slot, object) in (3..).zip(&prepared.objects) {
+                    *out.add(slot) = i64::from(*object);
+                }
+            }
+            crate::engine_writer::INGESTED.with(|slot| {
+                *slot.borrow_mut() = Some((token, plan_id, prepared));
+            });
+        }
+        Ok(())
+    })
+}
+
+/// Compares the document held under `token` -- given the values the engine assigned -- with
+/// the operation blob `expected` the JVM's mapper path built: `*out_len` is 0 when they agree,
+/// else the length of the difference written (truncated to `out_cap`) into `out`. The held
+/// document is dropped.
+///
+/// # Safety
+/// `expected` valid for `expected_len` bytes, `out` for `out_cap`, `out_len` for one write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_ingest_verify_held(
+    token: u64,
+    seq_no: i64,
+    primary_term: i64,
+    version: i64,
+    expected: *const u8,
+    expected_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && out_cap != 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let expected = unsafe { bytes_from_raw(expected, expected_len)? };
+        let held = crate::engine_writer::INGESTED.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.take() {
+                Some(held) if held.0 == token => Some(held),
+                other => {
+                    *slot = other;
+                    None
+                }
+            }
+        });
+        let Some((_, plan, prepared)) = held else {
+            return Err(FfiStatus::InvalidHandle);
+        };
+        let plan = lucene_engine::ingest::plan(plan).ok_or(FfiStatus::InvalidHandle)?;
+        let docs = prepared.finish(&plan, seq_no, primary_term, version);
+        let text = lucene_engine::ingest::verify_docs(expected, &docs)?.unwrap_or_default();
+        let n = text.len().min(out_cap);
+        // SAFETY: caller contract.
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), out, n);
+            *out_len = n;
+        }
+        Ok(())
+    })
+}
+
 /// [`lucene_engine::ingest::verify`]: two single-document operation blobs compared as
 /// decoded documents; `*out_len` is 0 when they agree, else the length of the difference
 /// written (truncated to `out_cap`) into `out`.

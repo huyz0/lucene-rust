@@ -13,7 +13,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.search.accelerated` | index, dynamic | `true` | serve this index's eligible searches natively |
 | `index.fetch.accelerated` | index, dynamic | `true` | read stored fields (`_source`, `_id`, `stored_fields`) natively |
 | `index.engine.accelerated` | index, at creation | node default | write this index with the accelerated engine |
-| `index.engine.accelerated_source_parsing` | index, at creation | `true` | read `_source` of mappings with keyword, text, numbers, boolean, date, geo_point, nested, objects, multi-fields and `copy_to` in the library: 1.12x stock's documents per second on a logs bulk, 20% less CPU per document, 1.07x on text and 1.03x on nested. Other documents go to the document mapper; `false` turns it off |
+| `index.engine.accelerated_source_parsing` | index, at creation | `true` | read `_source` of mappings with keyword, text, numbers, boolean, date, geo_point, nested, objects, multi-fields and `copy_to` in the library: 1.14x stock's documents per second on a logs bulk at 0.83x its CPU per document, 1.19x on text and 1.14x on nested. Other documents go to the document mapper; `false` turns it off |
 | `indices.engine.accelerated.default` | node | `true` | the default of the setting above |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false` rolls the node back to OpenSearch's engine |
 

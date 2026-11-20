@@ -93,6 +93,12 @@ public final class NativeIngest {
     /** Where a thread's reads land before the fragment is cut to size. */
     private static final ThreadLocal<byte[]> ROOM = ThreadLocal.withInitial(() -> new byte[8192]);
 
+    /** Nested children a prepared document may have: the room {@link #prepared} gives their object indices. */
+    private static final int MAX_CHILDREN = 4096;
+
+    /** Per thread, what {@code ingestPrepare} reports: {@code [token, documents, weight]} then each child's object. */
+    private static final ThreadLocal<long[]> PREPARED = ThreadLocal.withInitial(() -> new long[3 + MAX_CHILDREN]);
+
     private static int header(byte[] fragment, int index) {
         return intAt(fragment, index * 4);
     }
@@ -103,7 +109,7 @@ public final class NativeIngest {
 
     /** Entries the fragment of {@code doc} holds in {@code section} (stored, inverted, doc values, points); 0 without a fragment. */
     static int entries(Document doc, int section) {
-        return doc == null ? 0 : header(doc.fragment, section);
+        return doc == null ? 0 : header(doc.fragment(), section);
     }
 
     /** Appends the fragment's bytes for {@code section} to {@code b}; returns its entry count. */
@@ -111,32 +117,165 @@ public final class NativeIngest {
         if (doc == null) {
             return 0;
         }
+        byte[] fragment = doc.fragment();
         int at = FRAGMENT_HEADER;
         for (int i = 0; i < section; i++) {
-            at += header(doc.fragment, 4 + i);
+            at += header(fragment, 4 + i);
         }
-        b.raw(doc.fragment, at, header(doc.fragment, 4 + section));
+        b.raw(fragment, at, header(fragment, 4 + section));
         b.analyzesNatively |= section == 1 && doc.analyzesText;
-        return header(doc.fragment, section);
+        return header(fragment, section);
     }
 
-    /** A mapped document: the metadata fields as the mapper builds them, and the fragment for the rest. */
-    static final class Document extends ParseContext.Document {
-        final byte[] fragment;
-        final int length;
-        final boolean analyzesText;
+    /**
+     * The fragments of one source -- its children's, then its root's -- read again, for an operation
+     * that is encoded in Java instead of applied from what {@code ingestPrepare} holds.
+     */
+    private static final class Fragments {
+        private final int plan;
+        private final BytesRef source;
+        private byte[][] cut;
 
-        Document(byte[] fragment, int length, boolean analyzesText) {
-            this.fragment = fragment;
-            this.length = length;
+        Fragments(int plan, BytesRef source) {
+            this.plan = plan;
+            this.source = source;
+        }
+
+        synchronized byte[] get(int index) {
+            if (cut == null) {
+                byte[] room = ROOM.get();
+                int n = NativeWriter.ingestParse(plan, source.bytes, source.offset, source.length, room);
+                if (n > room.length) {
+                    room = new byte[n + (n >> 1)];
+                    ROOM.set(room);
+                    n = NativeWriter.ingestParse(plan, source.bytes, source.offset, source.length, room);
+                }
+                if (n <= 0) {
+                    throw new IllegalStateException("the source was read once and is refused now");
+                }
+                int kids = intAt(room, 0);
+                byte[][] parts = new byte[kids + 1][];
+                int at = 4;
+                for (int i = 0; i < kids; i++) {
+                    int length = intAt(room, at + 4);
+                    parts[i] = java.util.Arrays.copyOfRange(room, at + 8, at + 8 + length);
+                    at += 8 + length;
+                }
+                parts[kids] = java.util.Arrays.copyOfRange(room, at, n);
+                cut = parts;
+            }
+            return cut[index];
+        }
+    }
+
+    /** What the operation of a mapped source needs to be applied from the library's copy of its documents. */
+    static final class Prepared {
+        private final NativeIngest owner;
+        private final int plan;
+        private final byte[] id;
+        private final BytesRef source;
+        private final boolean seqNoDocValuesOnly;
+        final SeqNoFieldMapper.SequenceIDFields seqID;
+        final Field version;
+        final int documents;
+        long token;
+        long weight;
+
+        Prepared(
+            NativeIngest owner,
+            int plan,
+            byte[] id,
+            BytesRef source,
+            boolean seqNoDocValuesOnly,
+            SeqNoFieldMapper.SequenceIDFields seqID,
+            Field version,
+            int documents
+        ) {
+            this.owner = owner;
+            this.plan = plan;
+            this.id = id;
+            this.source = source;
+            this.seqNoDocValuesOnly = seqNoDocValuesOnly;
+            this.seqID = seqID;
+            this.version = version;
+            this.documents = documents;
+        }
+
+        /** Reads the source again when this thread no longer holds its documents; whether it now does. */
+        boolean prepareAgain() {
+            long[] out = PREPARED.get();
+            int rc = NativeWriter.ingestPrepare(plan, source.bytes, source.offset, source.length, id, out);
+            if (rc != NativeBridge.OK || out[0] == 0 || out[1] != documents) {
+                return false;
+            }
+            token = out[0];
+            weight = out[2];
+            return true;
+        }
+
+        boolean usable(boolean encoderSeqNoDocValuesOnly) {
+            return seqNoDocValuesOnly == encoderSeqNoDocValuesOnly;
+        }
+
+        byte[] id() {
+            return id;
+        }
+    }
+
+    /** A mapped document: the metadata fields as the mapper builds them; the rest is in the library's copy or, for Java, in the fragment. */
+    static final class Document extends ParseContext.Document {
+        private final Fragments fragments;
+        private final int index;
+        final boolean analyzesText;
+        /** Fields the document was built with: more means the engine added some, and the library's copy is not the whole document. */
+        int built;
+        /** On the root: what applies the documents. */
+        Prepared prepared;
+
+        Document(Fragments fragments, int index, boolean analyzesText) {
+            this.fragments = fragments;
+            this.index = index;
             this.analyzesText = analyzesText;
         }
+
+        byte[] fragment() {
+            return fragments.get(index);
+        }
+    }
+
+    /**
+     * The prepared source of an operation over {@code docs} when it is exactly what the library holds:
+     * every document came from {@link #parse} and none gained a field since. Null otherwise, and in
+     * verify mode, which encodes in Java to compare.
+     */
+    static Prepared prepared(List<ParseContext.Document> docs, boolean seqNoDocValuesOnly) {
+        if (VERIFY || docs.isEmpty()) {
+            return null;
+        }
+        if (docs.get(docs.size() - 1) instanceof Document root && root.prepared != null) {
+            return preparedOf(docs, root.prepared, seqNoDocValuesOnly);
+        }
+        return null;
+    }
+
+    private static Prepared preparedOf(List<ParseContext.Document> docs, Prepared p, boolean seqNoDocValuesOnly) {
+        if (p.documents != docs.size() || p.usable(seqNoDocValuesOnly) == false) {
+            return null;
+        }
+        for (int i = 0; i < docs.size(); i++) {
+            ParseContext.Document d = docs.get(i);
+            if (d instanceof Document ours && ours.getFields().size() == ours.built) {
+                continue;
+            }
+            return null;
+        }
+        return p;
     }
 
     /** A compiled mapping: its plan, and per plan index the path a nested object's documents carry in {@code _nested_path}. */
-    private record Compiled(DocumentMapper mapper, int plan, boolean text, String[] nestedPaths) {}
+    private record Compiled(DocumentMapper mapper, int plan, boolean text, String[] nestedPaths, boolean seqNoDocValuesOnly) {}
 
-    private static final Compiled NONE = new Compiled(null, -1, false, null);
+    private static final Compiled NONE = new Compiled(null, -1, false, null, false);
 
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
@@ -163,45 +302,41 @@ public final class NativeIngest {
             return null;
         }
         BytesRef src = source.source().toBytesRef();
-        byte[] room = ROOM.get();
-        int n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
-        if (n > room.length) {
-            room = new byte[n + (n >> 1)];
-            ROOM.set(room);
-            n = NativeWriter.ingestParse(c.plan, src.bytes, src.offset, src.length, room);
-        }
-        if (n <= 0) {
+        BytesRef encoded = Uid.encodeId(source.id());
+        byte[] idBytes = java.util.Arrays.copyOfRange(encoded.bytes, encoded.offset, encoded.offset + encoded.length);
+        long[] out = PREPARED.get();
+        if (NativeWriter.ingestPrepare(c.plan, src.bytes, src.offset, src.length, idBytes, out) != NativeBridge.OK || out[0] == 0) {
             REFUSED.incrementAndGet();
             return null;
         }
-        byte[] fragment = java.util.Arrays.copyOf(room, n);
         HANDLED.incrementAndGet();
+        int kids = (int) out[1] - 1;
         SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
         Field version = new NumericDocValuesField(VersionFieldMapper.NAME, -1L);
-        BytesRef id = Uid.encodeId(source.id());
-        int kids = intAt(fragment, 0);
-        int at = 4;
+        Fragments fragments = new Fragments(c.plan, src);
+        Prepared prepared = new Prepared(this, c.plan, idBytes, src, c.seqNoDocValuesOnly, seqID, version, kids + 1);
+        prepared.token = out[0];
+        prepared.weight = out[2];
         List<ParseContext.Document> docs = new ArrayList<>(kids + 1);
         for (int i = 0; i < kids; i++) {
-            int object = intAt(fragment, at);
-            int length = intAt(fragment, at + 4);
-            Document child = new Document(java.util.Arrays.copyOfRange(fragment, at + 8, at + 8 + length), length, c.text);
-            child.add(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.NESTED_FIELD_TYPE));
-            child.add(NestedPathFieldMapper.field(settings.getIndexVersionCreated(), c.nestedPaths[object]));
+            Document child = new Document(fragments, i, c.text);
+            child.add(new Field(IdFieldMapper.NAME, encoded, IdFieldMapper.Defaults.NESTED_FIELD_TYPE));
+            child.add(NestedPathFieldMapper.field(settings.getIndexVersionCreated(), c.nestedPaths[(int) out[3 + i]]));
             child.add(seqID.seqNo);
             child.add(seqID.seqNoDocValue);
             child.add(version);
+            child.built = child.getFields().size();
             docs.add(child);
-            at += 8 + length;
         }
-        Document root = new Document(java.util.Arrays.copyOfRange(fragment, at, n), n - at, c.text);
-        root.add(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.FIELD_TYPE));
+        Document root = new Document(fragments, kids, c.text);
+        root.add(new Field(IdFieldMapper.NAME, encoded, IdFieldMapper.Defaults.FIELD_TYPE));
         root.add(seqID.seqNo);
         root.add(seqID.seqNoDocValue);
         root.add(seqID.primaryTerm);
         root.add(version);
-        BytesRef ref = source.source().toBytesRef();
-        root.add(new StoredField(SourceFieldMapper.NAME, ref.bytes, ref.offset, ref.length));
+        root.add(new StoredField(SourceFieldMapper.NAME, src.bytes, src.offset, src.length));
+        root.built = root.getFields().size();
+        root.prepared = prepared;
         docs.add(root);
         ParsedDocument parsed = new ParsedDocument(version, seqID, source.id(), null, docs, source.source(), source.getMediaType(), null);
         if (VERIFY) {
@@ -236,9 +371,9 @@ public final class NativeIngest {
             String[][] nested = new String[1][];
             int plan = plan(mapper, text, nested);
             String[] paths = nested[0];
-            return plan < 0 ? new Compiled(mapper, -1, false, null) : new Compiled(mapper, plan, text[0], paths);
+            return plan < 0 ? new Compiled(mapper, -1, false, null, false) : new Compiled(mapper, plan, text[0], paths, encoder.seqNoDocValuesOnly());
         } catch (Exception | LinkageError e) {
-            return new Compiled(mapper, -1, false, null);
+            return new Compiled(mapper, -1, false, null, false);
         }
     }
 
@@ -365,11 +500,62 @@ public final class NativeIngest {
             }
         }
         plan.i32(settings.getValue(MapperService.INDEX_MAPPING_NESTED_DOCS_LIMIT_SETTING).intValue());
+        if (metadata(plan, paths) == false) {
+            return -1;
+        }
         int[] id = new int[1];
         if (NativeWriter.ingestRegister(plan.toArray(), id) != NativeBridge.OK) {
             return -1;
         }
         return id[0];
+    }
+
+    /**
+     * Writes the plan's metadata: the numbers the shard's registry gives the fields every document
+     * carries (resolved on documents built as {@link #parse} builds them), whether {@code _seq_no} is
+     * also a point, and the {@code _nested_path} term of each nested object.
+     */
+    private boolean metadata(Blob plan, String[] paths) throws IOException {
+        SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
+        Field version = new NumericDocValuesField(VersionFieldMapper.NAME, -1L);
+        BytesRef id = Uid.encodeId("a");
+        List<IndexableField> root = List.of(
+            new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.FIELD_TYPE),
+            seqID.seqNo,
+            seqID.seqNoDocValue,
+            seqID.primaryTerm,
+            version,
+            new StoredField(SourceFieldMapper.NAME, new byte[0])
+        );
+        Map<String, Integer> numbers = encoder.numbers(root);
+        int nestedPath = -1;
+        boolean any = false;
+        for (String path : paths) {
+            any |= path != null;
+        }
+        if (any) {
+            Field path = NestedPathFieldMapper.field(settings.getIndexVersionCreated(), "a");
+            Map<String, Integer> child = encoder.numbers(
+                List.of(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.NESTED_FIELD_TYPE), path, seqID.seqNo, seqID.seqNoDocValue, version)
+            );
+            if (child.get(IdFieldMapper.NAME).equals(numbers.get(IdFieldMapper.NAME)) == false) {
+                return false;
+            }
+            nestedPath = child.get(path.name());
+        }
+        plan.i32(numbers.get(IdFieldMapper.NAME))
+            .i32(numbers.get(SeqNoFieldMapper.NAME))
+            .i32(numbers.get(SeqNoFieldMapper.PRIMARY_TERM_NAME))
+            .i32(numbers.get(VersionFieldMapper.NAME))
+            .i32(numbers.get(SourceFieldMapper.NAME))
+            .i32(nestedPath)
+            .u8(encoder.seqNoDocValuesOnly() ? 0 : 1)
+            .i32(paths.length);
+        for (String path : paths) {
+            byte[] term = path == null ? new byte[0] : path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            plan.i32(term.length).raw(term);
+        }
+        return true;
     }
 
     /** Whether two field paths are in the same document: under the same nearest nested object. */
