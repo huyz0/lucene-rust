@@ -44,7 +44,7 @@ def check(label, path, body, expect_direct, same_total=True):
     b = bn.req("POST", path, std)
 
     def key(r):
-        return ([(h["_index"], h["_id"], round(h["_score"] or 0, 4), json.dumps(h.get("_source"), sort_keys=True), h.get("sort"), h.get("_routing"), h.get("_ignored")) for h in r["hits"]["hits"]],
+        return ([(h["_index"], h.get("_id"), h.get("fields"), round(h["_score"] or 0, 4), json.dumps(h.get("_source"), sort_keys=True), h.get("sort"), h.get("_routing"), h.get("_ignored")) for h in r["hits"]["hits"]],
                 r["hits"].get("total"), r["hits"]["max_score"] and round(r["hits"]["max_score"], 4), r["_shards"])
     ok = key(a) == key(b) and (moved == 1) == expect_direct and moved in (0, 1)
     print("%-4s %-44s direct=%d expected=%s hits=%d total=%s" % ("ok" if ok else "FAIL", label, moved, expect_direct, len(a["hits"]["hits"]), a["hits"].get("total")))
@@ -120,6 +120,10 @@ for label, path, body in [
     ("URL preference _local", P + "&preference=_local", {"query": {"term": {"tag": "t3"}}}),
     ("URL preference custom", P + "&preference=abc", {"query": {"term": {"tag": "t3"}}}),
     ("URL routing", P + "&routing=r1", {"query": {"term": {"tag": "t3"}}}),
+    ("size 0 terms and stats", P, {"size": 0, "aggs": {"t": {"terms": {"field": "tag"}}, "s": {"stats": {"field": "n"}}}, "query": {"term": {"tag": "t3"}}}),
+    ("docvalue_fields", P, {"docvalue_fields": ["n", "tag"], "_source": False, "query": {"term": {"tag": "t3"}}}),
+    ("stored_fields none with docvalue", P, {"stored_fields": "_none_", "docvalue_fields": ["n"], "query": {"term": {"tag": "t3"}}}),
+    ("stored_fields unstored name", P, {"stored_fields": ["nothing"], "query": {"term": {"tag": "t3"}}}),
 ]:
     ok &= check(label, path, body, True)
 for label, path, body in [
