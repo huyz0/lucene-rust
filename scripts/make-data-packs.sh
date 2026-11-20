@@ -17,6 +17,10 @@ if [[ "${1:-}" == "--check" ]]; then
 fi
 out="${1:-target/data-packs}"
 
+# The resources are git-ignored; fetch-data.py rebuilds the missing ones
+# (pinned, SHA-256 checked) and leaves the present ones alone.
+python3 scripts/fetch-data.py
+
 status=0
 for crate in crates/lucene-analysis-*/; do
     pack_rs="$crate/src/pack.rs"
