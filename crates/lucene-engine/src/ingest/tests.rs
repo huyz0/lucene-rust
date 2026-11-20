@@ -250,6 +250,25 @@ fn null_is_no_value() {
 }
 
 #[test]
+fn null_on_a_name_the_plan_does_not_hold_is_no_value() {
+    let with =
+        shaped_run(r#"{"gone":null,"tags":"t","o":{"nope":null,"k":"a"},"also":null}"#).unwrap();
+    let without = shaped_run(r#"{"tags":"t","o":{"k":"a"}}"#).unwrap();
+    assert_eq!(with, without);
+    for src in [
+        r#"{"gone":1}"#,
+        r#"{"gone":null,"gone2":"x"}"#,
+        r#"{"gone":nul}"#,
+        r#"{"gone":nullx}"#,
+        r#"{"gone":[null]}"#,
+        r#"{"gone":null"#,
+        r#"{"gone" null}"#,
+    ] {
+        assert!(shaped_run(src).is_none(), "{src}");
+    }
+}
+
+#[test]
 fn a_keyword_array_is_one_entry_of_its_distinct_values() {
     let out = shaped_run(r#"{"tags":["b","a","b"]}"#).unwrap();
     assert_eq!(counts(&out), [0, 1, 3, 0]);

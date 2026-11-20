@@ -940,7 +940,18 @@ fn read_object(
     loop {
         sc.skip_ws();
         let key = sc.string()?;
-        let idx = sc.lookup(plan, &key, prefix, place)?;
+        let Some(idx) = sc.lookup(plan, &key, prefix, place) else {
+            // A name the plan does not hold with the value `null` is no value, as the mapper
+            // reads it: it maps nothing and indexes nothing. Any other value is the
+            // complete path's.
+            sc.expect(b':')?;
+            sc.skip_ws();
+            sc.null().then_some(())?;
+            if sc.separator(b'}')? {
+                return Some(());
+            }
+            continue;
+        };
         place = idx;
         if seen.test_and_set(idx) {
             return None;
