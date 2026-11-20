@@ -4978,6 +4978,14 @@ pub fn aggregate_tree_cached(
                     )?;
                     drop(ranges);
                     for (&b, f) in missed.iter().zip(fresh) {
+                        // A block whose key table refused a key holds a
+                        // truncated answer: it fails here, never cached.
+                        if refused_for_bound(&f) {
+                            return Err(lucene_search::Error::TooManyBuckets(
+                                buckets_made(nodes, &f).max(globals.bucket_limit.saturating_add(1)),
+                                globals.bucket_limit,
+                            ));
+                        }
                         let part = segment_cache::SegmentPart::of(nodes, f, i, globals)?;
                         // A part its deadline cut short is this request's
                         // alone.
