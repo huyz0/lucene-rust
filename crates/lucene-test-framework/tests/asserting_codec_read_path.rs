@@ -812,6 +812,7 @@ fn a_sorted_field_with_an_unused_ordinal_fails_the_check() {
         dvm: &dvm,
         dvd: &dvd,
         dvs: &dvs,
+        dvp: None,
     };
     // `assert seen.cardinality() == values.getValueCount()`: one of two.
     fires("left: 1\n right: 2", || {

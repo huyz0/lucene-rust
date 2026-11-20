@@ -20,6 +20,7 @@
 
 use std::sync::Arc;
 
+use lucene_codecs::index_format::IndexFormat;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
     BinaryDocValuesField, Document, IntPoint, NumericDocValuesField, SortedDocValuesField, Store,
@@ -47,7 +48,7 @@ pub fn deleted(i: usize) -> bool {
 pub fn version() -> LuceneVersion {
     LuceneVersion {
         major: 10,
-        minor: 5,
+        minor: 6,
         bugfix: 0,
     }
 }
@@ -83,6 +84,9 @@ pub fn doc(i: usize) -> Document {
 pub fn write(dir: &dyn Directory, seed: i64, merge: bool) {
     let codec = Arc::new(codec(seed).installed().unwrap());
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version()).unwrap();
+    // Lucene 10.6's writer emits the version 3 doc-values layout (`.dvp`), so
+    // the file sets only match with the 10.6 index format.
+    w.set_index_format(IndexFormat::Lucene106);
     w.set_codec(Some(codec.clone())).unwrap();
     w.set_max_full_flush_merge_wait_millis(0);
     for seg in 0..SEGMENTS {

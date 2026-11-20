@@ -193,10 +193,12 @@ pub struct DocValuesWrite<'a> {
     pub format_name: &'a str,
     /// The instance's fields.
     pub field_infos: &'a crate::field_infos::FieldInfos,
-    /// `.dvm`, `.dvd` and `.dvs`.
+    /// `.dvm`, `.dvd` and `.dvs`, and `.dvp` when the format writes one
+    /// (doc values version 3, Lucene 10.6).
     pub dvm: &'a [u8],
     pub dvd: &'a [u8],
     pub dvs: &'a [u8],
+    pub dvp: Option<&'a [u8]>,
 }
 
 /// A write [`Lucene104Codec::before_write`] can fail.
