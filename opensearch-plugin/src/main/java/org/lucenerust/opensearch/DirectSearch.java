@@ -63,7 +63,7 @@ final class DirectSearch {
     static final Setting<Boolean> ENABLED = Setting.boolSetting("search.accelerated.direct.enabled", true, Setting.Property.NodeScope);
 
     private static final java.util.Set<String> PLAIN_NAMES = java.util.Set.of(
-        "query", "size", "from", "track_total_hits", "sort", "_source", "search_after", "min_score"
+        "query", "size", "from", "track_total_hits", "sort", "_source", "search_after", "min_score", "aggs", "aggregations"
     );
     private static final java.util.Set<String> PLAIN_PARAMS = java.util.Set.of(
         "index", "request_cache", "preference", "routing", "ignore_unavailable", "allow_no_indices", "expand_wildcards",
@@ -196,6 +196,10 @@ final class DirectSearch {
         if (source == null) {
             return false;
         }
+        if (source.aggregations() != null
+            && DirectAggs.slicing(cluster.get().state().metadata().settings(), service.getIndexSettings().getSettings())) {
+            return false;
+        }
         DirectResponse.Shape shape = applyParams(request, source);
         if (shape.totalAsInt() && source.trackTotalHitsUpTo() != Integer.MAX_VALUE) {
             return false;
@@ -208,7 +212,7 @@ final class DirectSearch {
         Integer tracked = source.trackTotalHitsUpTo();
         long countLimit = tracked == null ? TOTAL_HITS_THRESHOLD : tracked < 0 ? 0 : tracked == Integer.MAX_VALUE ? Long.MAX_VALUE : tracked;
         try (Engine.Searcher searcher = shard.acquireSearcher("direct_search")) {
-            DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit);
+            DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit, request);
             if (hits == null) {
                 return false;
             }
@@ -222,7 +226,7 @@ final class DirectSearch {
     }
 
     /** Runs the query (and sort) natively over the reader; null when the native engine does not answer it. */
-    private DirectResponse.Hits search(IndexService service, IndexReader reader, SearchSourceBuilder source, int room, long countLimit) throws Exception {
+    private DirectResponse.Hits search(IndexService service, IndexReader reader, SearchSourceBuilder source, int room, long countLimit, RestRequest params) throws Exception {
         NativeReaders.Acquired acquired = readers.acquire(reader);
         if (acquired.handle() == 0) {
             return null;
@@ -255,6 +259,9 @@ final class DirectSearch {
             blob = QueryEncoder.withMinScore(blob, source.minScore());
         }
         blob = similarities.prefix(blob);
+        if (source.aggregations() != null) {
+            return aggregated(acquired.handle(), blob, service, reader, source, countLimit, params);
+        }
         int[] docs = new int[Math.max(room, 1)];
         float[] scores = new float[Math.max(room, 1)];
         long[] counts = new long[5];
@@ -264,6 +271,24 @@ final class DirectSearch {
                 ? new DirectResponse.Hits(docs, scores, counts, null, null) : null;
         }
         return sortedHits(acquired.handle(), blob, sorted, sortBlob.blob(), room, countLimit, docs, counts);
+    }
+
+    /** The aggregations' pass over the query: no hits (size 0), the total it counted, the aggregations as written. */
+    private DirectResponse.Hits aggregated(long handle, byte[] blob, IndexService service, IndexReader reader, SearchSourceBuilder source, long countLimit, RestRequest params) throws java.io.IOException {
+        if (source.minScore() != null || source.sorts() != null) {
+            return null;
+        }
+        NativeAggregations.Plan plan = DirectAggs.plan(source, service.mapperService(), reader);
+        if (plan == null) {
+            return null;
+        }
+        NativeMemory.queryStarted(0);
+        DirectAggs.Result result = DirectAggs.run(handle, blob, plan, reader, countLimit, params);
+        if (result == null) {
+            return null;
+        }
+        long[] counts = new long[] { 0, result.total(), result.lowerBound() ? 1 : 0, 0, 0 };
+        return new DirectResponse.Hits(new int[1], new float[1], counts, null, null, result.json());
     }
 
     /** Whether the request's query-string parameters leave the answer as the body alone gives it. */
@@ -415,7 +440,7 @@ final class DirectSearch {
 
     /** A body of only a query, paging and a total-hits setting: nothing else changes what the search does or returns. */
     private static boolean plain(SearchSourceBuilder source) {
-        return source.aggregations() == null
+        return DirectAggs.shape(source)
             && source.postFilter() == null
             && source.highlighter() == null
             && source.suggest() == null

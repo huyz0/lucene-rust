@@ -34,7 +34,11 @@ final class DirectResponse {
     }
 
     /** The hits found: documents, scores (or the sort members) and the counts the native search returned. */
-    record Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore) {}
+    record Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore, String aggregations) {
+        Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore) {
+            this(docs, scores, counts, sort, maxScore, null);
+        }
+    }
 
     private DirectResponse() {}
 
@@ -65,7 +69,11 @@ final class DirectResponse {
                 return null;
             }
         }
-        out.append("]}}");
+        out.append("]}");
+        if (hits.aggregations() != null) {
+            out.append(',').append(hits.aggregations());
+        }
+        out.append('}');
         return out.toString();
     }
 
