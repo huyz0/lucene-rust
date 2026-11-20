@@ -411,7 +411,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
             return false;
         }
         if (softDeletes != null
-            && (softDeletes.numericValue() == null || encoder.isSoftDeletesField(softDeletes.name()) == false || sameId(prepared.id(), uid.bytes()) == false)) {
+            && (softDeletes.numericValue() == null || encoder.isSoftDeletesField(softDeletes.name()) == false || prepared.hasId(uid.bytes()) == false)) {
             return false;
         }
         long estimate = reservation(prepared.weight);
@@ -449,31 +449,16 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         }
     }
 
-    private static boolean sameId(byte[] id, org.apache.lucene.util.BytesRef bytes) {
-        return java.util.Arrays.equals(id, 0, id.length, bytes.bytes, bytes.offset, bytes.offset + bytes.length);
-    }
-
-    /** In verify mode, checks the library's copy of an operation's documents against the blob Java encoded. */
-    private void verifyPrepared(List<ParseContext.Document> docs, Blob op) {
-        if (NativeIngest.VERIFY && docs.get(docs.size() - 1) instanceof NativeIngest.Document root && root.prepared != null) {
-            NativeIngest.Prepared p = root.prepared;
-            if (p.prepareAgain() == false) {
-                NativeIngest.MISMATCHES.incrementAndGet();
-                System.err.println("accelerated source parsing: the documents of an operation were refused when read again");
-                return;
-            }
-            String difference = NativeWriter.ingestVerifyHeld(
-                p.token,
-                p.seqID.seqNoDocValue.numericValue().longValue(),
-                p.seqID.primaryTerm.numericValue().longValue(),
-                p.version.numericValue().longValue(),
-                op.toArray()
-            );
-            if (difference != null) {
-                NativeIngest.MISMATCHES.incrementAndGet();
-                System.err.println("accelerated source parsing: the applied documents differ from the encoded ones: " + difference);
-            }
+    /** Applies {@code docs}: from the library's copy of them when that is all they are, else encoded here. */
+    private void index(List<ParseContext.Document> docs, Term uid, Field softDeletes) throws IOException {
+        if (applyPrepared(docs, uid, softDeletes)) {
+            return;
         }
+        Blob op = softDeletes == null
+            ? encoder.add(partition(docs), docs)
+            : encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, softDeletes);
+        NativeIngest.verifyApplied(docs, op);
+        apply(op, docs.size());
     }
 
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
@@ -533,22 +518,14 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         ensureOpen();
         maybeInjectFault(doc);
         List<ParseContext.Document> docs = List.of(doc);
-        if (applyPrepared(docs, uid, null) == false) {
-            Blob op = encoder.add(partition(docs), docs);
-            verifyPrepared(docs, op);
-            apply(op, 1);
-        }
+        index(docs, uid, null);
         return 0;
     }
 
     @Override
     public long addDocuments(List<ParseContext.Document> docs, Term uid) throws IOException {
         ensureOpen();
-        if (applyPrepared(docs, uid, null) == false) {
-            Blob op = encoder.add(partition(docs), docs);
-            verifyPrepared(docs, op);
-            apply(op, docs.size());
-        }
+        index(docs, uid, null);
         return 0;
     }
 
@@ -572,12 +549,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        Field soft = onlySoftDeletesField(softDeletesField);
-        if (applyPrepared(docs, uid, soft) == false) {
-            Blob op = encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, soft);
-            verifyPrepared(docs, op);
-            apply(op, docs.size());
-        }
+        index(docs, uid, onlySoftDeletesField(softDeletesField));
     }
 
     @Override
@@ -586,12 +558,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         ensureOpen();
         maybeInjectFault(doc);
         List<ParseContext.Document> docs = List.of(doc);
-        Field soft = onlySoftDeletesField(softDeletesField);
-        if (applyPrepared(docs, uid, soft) == false) {
-            Blob op = encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, soft);
-            verifyPrepared(docs, op);
-            apply(op, 1);
-        }
+        index(docs, uid, onlySoftDeletesField(softDeletesField));
     }
 
     @Override

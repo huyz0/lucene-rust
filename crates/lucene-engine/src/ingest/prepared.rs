@@ -116,7 +116,7 @@ fn split(fragment: &[u8]) -> Option<([i32; 4], [&[u8]; 4])> {
         counts[i] = int(i)?;
         lens[i] = usize::try_from(int(4 + i)?).ok()?;
     }
-    let mut at = 32usize;
+    let mut at = super::FRAGMENT_HEADER;
     let mut sections: [&[u8]; 4] = [&[]; 4];
     for i in 0..4 {
         sections[i] = fragment.get(at..at.checked_add(lens[i])?)?;

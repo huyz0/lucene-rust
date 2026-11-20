@@ -26,10 +26,6 @@
 //! `4 x i32` entry counts (stored, inverted, doc values, points), `4 x i32` byte lengths, then
 //! the four sections.
 
-// ARITH: offsets index a source slice already bounded by its length, counters
-// are capped by MAX_FIELDS and entry sizes by the i32 section length checks.
-#![allow(clippy::arithmetic_side_effects)]
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -432,6 +428,9 @@ impl Sections {
         }
     }
 }
+
+/// Bytes of a fragment's header: `4 x i32` counts and `4 x i32` section lengths.
+pub(super) const FRAGMENT_HEADER: usize = 32;
 
 /// A document's fragment: `4 x i32` counts, `4 x i32` section lengths, the sections.
 fn fragment(d: &Doc, out: &mut Vec<u8>) {
