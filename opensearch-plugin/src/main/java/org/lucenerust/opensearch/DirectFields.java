@@ -69,14 +69,15 @@ final class DirectFields {
         return true;
     }
 
-    /** Whether the named stored fields all hold nothing to write: {@code _source} or a field that is not stored. */
+    /** Whether the named stored fields all hold nothing to write: {@code _source} or a field that is not stored (and is not a k-NN vector). */
     static boolean supported(SearchSourceBuilder source, MapperService mappers) {
         if (source.storedFields() == null) {
             return true;
         }
         for (String name : names(source)) {
             MappedFieldType type = name.equals("_source") ? null : mappers.fieldType(name);
-            if (type != null && (type.isStored() || name.startsWith("_"))) {
+            // A k-NN vector field reports itself as not stored whatever its mapping says.
+            if (type != null && (type.isStored() || name.startsWith("_") || "knn_vector".equals(type.typeName()))) {
                 return false;
             }
         }
