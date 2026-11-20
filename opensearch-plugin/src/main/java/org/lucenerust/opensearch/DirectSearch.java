@@ -63,7 +63,7 @@ final class DirectSearch {
     static final Setting<Boolean> ENABLED = Setting.boolSetting("search.accelerated.direct.enabled", true, Setting.Property.NodeScope);
 
     private static final java.util.Set<String> PLAIN_NAMES = java.util.Set.of(
-        "query", "size", "from", "track_total_hits", "sort", "_source", "search_after", "min_score", "aggs", "aggregations"
+        "query", "size", "from", "track_total_hits", "sort", "_source", "search_after", "min_score", "aggs", "aggregations", "docvalue_fields", "stored_fields"
     );
     private static final java.util.Set<String> PLAIN_PARAMS = java.util.Set.of(
         "index", "request_cache", "preference", "routing", "ignore_unavailable", "allow_no_indices", "expand_wildcards",
@@ -201,6 +201,9 @@ final class DirectSearch {
             return false;
         }
         DirectResponse.Shape shape = applyParams(request, source);
+        if (shape == null || DirectFields.supported(source, service.mapperService()) == false) {
+            return false;
+        }
         if (shape.totalAsInt() && source.trackTotalHitsUpTo() != Integer.MAX_VALUE) {
             return false;
         }
@@ -215,6 +218,14 @@ final class DirectSearch {
             DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit, request);
             if (hits == null) {
                 return false;
+            }
+            if (source.docValueFields() != null && source.docValueFields().isEmpty() == false) {
+                QueryShardContext fieldContext = service.newQueryShardContext(0, new IndexSearcher(searcher.getIndexReader()), System::currentTimeMillis, null);
+                DirectFields fields = DirectFields.of(source.docValueFields(), service.mapperService(), fieldContext);
+                if (fields == null) {
+                    return false;
+                }
+                hits = new DirectResponse.Hits(hits.docs(), hits.scores(), hits.counts(), hits.sort(), hits.maxScore(), hits.aggregations(), fields);
             }
             String json = DirectResponse.write(index, searcher.getIndexReader(), start, from, size, countLimit, hits, shape);
             if (json == null) {
@@ -323,7 +334,19 @@ final class DirectSearch {
             source.trackTotalHits(true);
         }
         FetchSourceContext fetch = FetchSourceContext.parseFromRestRequest(request);
-        return new DirectResponse.Shape(fetch != null ? fetch : source.fetchSource(), totalAsInt);
+        // A body's own `_source` next to `stored_fields` is left to OpenSearch (plainBody), so only the URL's is explicit here.
+        boolean explicit = fetch != null;
+        if (fetch == null) {
+            fetch = source.fetchSource();
+        }
+        boolean none = DirectFields.none(source);
+        if (none && explicit) {
+            return null;
+        }
+        if (source.storedFields() != null && explicit == false && DirectFields.names(source).contains("_source") == false) {
+            fetch = FetchSourceContext.DO_NOT_FETCH_SOURCE;
+        }
+        return new DirectResponse.Shape(fetch, totalAsInt, none == false);
     }
 
     private void reply(RestChannel channel, String index, SearchSourceBuilder source, String json, long start, long totalHits) {
@@ -367,8 +390,15 @@ final class DirectSearch {
             if (names.nextToken() != XContentParser.Token.START_OBJECT) {
                 return null;
             }
+            boolean stored = false;
+            boolean sourced = false;
             while (names.nextToken() == XContentParser.Token.FIELD_NAME) {
                 if (PLAIN_NAMES.contains(names.currentName()) == false) {
+                    return null;
+                }
+                stored |= names.currentName().equals("stored_fields");
+                sourced |= names.currentName().equals("_source");
+                if (stored && sourced) {
                     return null;
                 }
                 names.nextToken();
@@ -447,8 +477,7 @@ final class DirectSearch {
             && source.collapse() == null
             && source.profile() == false
             && (source.rescores() == null || source.rescores().isEmpty())
-            && source.storedFields() == null
-            && source.docValueFields() == null
+            && DirectFields.shape(source)
             && (source.scriptFields() == null || source.scriptFields().isEmpty())
             && source.timeout() == null
             && source.terminateAfter() == 0
