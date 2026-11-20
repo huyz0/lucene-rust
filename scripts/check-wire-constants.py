@@ -127,6 +127,9 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("NativeIngest.java", "MAX_CHILDREN"): "how many nested children's object indices the per-thread prepare buffer has room for; a source with more is left to the document mapper",
+    ("DirectSearch.java", "MAX_SIZE"): "the most hits (from + size) the REST-layer direct search collects, checked in Java before the search is built",
+    ("MlLimits.java", "HEAP_PER_FLOAT"): "the heap estimate of one float of an ML answer, used by the Java memory check before an answer is built",
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): "the padding of the Java-side half-float flat writer; the native writer starts vector data on a page (VECTOR_DATA_ALIGNMENT) and readers follow the recorded offset",
     ("MoreLikeThisEncoder.java", "DEFAULT_MAX_NUM_TOKENS_PARSED"): "stock's default max_num_tokens_parsed of more_like_this, applied in Java when the query is encoded",
     ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",

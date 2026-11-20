@@ -217,8 +217,8 @@ public final class NativeIngest {
             return seqNoDocValuesOnly == encoderSeqNoDocValuesOnly;
         }
 
-        byte[] id() {
-            return id;
+        boolean hasId(org.apache.lucene.util.BytesRef bytes) {
+            return java.util.Arrays.equals(id, 0, id.length, bytes.bytes, bytes.offset, bytes.offset + bytes.length);
         }
     }
 
@@ -270,6 +270,30 @@ public final class NativeIngest {
             return null;
         }
         return p;
+    }
+
+    /** In verify mode, checks the library's copy of an operation's documents against the blob Java encoded. */
+    static void verifyApplied(List<ParseContext.Document> docs, Blob op) {
+        Prepared p = VERIFY && docs.get(docs.size() - 1) instanceof Document root ? root.prepared : null;
+        if (p == null) {
+            return;
+        }
+        if (p.prepareAgain() == false) {
+            MISMATCHES.incrementAndGet();
+            System.err.println("accelerated source parsing: the documents of an operation were refused when read again");
+            return;
+        }
+        String difference = NativeWriter.ingestVerifyHeld(
+            p.token,
+            p.seqID.seqNoDocValue.numericValue().longValue(),
+            p.seqID.primaryTerm.numericValue().longValue(),
+            p.version.numericValue().longValue(),
+            op.toArray()
+        );
+        if (difference != null) {
+            MISMATCHES.incrementAndGet();
+            System.err.println("accelerated source parsing: the applied documents differ from the encoded ones: " + difference);
+        }
     }
 
     /** A compiled mapping: its plan, and per plan index the path a nested object's documents carry in {@code _nested_path}. */
@@ -408,28 +432,9 @@ public final class NativeIngest {
         }
         List<Entry> entries = new ArrayList<>();
         Map<String, Integer> index = new HashMap<>();
-        List<FieldMapper> mains = new ArrayList<>();
-        for (Mapper m : mapper.mappers()) {
-            if (m instanceof MetadataFieldMapper) {
-                if (m instanceof org.opensearch.index.mapper.DataStreamFieldMapper ds) {
-                    if (dataStreamEnabled(ds)) {
-                        return -1;
-                    }
-                    continue;
-                }
-                if (METADATA.contains(m.name()) == false) {
-                    return -1;
-                }
-                continue;
-            }
-            if (m instanceof FieldMapper == false) {
-                return -1;
-            }
-            FieldMapper fm = (FieldMapper) m;
-            if (mapper.mappers().isMultiField(fm.name())) {
-                continue;
-            }
-            mains.add(fm);
+        List<FieldMapper> mains = mainFields(mapper);
+        if (mains == null) {
+            return -1;
         }
         // The mapping's `object` and `nested` fields, plain ones only; every leaf of it is one of the field mappers.
         List<String> objects = new ArrayList<>();
@@ -477,27 +482,8 @@ public final class NativeIngest {
             return -1;
         }
         Blob plan = new Blob(256).i32(entries.size());
-        for (Entry e : entries) {
-            if (e.mapper == null) {
-                plan.string(e.name).u8(e.nested ? NESTED : OBJECT).u8(0).i32(0).i32(0).i32(0).u8(0).u8(0).i32(-1).i32(0);
-                continue;
-            }
-            Map<String, Object> params = params(e.mapper);
-            int[] copies = new int[e.copyTo.size()];
-            for (int i = 0; i < copies.length; i++) {
-                Integer target = index.get(e.copyTo.get(i));
-                if (target == null || entries.get(target).mapper == null || sameScope(e.name, e.copyTo.get(i), nested) == false) {
-                    return -1;
-                }
-                copies[i] = target;
-            }
-            if (params == null || writeField(plan, e.name, params, text) == false) {
-                return -1;
-            }
-            plan.i32(e.parent).i32(copies.length);
-            for (int c : copies) {
-                plan.i32(c);
-            }
+        if (writeEntries(plan, entries, index, nested, text) == false) {
+            return -1;
         }
         plan.i32(settings.getValue(MapperService.INDEX_MAPPING_NESTED_DOCS_LIMIT_SETTING).intValue());
         if (metadata(plan, paths) == false) {
@@ -508,6 +494,61 @@ public final class NativeIngest {
             return -1;
         }
         return id[0];
+    }
+
+    /** The mapping's fields that are not multi-fields, or null when it has a field or metadata mapper this reader does not take. */
+    private static List<FieldMapper> mainFields(DocumentMapper mapper) throws IOException {
+        List<FieldMapper> mains = new ArrayList<>();
+        for (Mapper m : mapper.mappers()) {
+            if (m instanceof MetadataFieldMapper) {
+                if (m instanceof org.opensearch.index.mapper.DataStreamFieldMapper ds) {
+                    if (dataStreamEnabled(ds)) {
+                        return null;
+                    }
+                    continue;
+                }
+                if (METADATA.contains(m.name()) == false) {
+                    return null;
+                }
+                continue;
+            }
+            if (m instanceof FieldMapper == false) {
+                return null;
+            }
+            FieldMapper fm = (FieldMapper) m;
+            if (mapper.mappers().isMultiField(fm.name())) {
+                continue;
+            }
+            mains.add(fm);
+        }
+        return mains;
+    }
+
+    /** Writes the plan's field rows, one per entry; false when one cannot be reproduced. */
+    private boolean writeEntries(Blob plan, List<Entry> entries, Map<String, Integer> index, Set<String> nested, boolean[] text) throws IOException {
+        for (Entry e : entries) {
+            if (e.mapper == null) {
+                plan.string(e.name).u8(e.nested ? NESTED : OBJECT).u8(0).i32(0).i32(0).i32(0).u8(0).u8(0).i32(-1).i32(0);
+                continue;
+            }
+            Map<String, Object> params = params(e.mapper);
+            int[] copies = new int[e.copyTo.size()];
+            for (int i = 0; i < copies.length; i++) {
+                Integer target = index.get(e.copyTo.get(i));
+                if (target == null || entries.get(target).mapper == null || sameScope(e.name, e.copyTo.get(i), nested) == false) {
+                    return false;
+                }
+                copies[i] = target;
+            }
+            if (params == null || writeField(plan, e.name, params, text) == false) {
+                return false;
+            }
+            plan.i32(e.parent).i32(copies.length);
+            for (int c : copies) {
+                plan.i32(c);
+            }
+        }
+        return true;
     }
 
     /**
@@ -742,6 +783,16 @@ public final class NativeIngest {
             || is(p, "ignore_malformed", false) == false;
     }
 
+    /** A numeric field's point, for its schema. */
+    private static org.apache.lucene.document.Field numericPoint(String type, String name) {
+        return switch (type) {
+            case "integer" -> new IntPoint(name, 0);
+            case "long" -> new LongPoint(name, 0);
+            case "float" -> new FloatPoint(name, 0);
+            default -> new DoublePoint(name, 0);
+        };
+    }
+
     /** Writes one field of the plan (ingest.rs's {@code Plan::decode}); false when the field is not one the fast path reproduces. */
     private boolean writeField(Blob plan, String name, Map<String, Object> p, boolean[] text) throws IOException {
         Object type = p.get("type");
@@ -787,28 +838,14 @@ public final class NativeIngest {
                     return false;
                 }
                 flags = 3;
-                switch ((String) type) {
-                    case "integer" -> {
-                        kind = INTEGER;
-                        schema.absorb(new IntPoint(name, 0).fieldType());
-                        schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
-                    }
-                    case "long" -> {
-                        kind = LONG;
-                        schema.absorb(new LongPoint(name, 0).fieldType());
-                        schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
-                    }
-                    case "float" -> {
-                        kind = FLOAT;
-                        schema.absorb(new FloatPoint(name, 0).fieldType());
-                        schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
-                    }
-                    default -> {
-                        kind = DOUBLE;
-                        schema.absorb(new DoublePoint(name, 0).fieldType());
-                        schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
-                    }
-                }
+                kind = switch ((String) type) {
+                    case "integer" -> INTEGER;
+                    case "long" -> LONG;
+                    case "float" -> FLOAT;
+                    default -> DOUBLE;
+                };
+                schema.absorb(numericPoint((String) type, name).fieldType());
+                schema.absorb(new SortedNumericDocValuesField(name, 0).fieldType());
             }
             case "date" -> {
                 if (unsupportedDate(p)) {
