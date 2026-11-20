@@ -1,9 +1,9 @@
 """direct_check.py BASE: the direct search path (`search.accelerated.direct.enabled`) against OpenSearch's own path.
 
-Run on a node with the plugin and the setting on (NODE_ARGS="-E search.accelerated.direct.enabled=true"). Builds small
+Run on a node with the plugin (the path is on by default). Builds small
 accelerated indices, sends each request twice -- as is, and with a `"_source": true` the direct path leaves to OpenSearch --
 and requires equal totals, ids, scores and sources; checks `direct_searches` moved for eligible requests and did not for the
-ineligible ones (alias, from, sort, aggregations, routing, a request parameter, nested, multi-shard, opt-out index)."""
+ineligible ones (alias, sort by score/script, search_after, aggregations, routing, a request parameter, nested, multi-shard, opt-out index)."""
 import json
 import sys
 
@@ -44,7 +44,7 @@ def check(label, path, body, expect_direct, same_total=True):
     b = bn.req("POST", path, std)
 
     def key(r):
-        return ([(h["_index"], h["_id"], round(h["_score"] or 0, 4), json.dumps(h["_source"], sort_keys=True)) for h in r["hits"]["hits"]],
+        return ([(h["_index"], h["_id"], round(h["_score"] or 0, 4), json.dumps(h["_source"], sort_keys=True), h.get("sort")) for h in r["hits"]["hits"]],
                 r["hits"].get("total"), r["hits"]["max_score"] and round(r["hits"]["max_score"], 4), r["_shards"])
     ok = key(a) == key(b) and (moved == 1) == expect_direct and moved in (0, 1)
     print("%-4s %-44s direct=%d expected=%s hits=%d total=%s" % ("ok" if ok else "FAIL", label, moved, expect_direct, len(a["hits"]["hits"]), a["hits"].get("total")))
@@ -75,12 +75,22 @@ for label, body in [
     ("track_total_hits true size 0", {"size": 0, "track_total_hits": True, "query": {"match": {"title": "word3"}}}),
     ("track_total_hits false", {"track_total_hits": False, "query": {"term": {"tag": "t3"}}}),
     ("track_total_hits 500", {"track_total_hits": 500, "query": {"term": {"tag": "t3"}}}),
+    ("sort long desc", {"sort": [{"n": "desc"}], "query": {"term": {"tag": "t3"}}}),
+    ("sort long asc match_all", {"sort": [{"n": "asc"}], "query": {"match_all": {}}}),
+    ("sort date then long", {"sort": [{"d": "desc"}, {"n": "asc"}], "size": 20, "query": {"match": {"title": "word3"}}}),
+    ("sort keyword", {"sort": [{"tag": "asc"}, {"n": "desc"}], "query": {"match_all": {}}}),
+    ("sort with from", {"from": 5, "size": 7, "sort": [{"n": "desc"}], "query": {"term": {"tag": "t3"}}}),
+    ("sort size 0", {"size": 0, "sort": [{"n": "desc"}], "query": {"term": {"tag": "t3"}}}),
+    ("sort no hits", {"sort": [{"n": "desc"}], "query": {"term": {"tag": "none"}}}),
+    ("sort missing last", {"sort": [{"n": {"order": "desc", "missing": "_last"}}], "query": {"match_all": {}}}),
     ("track_total_hits 5000 exact below", {"track_total_hits": 5000, "query": {"term": {"tag": "t3"}}}),
 ]:
     ok &= check(label, P, body, True)
 for label, path, body in [
     ("from + size above 100", P, {"from": 95, "size": 10, "query": {"term": {"tag": "t3"}}}),
-    ("sort", P, {"sort": [{"n": "desc"}], "query": {"term": {"tag": "t3"}}}),
+    ("sort by score", P, {"sort": ["_score", {"n": "desc"}], "query": {"match": {"title": "word3"}}}),
+    ("sort by script", P, {"sort": [{"_script": {"type": "number", "script": "doc['n'].value", "order": "asc"}}], "query": {"term": {"tag": "t3"}}}),
+    ("search_after", P, {"search_after": [5], "sort": [{"n": "asc"}], "query": {"term": {"tag": "t3"}}}),
     ("aggregation", P, {"aggs": {"a": {"terms": {"field": "tag"}}}, "query": {"term": {"tag": "t3"}}}),
     ("size above 100", P, {"size": 101, "query": {"term": {"tag": "t3"}}}),
     ("highlight", P, {"highlight": {"fields": {"title": {}}}, "query": {"match": {"title": "word3"}}}),
@@ -96,6 +106,12 @@ put("dcm", {"index.number_of_shards": 3}, mapping, docs[:300])
 ok &= check("three shards", "/dcm/_search?request_cache=false", {"query": {"match_all": {}}}, False)
 put("dcn", {}, {"properties": {"c": {"type": "nested", "properties": {"x": {"type": "keyword"}}}}}, [(1, {"c": [{"x": "a"}]})])
 ok &= check("nested mapping", "/dcn/_search?request_cache=false", {"query": {"match_all": {}}}, False)
+put("dcb", {"index.blocks.read": True}, mapping, docs[:100])
+try:
+    bn.req("POST", "/dcb/_search", {"query": {"match_all": {}}})
+    print("FAIL read block answered"); ok = False
+except Exception:  # noqa: BLE001
+    print("ok   read-blocked index is refused as OpenSearch refuses it")
 put("dco", {"index.search.accelerated": False}, mapping, docs[:100])
 ok &= check("index with accelerated search off", "/dco/_search?request_cache=false", {"query": {"match_all": {}}}, False)
 print("ALL OK" if ok else "FAILURES")
