@@ -30,6 +30,8 @@ import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestChannel;
 import org.opensearch.rest.RestRequest;
 import org.opensearch.search.builder.SearchSourceBuilder;
+import org.opensearch.search.fetch.subphase.FetchSourceContext;
+import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.sort.SortAndFormats;
 import org.opensearch.search.sort.SortBuilder;
 
@@ -41,12 +43,13 @@ import org.opensearch.search.sort.SortBuilder;
  * every engine, which is most of a cheap search's time.
  *
  * <p>It is a request-level shortcut for what the search would anyway do natively. Anything else is left to
- * OpenSearch untouched: the request's parameters other than {@code request_cache}, an alias, wildcard or list of
+ * OpenSearch untouched: query-string parameters that could change the answer, an alias, wildcard or list of
  * indices, an index that is not a single-shard accelerated index, one with realtime search, derived source, nested
  * fields, per-index accelerated search off, a query the native encoder refuses (or a shape slower than Lucene's),
- * and every body feature other than {@code query}, {@code size}, {@code from}, {@code track_total_hits} and field
- * {@code sort} with {@code from + size} up to 100 (aggregations, highlight, source filtering, script or score sorts ...), as well as
- * hits that carry {@code _routing} or {@code _ignored}, an index with a read block or a default search pipeline.
+ * and every body feature other than {@code query}, {@code size}, {@code from}, {@code track_total_hits}, {@code
+ * _source}, {@code min_score}, {@code search_after} and field, score, script or geo-distance {@code sort} keys with {@code from + size} up
+ * to 100 (aggregations, highlight, stored or doc-value fields, nested sorts ...), an index with a read block or a default search
+ * pipeline.
  *
  * <p>It is on by default ({@link #ENABLED}) and never on with the security plugin installed. What it does not go
  * through: the task manager (no cancel, no task listing), the index's search statistics ({@code query_total} and the
@@ -59,7 +62,15 @@ final class DirectSearch {
     /** Node setting: answer eligible searches directly (see the class comment for what that bypasses). */
     static final Setting<Boolean> ENABLED = Setting.boolSetting("search.accelerated.direct.enabled", true, Setting.Property.NodeScope);
 
-    private static final java.util.Set<String> PLAIN_NAMES = java.util.Set.of("query", "size", "from", "track_total_hits", "sort");
+    private static final java.util.Set<String> PLAIN_NAMES = java.util.Set.of(
+        "query", "size", "from", "track_total_hits", "sort", "_source", "search_after", "min_score"
+    );
+    private static final java.util.Set<String> PLAIN_PARAMS = java.util.Set.of(
+        "index", "request_cache", "preference", "routing", "ignore_unavailable", "allow_no_indices", "expand_wildcards",
+        "ccs_minimize_roundtrips", "max_concurrent_shard_requests", "pre_filter_shard_size", "batched_reduce_size", "typed_keys",
+        "rest_total_hits_as_int", "size", "from", "track_total_hits", "_source", "_source_includes", "_source_excludes",
+        "_source_include", "_source_exclude"
+    );
     /** The most hits a direct search collects (from + size). */
     private static final int MAX_SIZE = 100;
     private static final long TOTAL_HITS_THRESHOLD = 10_000;
@@ -135,13 +146,8 @@ final class DirectSearch {
         String index = path.substring(1, path.length() - "/_search".length());
         IndexShard shard = shards.get(index);
         IndexService service = services.get(index);
-        if (shard == null || service == null || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED) {
+        if (shard == null || service == null || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED || plainParams(request) == false) {
             return false;
-        }
-        for (String key : request.params().keySet()) {
-            if (key.equals("index") == false && key.equals("request_cache") == false) {
-                return false;
-            }
         }
         long start = System.nanoTime();
         SearchFlags.Flags flags = SearchFlags.of(service.getIndexSettings());
@@ -152,101 +158,109 @@ final class DirectSearch {
         if (source == null) {
             return false;
         }
+        DirectResponse.Shape shape = applyParams(request, source);
+        if (shape.totalAsInt() && source.trackTotalHitsUpTo() != Integer.MAX_VALUE) {
+            return false;
+        }
         int size = source.size() < 0 ? 10 : source.size();
         int from = Math.max(source.from(), 0);
-        if (from + size > MAX_SIZE) {
+        if (from + size > MAX_SIZE || source.searchAfter() != null && (source.sorts() == null || from > 0)) {
             return false;
         }
         Integer tracked = source.trackTotalHitsUpTo();
         long countLimit = tracked == null ? TOTAL_HITS_THRESHOLD : tracked < 0 ? 0 : tracked == Integer.MAX_VALUE ? Long.MAX_VALUE : tracked;
         try (Engine.Searcher searcher = shard.acquireSearcher("direct_search")) {
-            IndexReader reader = searcher.getIndexReader();
-            NativeReaders.Acquired acquired = readers.acquire(reader);
-            if (acquired.handle() == 0) {
+            DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit);
+            if (hits == null) {
                 return false;
             }
-            IndexSearcher indexSearcher = new IndexSearcher(reader);
-            indexSearcher.setSimilarity(service.similarityService().similarity(service.mapperService()));
-            QueryShardContext context = service.newQueryShardContext(0, indexSearcher, System::currentTimeMillis, null);
-            QueryBuilder builder = source.query() == null ? new MatchAllQueryBuilder() : source.query();
-            Query query = indexSearcher.rewrite(Rewriteable.rewrite(builder, context, true).toQuery(context));
-            SortAndFormats sorted = source.sorts() == null ? null : SortBuilder.buildSort(source.sorts(), context).orElse(null);
-            if (source.sorts() != null && (sorted == null || directSort(sorted) == false)) {
-                return false;
-            }
-            SimilarityEncoder similarities = new SimilarityEncoder(indexSearcher.getSimilarity());
-            EncodeContext encodeContext = new EncodeContext(reader.getContext(), service.mapperService()::fieldType, false, EncodeContext.Reader.SEARCH, false);
-            QueryEncoder.Encoded encoded = QueryEncoder.encode(query, similarities, encodeContext);
-            SortEncoder.Encoded sortBlob = sorted == null ? null
-                : SortEncoder.encode(sorted.sort, null, false, new int[0][], 0, false, SortEncoder.indexSorted(reader, sorted.sort), encodeContext);
-            if (sortBlob != null && sortBlob.fallbackReason() != null) {
-                return false;
-            }
-            if (encoded.fallbackReason() != null || encoded.fast() == false && flags.allShapes() == false) {
-                return false;
-            }
-            int[] docs = new int[Math.max(from + size, 1)];
-            float[] scores = new float[Math.max(from + size, 1)];
-            long[] counts = new long[5];
-            String[] sortJson = null;
-            NativeMemory.queryStarted(0);
-            if (sorted == null) {
-                if (NativeSearch.search(acquired.handle(), similarities.prefix(encoded.blob()), from + size, countLimit, docs, scores, counts) != NativeBridge.OK) {
-                    return false;
-                }
-            } else {
-                sortJson = sortedHits(acquired.handle(), similarities.prefix(encoded.blob()), sorted, sortBlob.blob(), from + size, countLimit, docs, counts);
-                if (sortJson == null) {
-                    return false;
-                }
-            }
-            String json = response(index, reader, start, from, size, countLimit, docs, scores, counts, sortJson);
+            String json = DirectResponse.write(index, searcher.getIndexReader(), start, from, size, countLimit, hits, shape);
             if (json == null) {
                 return false;
             }
-            reply(channel, index, source, json, start, counts[1]);
+            reply(channel, index, source, json, start, hits.counts()[1]);
             return true;
         }
     }
 
-    /** The search response's JSON, or null when a hit's fields are ones a direct search leaves to OpenSearch. */
-    private static String response(String index, IndexReader reader, long start, int from, int size, long countLimit, int[] docs, float[] scores, long[] counts, String[] sortJson)
-        throws java.io.IOException {
-        int found = (int) counts[0];
-        StringBuilder out = new StringBuilder(512 + Math.max(found - from, 0) * 512);
-        out.append("{\"took\":").append((System.nanoTime() - start) / 1_000_000)
-            .append(",\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{");
-        if (countLimit > 0) {
-            boolean lowerBound = counts[2] == 1 || counts[1] > countLimit;
-            out.append("\"total\":{\"value\":").append(lowerBound ? countLimit : counts[1])
-                .append(",\"relation\":\"").append(lowerBound ? "gte" : "eq").append("\"},");
+    /** Runs the query (and sort) natively over the reader; null when the native engine does not answer it. */
+    private DirectResponse.Hits search(IndexService service, IndexReader reader, SearchSourceBuilder source, int room, long countLimit) throws Exception {
+        NativeReaders.Acquired acquired = readers.acquire(reader);
+        if (acquired.handle() == 0) {
+            return null;
         }
-        out.append("\"max_score\":").append(found == 0 || size == 0 || sortJson != null ? "null" : Float.toString(scores[0])).append(",\"hits\":[");
-        for (int i = from; i < found; i++) {
-            DocumentStoredFieldVisitor visitor = new DocumentStoredFieldVisitor("_id", "_source", "_routing", "_ignored");
-            reader.storedFields().document(docs[i], visitor);
-            Document doc = visitor.getDocument();
-            BytesRef id = doc.getBinaryValue("_id");
-            BytesRef sourceBytes = doc.getBinaryValue("_source");
-            if (id == null || sourceBytes == null || doc.getField("_routing") != null || doc.getField("_ignored") != null) {
-                return null;
-            }
-            if (i > from) {
-                out.append(',');
-            }
-            out.append("{\"_index\":");
-            json(out, index);
-            out.append(",\"_id\":");
-            json(out, Uid.decodeId(id.bytes, id.offset, id.length));
-            out.append(",\"_score\":").append(sortJson == null ? Float.toString(scores[i]) : "null").append(",\"_source\":")
-                .append(new String(sourceBytes.bytes, sourceBytes.offset, sourceBytes.length, StandardCharsets.UTF_8));
-            if (sortJson != null) {
-                out.append(',').append(sortJson[i]);
-            }
-            out.append('}');
+        IndexSearcher indexSearcher = new IndexSearcher(reader);
+        indexSearcher.setSimilarity(service.similarityService().similarity(service.mapperService()));
+        QueryShardContext context = service.newQueryShardContext(0, indexSearcher, System::currentTimeMillis, null);
+        QueryBuilder builder = source.query() == null ? new MatchAllQueryBuilder() : source.query();
+        Query query = indexSearcher.rewrite(Rewriteable.rewrite(builder, context, true).toQuery(context));
+        SortAndFormats sorted = source.sorts() == null ? null : SortBuilder.buildSort(source.sorts(), context).orElse(null);
+        SimilarityEncoder similarities = new SimilarityEncoder(indexSearcher.getSimilarity());
+        EncodeContext encodeContext = new EncodeContext(reader.getContext(), service.mapperService()::fieldType, false, EncodeContext.Reader.SEARCH, false);
+        QueryEncoder.Encoded encoded = QueryEncoder.encode(query, similarities, encodeContext);
+        SortEncoder.Encoded sortBlob = sorted == null ? null : SortEncoder.encode(
+            sorted.sort,
+            source.searchAfter() == null ? null : SearchAfterBuilder.buildFieldDoc(sorted, source.searchAfter()),
+            false,
+            new int[0][],
+            0,
+            false,
+            SortEncoder.indexSorted(reader, sorted.sort),
+            encodeContext
+        );
+        if (encoded.fallbackReason() != null || encoded.fast() == false && SearchFlags.of(service.getIndexSettings()).allShapes() == false
+            || sortBlob != null && sortBlob.fallbackReason() != null) {
+            return null;
         }
-        out.append("]}}");
-        return out.toString();
+        byte[] blob = encoded.blob();
+        if (source.minScore() != null) {
+            blob = QueryEncoder.withMinScore(blob, source.minScore());
+        }
+        blob = similarities.prefix(blob);
+        int[] docs = new int[Math.max(room, 1)];
+        float[] scores = new float[Math.max(room, 1)];
+        long[] counts = new long[5];
+        NativeMemory.queryStarted(0);
+        if (sorted == null) {
+            return NativeSearch.search(acquired.handle(), blob, room, countLimit, docs, scores, counts) == NativeBridge.OK
+                ? new DirectResponse.Hits(docs, scores, counts, null, null) : null;
+        }
+        return sortedHits(acquired.handle(), blob, sorted, sortBlob.blob(), room, countLimit, docs, counts);
+    }
+
+    /** Whether the request's query-string parameters leave the answer as the body alone gives it. */
+    private static boolean plainParams(RestRequest request) {
+        for (String key : request.params().keySet()) {
+            if (PLAIN_PARAMS.contains(key) == false) {
+                return false;
+            }
+        }
+        String preference = request.param("preference");
+        return preference == null || preference.startsWith("_") == false || preference.equals("_local") || preference.startsWith("_primary");
+    }
+
+    /** The query-string parameters that override the body (size, from, track_total_hits, _source) and the response's shape. */
+    private static DirectResponse.Shape applyParams(RestRequest request, SearchSourceBuilder source) {
+        if (request.hasParam("size")) {
+            source.size(request.paramAsInt("size", -1));
+        }
+        if (request.hasParam("from")) {
+            source.from(request.paramAsInt("from", 0));
+        }
+        String tracked = request.param("track_total_hits");
+        if (tracked != null) {
+            if (tracked.equals("true") || tracked.equals("false")) {
+                source.trackTotalHits(tracked.equals("true"));
+            } else {
+                source.trackTotalHitsUpTo(Integer.parseInt(tracked));
+            }
+        }
+        boolean totalAsInt = request.paramAsBoolean("rest_total_hits_as_int", false);
+        if (totalAsInt && source.trackTotalHitsUpTo() == null) {
+            source.trackTotalHits(true);
+        }
+        FetchSourceContext fetch = FetchSourceContext.parseFromRestRequest(request);
+        return new DirectResponse.Shape(fetch != null ? fetch : source.fetchSource(), totalAsInt);
     }
 
     private void reply(RestChannel channel, String index, SearchSourceBuilder source, String json, long start, long totalHits) {
@@ -305,30 +319,17 @@ final class DirectSearch {
         return plain(source) && fieldSorts(source) ? source : null;
     }
 
-    /** Whether every sort key is a plain field key: a script, geo-distance or score key is left to OpenSearch. */
+    /** Whether every sort key is one the native sort reads: a field, score, script or geo-distance key, not a nested one. */
     private static boolean fieldSorts(SearchSourceBuilder source) {
         if (source.sorts() == null) {
             return true;
         }
         for (org.opensearch.search.sort.SortBuilder<?> sort : source.sorts()) {
-            if (sort instanceof org.opensearch.search.sort.FieldSortBuilder field) {
-                if (field.getNestedSort() != null || field.getFieldName().equals("_score")) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** Whether the native engine can answer {@code sort} for a direct search: field keys only, no score. */
-    private static boolean directSort(SortAndFormats sorted) {
-        if (sorted.sort.needsScores()) {
-            return false;
-        }
-        for (org.apache.lucene.search.SortField field : sorted.sort.getSort()) {
-            if (field.getType() == org.apache.lucene.search.SortField.Type.SCORE) {
+            boolean nested = sort instanceof org.opensearch.search.sort.FieldSortBuilder f ? f.getNestedSort() != null
+                : sort instanceof org.opensearch.search.sort.ScriptSortBuilder sc ? sc.getNestedSort() != null
+                : sort instanceof org.opensearch.search.sort.GeoDistanceSortBuilder g ? g.getNestedSort() != null
+                : sort instanceof org.opensearch.search.sort.ScoreSortBuilder == false;
+            if (nested) {
                 return false;
             }
         }
@@ -337,9 +338,9 @@ final class DirectSearch {
 
     /**
      * The sorted search: fills {@code docs} and {@code counts}, and returns each hit's {@code "sort":[...]} member as
-     * OpenSearch writes it, or null when the native engine does not answer.
+     * OpenSearch writes it (null when the native engine does not answer), with the max score a leading score key gives.
      */
-    private static String[] sortedHits(long handle, byte[] blob, SortAndFormats sorted, byte[] sortBlob, int room, long countLimit, int[] docs, long[] counts)
+    private static DirectResponse.Hits sortedHits(long handle, byte[] blob, SortAndFormats sorted, byte[] sortBlob, int room, long countLimit, int[] docs, long[] counts)
         throws java.io.IOException {
         org.apache.lucene.search.SortField[] fields = sorted.sort.getSort();
         long[] values = new long[Math.max(room, 1) * fields.length];
@@ -360,7 +361,18 @@ final class DirectSearch {
                 out[i] = json.substring(1, json.length() - 1);
             }
         }
-        return out;
+        int score = -1;
+        for (int k = fields.length - 1; k >= 0; k--) {
+            if (fields[k].getType() == org.apache.lucene.search.SortField.Type.SCORE) {
+                score = k;
+            }
+        }
+        float[] scores = score < 0 ? null : new float[n];
+        for (int i = 0; scores != null && i < n; i++) {
+            scores[i] = (float) hits[i].fields[score];
+        }
+        String lead = n > 0 && fields[0].getType() == org.apache.lucene.search.SortField.Type.SCORE ? Float.toString((float) hits[0].fields[0]) : "null";
+        return new DirectResponse.Hits(docs, scores, counts, out, lead);
     }
 
     /** A body of only a query, paging and a total-hits setting: nothing else changes what the search does or returns. */
@@ -372,12 +384,9 @@ final class DirectSearch {
             && source.collapse() == null
             && source.profile() == false
             && (source.rescores() == null || source.rescores().isEmpty())
-            && source.fetchSource() == null
             && source.storedFields() == null
             && source.docValueFields() == null
             && (source.scriptFields() == null || source.scriptFields().isEmpty())
-            && source.minScore() == null
-            && source.searchAfter() == null
             && source.timeout() == null
             && source.terminateAfter() == 0
             && source.slice() == null
@@ -392,28 +401,5 @@ final class DirectSearch {
             && (source.getDerivedFieldsObject() == null || source.getDerivedFieldsObject().isEmpty())
             && (source.stats() == null || source.stats().isEmpty())
             && (source.searchPipelineSource() == null || source.searchPipelineSource().isEmpty());
-    }
-
-    /** {@code s} as a JSON string literal. */
-    private static void json(StringBuilder out, String s) {
-        out.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
-            }
-        }
-        out.append('"');
     }
 }

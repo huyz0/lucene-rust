@@ -421,10 +421,13 @@ A request is answered directly when all of these hold, and otherwise goes to Ope
 - the index is a one-shard accelerated-engine index with `index.search.accelerated` on, no realtime search, no derived
   source and no nested fields;
 - the index has no read block and no default search pipeline;
-- the body is only `query`, `size`, `from`, `track_total_hits` and a `sort` of plain field keys (no script, geo-distance,
-  nested or `_score` key), with `from` + `size` at most 100 (no aggregations, `post_filter`, highlight, `_source`
-  filtering, `search_after`, `timeout`, rescore ...), and the native encoder accepts the query and the sort;
-- no hit carries `_routing` or `_ignored`.
+- the body is only `query`, `size`, `from`, `track_total_hits`, `_source`, `min_score`, `search_after` (with `from` 0) and a
+  `sort` of field, `_score`, script or geo-distance keys (not nested ones), with `from` + `size` at most 100 (no
+  aggregations, `post_filter`, highlight, `docvalue_fields`, `stored_fields`, script fields, `track_scores`,
+  `terminate_after`, `timeout`, rescore, collapse ...), and the native encoder accepts the query and the sort;
+- the query string holds only `size`, `from`, `track_total_hits`, `_source`, `_source_includes`, `_source_excludes`,
+  `rest_total_hits_as_int` (with an exact total), `preference` (not `_only_nodes`, `_shards` or the like), `routing`,
+  `typed_keys` or the other parameters that cannot change one shard's answer;
 
 What a direct search does not go through: request authorization (so it is never on when the security plugin is
 installed), the task manager (no cancel or task listing), the index's search statistics (`query_total` and the like) and
