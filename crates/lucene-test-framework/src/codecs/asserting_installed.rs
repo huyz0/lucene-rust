@@ -221,6 +221,7 @@ impl Lucene104Codec for InstalledAssertingCodec {
         let io = |e: lucene_search::Error| std::io::Error::other(e.to_string());
         let files: Files = [("dvm", write.dvm), ("dvd", write.dvd), ("dvs", write.dvs)]
             .into_iter()
+            .chain(write.dvp.map(|dvp| ("dvp", dvp)))
             .map(|(ext, bytes)| (ext.to_string(), bytes.to_vec()))
             .collect();
         let format = Lucene90DocValuesFormatAdapter;

@@ -2918,6 +2918,7 @@ impl IndexingConfig {
                         dvm: &dvm,
                         dvd: &dvd,
                         dvs: &dvs,
+                        dvp: dvp.as_deref(),
                     },
                 )?;
                 Ok(DocValuesGroupOutput {

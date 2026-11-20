@@ -686,6 +686,7 @@ impl SegmentWriter<'_> {
                             dvm: &dvm,
                             dvd: &dvd,
                             dvs: &dvs,
+                            dvp: dvp.as_deref(),
                         },
                     )?;
                     let dvp_file = dvp.as_ref().map(|dvp| ("dvp", dvp));
