@@ -26,6 +26,7 @@
 
 - [Benchmark reports](benchmarks.md)
   - [Against stock OpenSearch, 1M documents](reference/benchmarks/opensearch-1m.md)
+  - [Stock Lucene, OpenSearch, plugin and core engine](reference/benchmarks/stock-comparison.md)
   - [Environment](reference/benchmarks/environment.md)
   - [Write path on log documents](reference/benchmarks/logs-write.md)
   - [Aggregation sweep](reference/benchmarks/agg-sweep.md)
