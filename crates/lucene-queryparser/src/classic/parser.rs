@@ -13,7 +13,7 @@ use lucene_util::automaton::{
 
 use super::constants::*;
 use super::token_manager::TokenManager;
-use super::{Operator, QueryParser, QueryParserError, MAX_CLAUSE_COUNT};
+use super::{Operator, Overrides, QueryParser, QueryParserError, MAX_CLAUSE_COUNT};
 use crate::complex_phrase::ComplexPhraseQuery;
 use crate::ext::{ExtensionQuery, Extensions};
 use crate::javacc::{CharStream, Grammar, JjError, Runtime, Stop, TokenMgrError};
@@ -51,6 +51,18 @@ static GRAMMAR: Grammar<TokenManager> = Grammar {
     lookahead: jj_3,
     num_lookaheads: 3,
 };
+
+/// What an override returned, as a production's result: a parse exception
+/// stays one, anything else passes through as `parse` lets it.
+fn hooked(r: Result<Option<ParsedQuery>, QueryParserError>) -> PResult<Option<ParsedQuery>> {
+    r.map_err(|e| {
+        if e.is_parse_exception() {
+            Fail::Parse(e.message)
+        } else {
+            Fail::Runtime(e)
+        }
+    })
+}
 
 /// What a production can throw.
 pub(crate) enum Fail {
@@ -169,6 +181,8 @@ fn jj_3r_clause_field(rt: &mut Runtime<TokenManager>, first: i32) -> Result<bool
 /// One parse of one query string.
 pub(crate) struct Parser<'p> {
     cfg: &'p QueryParser,
+    /// A subclass's overrides of the query building, if any.
+    overrides: Option<&'p (dyn Overrides + 'p)>,
     rt: Runtime<TokenManager>,
     /// `ComplexPhraseQueryParser`'s second pass: the field of the phrase
     /// whose text this parse is (`isPass2ResolvingPhrases`).
@@ -192,11 +206,17 @@ impl<'p> Parser<'p> {
     pub(crate) fn new(cfg: &'p QueryParser, query: &str) -> Self {
         Parser {
             cfg,
+            overrides: None,
             rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
             phrase_field: None,
             nested_phrase: std::cell::Cell::new(false),
             depth: 0,
         }
+    }
+
+    /// Calls `overrides` where the query building is overridden.
+    pub(crate) fn set_overrides(&mut self, overrides: &'p dyn Overrides) {
+        self.overrides = Some(overrides);
     }
 
     /// The second pass of `ComplexPhraseQueryParser` over a phrase's text,
@@ -793,6 +813,9 @@ impl<'p> Parser<'p> {
         if clauses.len() > MAX_CLAUSE_COUNT {
             return Err(Fail::TooManyClauses);
         }
+        if let Some(o) = &self.overrides {
+            return hooked(o.boolean_query(clauses));
+        }
         Ok(Some(ParsedQuery::Boolean(ParsedBoolean {
             clauses,
             minimum_should_match: 0,
@@ -945,6 +968,9 @@ impl<'p> Parser<'p> {
         text: &str,
         quoted: bool,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.field_query(field, text, quoted));
+        }
         if let Some(f) = field {
             // `ExtendableQueryParser.getFieldQuery`: an extension for the
             // field's key builds the query.
@@ -1051,6 +1077,9 @@ impl<'p> Parser<'p> {
         text: &str,
         slop: i32,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.field_query_slop(field, text, slop));
+        }
         // `ComplexPhraseQueryParser.getFieldQuery(field, queryText, slop)`:
         // the phrase is kept as text, parsed in the second pass.
         if let Some(in_order) = self.cfg.complex_phrase_in_order {
@@ -1105,6 +1134,15 @@ impl<'p> Parser<'p> {
         start_inclusive: bool,
         end_inclusive: bool,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.range_query(
+                field,
+                part1.as_deref(),
+                part2.as_deref(),
+                start_inclusive,
+                end_inclusive,
+            ));
+        }
         match field {
             Some(f) => {
                 let q =
@@ -1129,6 +1167,9 @@ impl<'p> Parser<'p> {
         field: Option<&str>,
         term: &[u16],
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.wildcard_query(field, &string(term)));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_wildcard_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_wildcard_query(Some(f), term)),
@@ -1137,6 +1178,9 @@ impl<'p> Parser<'p> {
 
     /// `getRegexpQuery(field, termStr)`.
     fn get_regexp_query(&self, field: Option<&str>, term: &str) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.regexp_query(field, term));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_regexp_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_regexp_query(Some(f), term)),
@@ -1145,6 +1189,9 @@ impl<'p> Parser<'p> {
 
     /// `getPrefixQuery(field, termStr)`.
     fn get_prefix_query(&self, field: Option<&str>, term: &str) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.prefix_query(field, term));
+        }
         match field {
             Some(f) => Ok(self.apply_boost(self.get_prefix_query_single(f, term)?, f)),
             None => self.each_field(|f| self.get_prefix_query(Some(f), term)),
@@ -1158,6 +1205,9 @@ impl<'p> Parser<'p> {
         term: &str,
         min_similarity: f32,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.fuzzy_query(field, term, min_similarity));
+        }
         match field {
             Some(f) => {
                 let q = self.get_fuzzy_query_single(f, term, min_similarity)?;
@@ -1207,6 +1257,9 @@ impl<'p> Parser<'p> {
         fuzzy_slop: &[u16],
         term_image: &str,
     ) -> PResult<Option<ParsedQuery>> {
+        if let Some(o) = &self.overrides {
+            return hooked(o.bare_fuzzy(field, &string(fuzzy_slop), term_image));
+        }
         let fms = self.get_fuzzy_distance(fuzzy_slop);
         if fms < 0.0 {
             return Err(parse_error(
