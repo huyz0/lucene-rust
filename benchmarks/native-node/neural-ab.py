@@ -97,7 +97,7 @@ def bulk(n, index, docs):
 def one_side(kind, zips, docs, queries, lib):
     name = f"nab-{kind}"
     nodectl.run(name, "plugin" if kind == "plugin" else "stock", PORT, transport=PORT + 100, heap=HEAP, cpus=CPUS,
-                lib=lib if kind == "plugin" else None, java_opts=ml.proxy_opts(), wait=False)
+                lib=lib if kind == "plugin" else None, java_opts=ml.proxy_opts() + os.environ.get("EXTRA_JAVA_OPTS", "").split(), wait=False)
     n = Api(f"http://localhost:{PORT}")
     for _ in range(150):
         try:
@@ -109,7 +109,8 @@ def one_side(kind, zips, docs, queries, lib):
         return bench(n, zips, docs, queries)
     finally:
         nodectl.stop(name)
-        nodectl.rm(name)
+        if not os.environ.get("KEEP_NODE"):
+            nodectl.rm(name)
 
 
 def bench(n, zips, docs, queries):

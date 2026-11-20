@@ -108,7 +108,7 @@ public final class LocalModels {
     }
 
     private void initRuntime() {
-        if (NativeMl.mlRuntimeInit(runtimeLibrary.toString(), 0) != NativeBridge.OK) {
+        if (NativeMl.mlRuntimeInit(runtimeLibrary.toString(), Integer.getInteger("accelerated.ml.threads", Runtime.getRuntime().availableProcessors())) != NativeBridge.OK) {
             throw new IllegalStateException("cannot load the ONNX Runtime library: " + NativeBridge.lastError());
         }
         runtimeLoaded = true;
