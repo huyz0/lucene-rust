@@ -334,13 +334,29 @@ impl EngineWriter {
 }
 
 pub fn lookup(handle: u64) -> Result<Arc<EngineWriter>, Status> {
-    read_recovering(engine_writers())
+    thread_local! {
+        /// The writer this thread looked up last, with the registry generation it was read at:
+        /// a bulk's operations all hit the same shard, so most lookups skip the shared lock.
+        static LAST: std::cell::RefCell<Option<(u64, u64, std::sync::Weak<EngineWriter>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let generation = crate::registry::writers_generation();
+    let cached = LAST.with(|last| match &*last.borrow() {
+        Some((h, g, w)) if *h == handle && *g == generation => w.upgrade(),
+        _ => None,
+    });
+    if let Some(w) = cached {
+        return Ok(w);
+    }
+    let found = read_recovering(engine_writers())
         .get(handle)
         .cloned()
         .ok_or_else(|| {
             set_last_error("engine writer: unknown or already-closed handle");
             Status::InvalidHandle
-        })
+        })?;
+    LAST.with(|last| *last.borrow_mut() = Some((handle, generation, Arc::downgrade(&found))));
+    Ok(found)
 }
 
 /// Runs `body` on the handle's writer. A recorded tragic error fails the

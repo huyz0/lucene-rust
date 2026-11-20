@@ -208,6 +208,28 @@ pub fn register(blob: &[u8]) -> Result<u32, Status> {
 
 /// The registration `id` names.
 pub fn registered(id: i32) -> Result<Arc<Registered>, Status> {
+    thread_local! {
+        /// Registrations are never replaced or removed, so a thread keeps the ones it has read.
+        static SEEN: std::cell::RefCell<Vec<Option<Arc<Registered>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if let Ok(index) = usize::try_from(id) {
+        if let Some(found) = SEEN.with(|seen| seen.borrow().get(index).and_then(Clone::clone)) {
+            return Ok(found);
+        }
+        let found = registered_shared(id)?;
+        SEEN.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            if seen.len() <= index {
+                seen.resize(index.saturating_add(1), None);
+            }
+            seen[index] = Some(Arc::clone(&found));
+        });
+        return Ok(found);
+    }
+    registered_shared(id)
+}
+
+fn registered_shared(id: i32) -> Result<Arc<Registered>, Status> {
     let r = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     usize::try_from(id)
         .ok()

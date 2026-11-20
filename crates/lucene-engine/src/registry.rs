@@ -67,6 +67,19 @@ pub fn lookup_jvm_reader(
     Ok(reader)
 }
 
+static WRITERS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Changes whenever a writer is added to or removed from [`engine_writers`], so a per-thread
+/// copy of a looked-up writer can tell it may be stale without taking the registry's lock.
+pub fn writers_generation() -> u64 {
+    WRITERS_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Call after every insert into or removal from [`engine_writers`].
+pub fn writers_changed() {
+    WRITERS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 /// The OpenSearch engine's writers: one per shard. The registry lock is held
 /// only to clone the `Arc`.
 pub fn engine_writers() -> &'static RwLock<SlotMap<std::sync::Arc<EngineWriter>>> {

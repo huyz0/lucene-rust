@@ -58,7 +58,7 @@ impl ExactSizeIterator for InvertedTermsIter<'_> {}
 
 /// One document's terms of one field, each distinct term once, in the order
 /// they were pushed: see the module doc.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct InvertedTerms {
     ends: Vec<TermEnds>,
     bytes: Vec<u8>,
@@ -70,7 +70,27 @@ pub struct InvertedTerms {
     /// Each term's [`hash_bytes`], taken once as it is pushed: the writer's
     /// duplicate check and dictionary lookup both reuse it.
     hashes: Vec<u64>,
+    /// The index options the engine's own inverter built these terms for
+    /// (each term once, freq >= 1, positions and offsets as the options
+    /// keep them): the writer's per-term checks are then already true and
+    /// are skipped when the field is registered with the same options. Not
+    /// part of equality.
+    built_for: Option<lucene_codecs::field_infos::IndexOptions>,
 }
+
+impl PartialEq for InvertedTerms {
+    fn eq(&self, other: &Self) -> bool {
+        self.ends == other.ends
+            && self.bytes == other.bytes
+            && self.positions == other.positions
+            && self.offsets == other.offsets
+            && self.payload_ends == other.payload_ends
+            && self.payload_bytes == other.payload_bytes
+            && self.hashes == other.hashes
+    }
+}
+
+impl Eq for InvertedTerms {}
 
 /// One term of [`InvertedTerms`], read in place; the fields mean what
 /// [`InvertedTerm`]'s do.
@@ -205,6 +225,7 @@ impl InvertedTerms {
         offsets: &[(i32, i32)],
         payloads: &[P],
     ) {
+        self.built_for = None;
         self.hashes.push(hash_bytes(term));
         self.bytes.extend_from_slice(term);
         self.positions.extend_from_slice(positions);
@@ -233,6 +254,7 @@ impl InvertedTerms {
     /// has.
     pub fn start_hashed(&mut self, term: &[u8], hash: u64) -> TermBuilder<'_> {
         debug_assert_eq!(hash, hash_bytes(term));
+        self.built_for = None;
         self.hashes.push(hash);
         self.bytes.extend_from_slice(term);
         TermBuilder {
@@ -245,12 +267,26 @@ impl InvertedTerms {
         self.ends.len()
     }
 
+    /// Records that the terms now held were produced by an inverter that
+    /// keeps every term distinct with `freq >= 1` and positions, offsets and
+    /// payloads consistent with `options`, so the writer need not check them
+    /// again. Any later change to the terms clears it.
+    pub fn mark_built_for(&mut self, options: lucene_codecs::field_infos::IndexOptions) {
+        self.built_for = Some(options);
+    }
+
+    /// Whether [`Self::mark_built_for`] vouches for these terms under `options`.
+    pub fn is_built_for(&self, options: lucene_codecs::field_infos::IndexOptions) -> bool {
+        self.built_for == Some(options)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ends.is_empty()
     }
 
     /// Drops every term, keeping the allocations.
     pub fn clear(&mut self) {
+        self.built_for = None;
         self.ends.clear();
         self.hashes.clear();
         self.bytes.clear();

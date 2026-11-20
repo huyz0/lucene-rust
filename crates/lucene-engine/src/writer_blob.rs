@@ -198,7 +198,7 @@ fn presized_terms(c: &Cursor<'_>, n: usize) -> InvertedTerms {
     terms
 }
 
-fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
+fn inverted_field(c: &mut Cursor<'_>, trusted: bool) -> Result<InvertedField, Status> {
     let field_number = c.i32("inverted field number")?;
     let norm = match c.u8("norm flag")? {
         0 => None,
@@ -209,6 +209,7 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
     // A term is at least its length, its freq and its flags.
     let n = c.count(9, "term count")?;
     let mut terms = presized_terms(c, n);
+    let mut keyword_like = true;
     for _ in 0..n {
         let term = c.bytes("term")?;
         let freq = c.i32("freq")?;
@@ -216,6 +217,7 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
         if flags & !7 != 0 {
             return Err(decode_error("term flags"));
         }
+        keyword_like &= flags == 0 && freq == 1;
         let occurrences = usize::try_from(freq).map_err(|_| decode_error("freq"))?;
         // Each occurrence's position, offsets and payload length are at
         // least 4 bytes apiece.
@@ -243,6 +245,9 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
                 t.payload(c.bytes("payload")?);
             }
         }
+    }
+    if trusted && n == 1 && keyword_like {
+        terms.mark_built_for(IndexOptions::Docs);
     }
     Ok(InvertedField {
         field_number,
@@ -292,7 +297,7 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, Status> {
     let n = c.count(9, "stored count")?;
     let stored = stored_entries(c, n)?;
     let n = c.count(9, "inverted count")?;
-    let inverted = inverted_entries(c, n)?;
+    let inverted = inverted_entries(c, n, false)?;
     let n = c.count(9, "doc values count")?;
     let doc_values = doc_value_entries(c, n)?;
     let n = c.count(8, "points count")?;
@@ -321,10 +326,17 @@ fn stored_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<StoredField>, Stat
     Ok(stored)
 }
 
-fn inverted_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<InvertedField>, Status> {
+/// `trusted` when the entries are the ones source ingest wrote itself: a field of one term
+/// without positions is then vouched for as built for `Docs` ([`InvertedTerms::mark_built_for`]),
+/// and the writer skips checking it again.
+fn inverted_entries(
+    c: &mut Cursor<'_>,
+    n: usize,
+    trusted: bool,
+) -> Result<Vec<InvertedField>, Status> {
     let mut inverted = try_with_capacity(n)?;
     for _ in 0..n {
-        inverted.push(inverted_field(c)?);
+        inverted.push(inverted_field(c, trusted)?);
     }
     Ok(inverted)
 }
@@ -372,7 +384,7 @@ pub fn document_from_sections(
     let doc = ExplicitDocument {
         stored: stored_entries(&mut stored, n(0)?)?,
         fields: ExplicitFields {
-            inverted: inverted_entries(&mut inverted, n(1)?)?,
+            inverted: inverted_entries(&mut inverted, n(1)?, true)?,
             doc_values: doc_value_entries(&mut doc_values, n(2)?)?,
             points: point_entries(&mut points, n(3)?)?,
             registered: Vec::new(),

@@ -7,6 +7,7 @@
 //! users.
 
 use lucene_analysis::TokenStream;
+use lucene_codecs::field_infos::IndexOptions;
 use lucene_index::index_writer::{InvertedField, InvertedTerms};
 use lucene_util::small_float::int_to_byte4;
 
@@ -488,9 +489,17 @@ pub(crate) fn invert(
             Some(v)
         }
     };
+    let built_for = match options {
+        Options::Docs => IndexOptions::Docs,
+        Options::Freqs => IndexOptions::DocsAndFreqs,
+        Options::Positions => IndexOptions::DocsAndFreqsAndPositions,
+        Options::Offsets => IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+    };
+    let mut terms = inv.into_terms();
+    terms.mark_built_for(built_for);
     Ok(InvertedField {
         field_number,
-        terms: inv.into_terms(),
+        terms,
         norm,
     })
 }

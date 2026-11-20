@@ -612,6 +612,11 @@ impl IndexingConfig {
                     f.name
                 )));
             }
+            // Terms the engine's own inverter built for these options are
+            // distinct, with consistent freqs, positions and offsets.
+            if inv.terms.is_built_for(f.index_options) {
+                continue;
+            }
             let positions = matches!(
                 f.index_options,
                 IndexOptions::DocsAndFreqsAndPositions

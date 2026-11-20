@@ -153,6 +153,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             flags,
         );
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
+        lucene_engine::registry::writers_changed();
         if let Some(&upcall) = MERGE_UPCALL.get() {
             // OpenSearch's engine hears of every merge, and throttles indexing
             // itself when merges fall behind instead of the scheduler stalling.
@@ -360,7 +361,7 @@ pub unsafe extern "C" fn ffi_engine_writer_apply_ingested(
         let plan = lucene_engine::ingest::plan(plan).ok_or(FfiStatus::InvalidHandle)?;
         let id = prepared.id().to_vec();
         let docs = prepared.finish(&plan, seq_no, primary_term, version);
-        crate::purge::writing();
+        crate::purge::writing_each_document();
         let op = if kind == 0 {
             Op::Add {
                 partition: None,
@@ -1229,6 +1230,7 @@ pub unsafe extern "C" fn ffi_engine_writer_stats(handle: u64, out: *mut i64, n: 
 pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
     guard(|| {
         let removed = lock_recovering(engine_writers()).remove(handle);
+        lucene_engine::registry::writers_changed();
         let Some(shared) = removed else {
             set_last_error("ffi_engine_writer_close: unknown or already-closed handle");
             return Err(FfiStatus::InvalidHandle);

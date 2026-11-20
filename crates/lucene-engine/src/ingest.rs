@@ -341,6 +341,26 @@ pub fn register(blob: &[u8]) -> Result<u32, Status> {
 
 /// The plan `id` names.
 pub fn plan(id: u32) -> Option<Arc<Plan>> {
+    thread_local! {
+        /// Plans are never replaced or removed, so a thread keeps the ones it has read.
+        static SEEN: std::cell::RefCell<Vec<Option<Arc<Plan>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let index = usize::try_from(id).ok()?;
+    if let Some(plan) = SEEN.with(|seen| seen.borrow().get(index).and_then(Clone::clone)) {
+        return Some(plan);
+    }
+    let plan = plan_shared(id)?;
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if seen.len() <= index {
+            seen.resize(index.saturating_add(1), None);
+        }
+        seen[index] = Some(Arc::clone(&plan));
+    });
+    Some(plan)
+}
+
+fn plan_shared(id: u32) -> Option<Arc<Plan>> {
     REGISTRY
         .read()
         .unwrap_or_else(|e| e.into_inner())

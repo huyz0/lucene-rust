@@ -101,6 +101,27 @@ pub(crate) fn writing() -> imp::Busy {
     imp::writing()
 }
 
+/// [`writing`] for a call made once per document: every 256th call on a thread marks the
+/// write, which is far inside the seconds [`imp::QUIET`] waits, and the others touch no
+/// shared state and read no clock.
+#[cfg(feature = "mimalloc")]
+#[inline]
+pub(crate) fn writing_each_document() {
+    thread_local!(static CALLS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) });
+    if CALLS.with(|c| {
+        let n = c.get();
+        c.set(n.wrapping_add(1));
+        n == 0
+    }) {
+        let _ = imp::writing();
+    }
+}
+
+/// Marks a write call (no allocator to tune without the `mimalloc` feature).
+#[cfg(not(feature = "mimalloc"))]
+#[inline]
+pub(crate) fn writing_each_document() {}
+
 /// Marks a write call (no allocator to tune without the `mimalloc` feature).
 #[cfg(not(feature = "mimalloc"))]
 #[inline]
