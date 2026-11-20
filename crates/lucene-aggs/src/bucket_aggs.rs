@@ -2234,6 +2234,8 @@ fn collect_bucket(
     }
     Ok(())
 }
+mod key_bound;
+use key_bound::*;
 mod key_ords;
 use key_ords::*;
 mod nested_join;
@@ -4627,13 +4629,7 @@ pub fn aggregate_tree_cached(
                 // memory bound (or a cancel) stops it here.
                 lucene_util::memory::checkpoint()?;
                 if globals.bucket_limit != usize::MAX {
-                    let made = buckets_made(nodes, states);
-                    if made > globals.bucket_limit {
-                        return Err(lucene_search::Error::TooManyBuckets(
-                            made,
-                            globals.bucket_limit,
-                        ));
-                    }
+                    check_limit(nodes, states, globals.bucket_limit)?;
                 }
                 for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
                     if l.done || l.zoned {
@@ -4875,7 +4871,7 @@ pub fn aggregate_tree_cached(
         .fold(0, u64::saturating_add);
     let one =
         |slice: &[usize]| -> Result<std::result::Result<Vec<AggResult>, segment_cache::Inexact>> {
-            let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+            let mut states = new_states(nodes, globals.bucket_limit);
             let slice_docs: u64 = slice
                 .iter()
                 .filter_map(|&i| segments.get(i))
@@ -4925,7 +4921,7 @@ pub fn aggregate_tree_cached(
                     // the segment's matches.
                     let mut fresh: Vec<Vec<State>> = missed
                         .iter()
-                        .map(|_| nodes.iter().map(State::new).collect())
+                        .map(|_| new_states(nodes, globals.bucket_limit))
                         .collect();
                     let mut ranges: Vec<(i32, i32, &mut [State])> = missed
                         .iter()
@@ -4944,6 +4940,9 @@ pub fn aggregate_tree_cached(
                     )?;
                     drop(ranges);
                     for (&b, f) in missed.iter().zip(fresh) {
+                        // A block whose key table refused a key holds a
+                        // truncated answer: it fails here, never cached.
+                        check_limit(nodes, &f, globals.bucket_limit)?;
                         let part = segment_cache::SegmentPart::of(nodes, f, i, globals)?;
                         // A part its deadline cut short is this request's
                         // alone.
@@ -4963,13 +4962,7 @@ pub fn aggregate_tree_cached(
             // Buckets counted from the points, read from the cache, or made
             // after the last window's check, are counted here, before any
             // result is built.
-            let made = buckets_made(nodes, &states);
-            if made > globals.bucket_limit {
-                return Err(lucene_search::Error::TooManyBuckets(
-                    made,
-                    globals.bucket_limit,
-                ));
-            }
+            check_limit(nodes, &states, globals.bucket_limit)?;
             let mut terms = TermLookup::new(readers);
             let mut results = nodes
                 .iter()
