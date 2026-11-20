@@ -8,6 +8,7 @@ Ratios above 1 mean the plugin is faster than the baseline named in the report.
 | Report | What it measures |
 |---|---|
 | [Against stock OpenSearch, 1M documents](reference/benchmarks/opensearch-1m.md) | 20 request shapes, indexing, merging and memory on one corpus, with and without the plugin |
+| [Stock Lucene, OpenSearch, plugin and core engine](reference/benchmarks/stock-comparison.md) | the four baselines side by side: 195 request shapes, 87 shapes against Lucene, indexing, k-NN, neural, hybrid and rerank |
 | [Environment](reference/benchmarks/environment.md) | the machines and settings the reports were produced on |
 | [Write path on log documents](reference/benchmarks/logs-write.md) | indexing throughput and CPU on log-shaped documents against the stock writer |
 | [Aggregation sweep](reference/benchmarks/agg-sweep.md) | 22 aggregation, sort and fetch request shapes over REST |
