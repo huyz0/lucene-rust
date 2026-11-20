@@ -599,54 +599,6 @@ public final class NativeIngest {
         return true;
     }
 
-    /**
-     * Writes the plan's metadata: the numbers the shard's registry gives the fields every document
-     * carries (resolved on documents built as {@link #parse} builds them), whether {@code _seq_no} is
-     * also a point, and the {@code _nested_path} term of each nested object.
-     */
-    private boolean metadata(Blob plan, String[] paths) throws IOException {
-        SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
-        Field version = new NumericDocValuesField(VersionFieldMapper.NAME, -1L);
-        BytesRef id = Uid.encodeId("a");
-        List<IndexableField> root = List.of(
-            new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.FIELD_TYPE),
-            seqID.seqNo,
-            seqID.seqNoDocValue,
-            seqID.primaryTerm,
-            version,
-            new StoredField(SourceFieldMapper.NAME, new byte[0])
-        );
-        Map<String, Integer> numbers = encoder.numbers(root);
-        int nestedPath = -1;
-        boolean any = false;
-        for (String path : paths) {
-            any |= path != null;
-        }
-        if (any) {
-            Field path = NestedPathFieldMapper.field(settings.getIndexVersionCreated(), "a");
-            Map<String, Integer> child = encoder.numbers(
-                List.of(new Field(IdFieldMapper.NAME, id, IdFieldMapper.Defaults.NESTED_FIELD_TYPE), path, seqID.seqNo, seqID.seqNoDocValue, version)
-            );
-            if (child.get(IdFieldMapper.NAME).equals(numbers.get(IdFieldMapper.NAME)) == false) {
-                return false;
-            }
-            nestedPath = child.get(path.name());
-        }
-        plan.i32(numbers.get(IdFieldMapper.NAME))
-            .i32(numbers.get(SeqNoFieldMapper.NAME))
-            .i32(numbers.get(SeqNoFieldMapper.PRIMARY_TERM_NAME))
-            .i32(numbers.get(VersionFieldMapper.NAME))
-            .i32(numbers.get(SourceFieldMapper.NAME))
-            .i32(nestedPath)
-            .u8(encoder.seqNoDocValuesOnly() ? 0 : 1)
-            .i32(paths.length);
-        for (String path : paths) {
-            byte[] term = path == null ? new byte[0] : path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            plan.i32(term.length).raw(term);
-        }
-        return true;
-    }
-
     /** Whether two field paths are in the same document: under the same nearest nested object. */
     private static boolean sameScope(String a, String b, Set<String> nested) {
         return scope(a, nested).equals(scope(b, nested));
