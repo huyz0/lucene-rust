@@ -111,6 +111,26 @@ def _chown(path):
 
 # --------------------------------------------------------------------------------------- dist
 
+# SHA-256 of the pinned tarballs (the SHA-512 next to each on artifacts.opensearch.org agrees); a
+# download whose hash differs is refused. Other versions are checked against that published SHA-512.
+TARBALL_SHA256 = {("3.9.0", "x64"): "f52702238e4c3b331f19178008c24939a18f7d2df3107934b6090934406ecb12"}
+
+
+def _verify_tarball(path, version):
+    url = tarball_url(version)
+    want = TARBALL_SHA256.get((version, _arch()))
+    h = hashlib.sha256() if want else hashlib.sha512()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    if not want:
+        with urllib.request.urlopen(url + ".sha512", timeout=60) as r:
+            want = r.read().split()[0].decode()
+    if h.hexdigest() != want:
+        os.remove(path)
+        sys.exit(f"nodectl: {url} does not match its pinned checksum; removed the download")
+
+
 def pristine(version=VERSION):
     """The unpacked tarball (downloaded once). `stock` is the dir native-node.sh also uses."""
     d = os.path.join(NODE_HOME, "stock" if version == "3.9.0" else f"stock-{version}")
@@ -124,6 +144,8 @@ def pristine(version=VERSION):
         with urllib.request.urlopen(tarball_url(version), timeout=600) as r, open(tmp, "wb") as f:
             shutil.copyfileobj(r, f, 1 << 20)
         os.replace(tmp, tgz)
+        if not os.environ.get("OPENSEARCH_TARBALL"):
+            _verify_tarball(tgz, version)
     tmp = d + ".tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)

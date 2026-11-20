@@ -24,7 +24,7 @@ import org.opensearch.search.fetch.subphase.FetchSourceContext;
 final class DirectResponse {
     private static final String NULL_MAX_SCORE = "null";
     /** What the request asked of the response. */
-    record Shape(FetchSourceContext fetch, boolean totalAsInt) {
+    record Shape(FetchSourceContext fetch, boolean totalAsInt, boolean ids) {
         boolean source() {
             return fetch == null || fetch.fetchSource();
         }
@@ -35,9 +35,13 @@ final class DirectResponse {
     }
 
     /** The hits found: documents, scores (or the sort members) and the counts the native search returned. */
-    record Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore, String aggregations) {
+    record Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore, String aggregations, DirectFields fields) {
         Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore) {
-            this(docs, scores, counts, sort, maxScore, null);
+            this(docs, scores, counts, sort, maxScore, null, null);
+        }
+
+        Hits(int[] docs, float[] scores, long[] counts, String[] sort, String maxScore, String aggregations) {
+            this(docs, scores, counts, sort, maxScore, aggregations, null);
         }
     }
 
@@ -62,11 +66,12 @@ final class DirectResponse {
             }
         }
         out.append("\"max_score\":").append(maxScore(hits, found, size)).append(",\"hits\":[");
+        String[] fields = hits.fields() == null ? null : hits.fields().render(reader, hits.docs(), from, found);
         for (int i = from; i < found; i++) {
             if (i > from && out.charAt(out.length() - 1) != '[') {
                 out.append(',');
             }
-            if (hit(out, index, reader, hits, i, shape) == false) {
+            if (hit(out, index, reader, hits, i, shape, fields == null ? null : fields[i - from]) == false) {
                 return null;
             }
         }
@@ -85,26 +90,35 @@ final class DirectResponse {
         return hits.sort() == null ? Float.toString(hits.scores()[0]) : hits.maxScore();
     }
 
-    private static boolean hit(StringBuilder out, String index, IndexReader reader, Hits hits, int i, Shape shape) throws IOException {
-        DocumentStoredFieldVisitor visitor = new DocumentStoredFieldVisitor("_id", "_source", "_routing", "_ignored");
-        reader.storedFields().document(hits.docs()[i], visitor);
-        Document doc = visitor.getDocument();
-        BytesRef id = doc.getBinaryValue("_id");
-        BytesRef sourceBytes = doc.getBinaryValue("_source");
-        if (id == null || sourceBytes == null) {
-            return false;
+    private static boolean hit(StringBuilder out, String index, IndexReader reader, Hits hits, int i, Shape shape, String fields) throws IOException {
+        Document doc = null;
+        BytesRef id = null;
+        BytesRef sourceBytes = null;
+        if (shape.ids() || shape.source()) {
+            DocumentStoredFieldVisitor visitor = shape.source()
+                ? new DocumentStoredFieldVisitor("_id", "_source", "_routing", "_ignored")
+                : new DocumentStoredFieldVisitor("_id", "_routing", "_ignored");
+            reader.storedFields().document(hits.docs()[i], visitor);
+            doc = visitor.getDocument();
+            id = doc.getBinaryValue("_id");
+            sourceBytes = doc.getBinaryValue("_source");
+            if (id == null || sourceBytes == null && shape.source()) {
+                return false;
+            }
         }
         out.append("{\"_index\":");
         json(out, index);
-        out.append(",\"_id\":");
-        json(out, Uid.decodeId(id.bytes, id.offset, id.length));
+        if (shape.ids()) {
+            out.append(",\"_id\":");
+            json(out, Uid.decodeId(id.bytes, id.offset, id.length));
+        }
         out.append(",\"_score\":").append(hits.scores() == null ? "null" : Float.toString(hits.scores()[i]));
-        String routing = doc.get("_routing");
+        String routing = shape.ids() ? doc.get("_routing") : null;
         if (routing != null) {
             out.append(",\"_routing\":");
             json(out, routing);
         }
-        String[] ignored = doc.getValues("_ignored");
+        String[] ignored = shape.ids() ? doc.getValues("_ignored") : new String[0];
         if (ignored.length > 0) {
             out.append(",\"_ignored\":[");
             for (int k = 0; k < ignored.length; k++) {
@@ -114,6 +128,9 @@ final class DirectResponse {
                 json(out, ignored[k]);
             }
             out.append(']');
+        }
+        if (fields != null) {
+            out.append(",\"fields\":").append(fields);
         }
         if (shape.source()) {
             out.append(",\"_source\":").append(source(sourceBytes, shape.filter()));

@@ -68,16 +68,35 @@ final class DirectAggs {
         return source.aggregations().getAggregatorFactories().isEmpty() == false;
     }
 
-    /** Whether an explicit concurrent-search setting (which can change how the shard's results are sliced) is in place. */
-    static boolean slicing(Settings cluster, Settings index) {
-        for (Settings s : new Settings[] { cluster, index }) {
-            for (String key : s.keySet()) {
-                if (key.contains("concurrent_segment_search") || key.contains("search.concurrent")) {
-                    return true;
-                }
+    /**
+     * Whether OpenSearch could slice the search's segments across threads: unless concurrent segment
+     * search is switched off ({@code mode: none}, on the index, else in the cluster or node settings),
+     * its default {@code auto} mode runs aggregations concurrently, and a concurrent search reports
+     * {@code terminated_early} on a size-0 count and a terms error bound per slice, which this path does
+     * not reproduce.
+     */
+    static boolean slicing(Settings node, Settings cluster, Settings index) {
+        String mode = firstMode(index, cluster, node);
+        if (mode != null) {
+            return mode.equals("none") == false;
+        }
+        for (Settings s : new Settings[] { index, cluster, node }) {
+            String enabled = s.get("search.concurrent_segment_search.enabled");
+            if (enabled != null) {
+                return Boolean.parseBoolean(enabled);
             }
         }
-        return false;
+        return true;
+    }
+
+    private static String firstMode(Settings... levels) {
+        for (Settings s : levels) {
+            String mode = s.get("index.search.concurrent_segment_search.mode", s.get("search.concurrent_segment_search.mode"));
+            if (mode != null) {
+                return mode;
+            }
+        }
+        return null;
     }
 
     /** The metadata the aggregator factory carries: none when the request gave none. */

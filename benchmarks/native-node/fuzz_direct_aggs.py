@@ -11,9 +11,9 @@ rnd = random.Random(int(sys.argv[2]))
 N = int(sys.argv[3])
 try: bn.req("DELETE", "/da")
 except Exception: pass
-bn.req("PUT", "/da", {"settings": {"index.engine.accelerated": True, "index.number_of_shards": 1, "index.number_of_replicas": 0},
+bn.req("PUT", "/da", {"settings": {"index.engine.accelerated": True, "index.number_of_shards": 1, "index.number_of_replicas": 0, "index.search.concurrent_segment_search.mode": "none"},
     "mappings": {"properties": {"body": {"type": "text"}, "f": {"type": "float"}, "i": {"type": "integer"}, "n": {"type": "long"}, "price": {"type": "double"},
-    "tag": {"type": "keyword"}, "tags": {"type": "keyword"}, "ts": {"type": "date"}, "sc": {"type": "scaled_float", "scaling_factor": 100}, "h": {"type": "half_float"}}}})
+    "tag": {"type": "keyword"}, "tags": {"type": "keyword"}, "ts": {"type": "date"}, "sc": {"type": "scaled_float", "scaling_factor": 100}, "h": {"type": "half_float"}, "flag": {"type": "boolean"}, "ip": {"type": "ip"}, "loc": {"type": "geo_point"}, "ts2": {"type": "date_nanos"}}}})
 words = "alpha beta gamma delta dog fox quick lazy".split()
 for seg in range(4):
     lines = []
@@ -27,6 +27,10 @@ for seg in range(4):
         if rnd.random() < .8: d["ts"] = 1600000000000 + rnd.randint(0, 10**10)
         if rnd.random() < .8: d["sc"] = round(rnd.random() * 100, 2)
         if rnd.random() < .8: d["h"] = rnd.randint(0, 100)
+        if rnd.random() < .8: d["flag"] = rnd.random() < .5
+        if rnd.random() < .8: d["ip"] = "10.%d.%d.%d" % (rnd.randint(0, 3), rnd.randint(0, 255), rnd.randint(0, 255))
+        if rnd.random() < .8: d["loc"] = {"lat": rnd.uniform(-80, 80), "lon": rnd.uniform(-170, 170)}
+        if rnd.random() < .5: d["ts2"] = 1600000000000 + rnd.randint(0, 10**10)
         if rnd.random() < .5: d["tags"] = rnd.sample(["x", "y", "z", "w"], rnd.randint(1, 3))
         lines += [json.dumps({"index": {"_id": str(i)}}), json.dumps(d)]
     bn.req("POST", "/da/_bulk?refresh=true", ("\n".join(lines) + "\n").encode(), ndjson=True)
