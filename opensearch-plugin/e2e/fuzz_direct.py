@@ -51,12 +51,18 @@ for t in range(int(sys.argv[2])):
     if rnd.random() < .5: body["size"] = rnd.choice([0, 1, 5, 20, 100])
     if rnd.random() < .3: body["from"] = rnd.choice([0, 3, 10])
     if rnd.random() < .2: body["track_total_hits"] = rnd.choice([True, False, 5, 20])
-    a = req(P, "POST", "/dz/_search?request_cache=false", body)
-    b = req(S, "POST", "/dz/_search?request_cache=false", body)
+    if rnd.random() < .25: body["_source"] = rnd.choice([False, ["tag", "n"], {"includes": ["t*"], "excludes": ["title"]}, ["nothing"]])
+    if rnd.random() < .1: body["min_score"] = rnd.choice([0.1, 0.5, 1.0, 3.0])
+    if "sort" in body and "from" not in body and rnd.random() < .2 and all(len(k) == 1 and isinstance(list(k.values())[0], str) for k in body["sort"]):
+        body["search_after"] = [rnd.choice([0, 5, 100, "", "a", 3000]) for _ in body["sort"]]
+    if rnd.random() < .15: body.setdefault("sort", []).insert(0, "_score")
+    url = "/dz/_search?request_cache=false" + rnd.choice(["", "", "", "&rest_total_hits_as_int=true", "&preference=_local", "&size=7"])
+    a = req(P, "POST", url, body)
+    b = req(S, "POST", url, body)
     n += 1
     def key(r):
         if "error" in r: return ("error", r["error"].get("status") or r["error"].get("error", {}).get("type"))
-        return ([(h["_id"], None if h["_score"] is None else round(h["_score"], 3), h.get("sort")) for h in r["hits"]["hits"]], r["hits"].get("total"), None if r["hits"]["max_score"] is None else round(r["hits"]["max_score"], 3))
+        return ([(h["_id"], None if h["_score"] is None else round(h["_score"], 3), h.get("sort"), json.dumps(h.get("_source"), sort_keys=True)) for h in r["hits"]["hits"]], r["hits"].get("total"), None if r["hits"]["max_score"] is None else round(r["hits"]["max_score"], 3))
     ka, kb = key(a), key(b)
     if ka != kb:
         bad += 1
