@@ -183,8 +183,9 @@ fn main() {
         },
     )
     .expect("open writer");
-    // Small enough that the eight flushed segments are folded into exactly
-    // one, which is what the verifier asserts (`reader.leaves().size() == 1`).
+    // Small enough that the flushed segments are folded into merged ones; the
+    // verifier asserts one segment (`reader.leaves().size() == 1`), which the
+    // final force merge guarantees.
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 16,
         segments_per_tier: 2.0,
@@ -287,6 +288,10 @@ fn main() {
         }
     }
     writer.commit().expect("final commit");
+    // The policy leaves the last flush beside the merged segment (two segments
+    // are within its allowance), so the final fold is asked for.
+    writer.force_merge(1).expect("force merge");
+    writer.commit().expect("commit the merge");
 
     let segments = writer.segment_infos().segments.len();
     assert_eq!(
