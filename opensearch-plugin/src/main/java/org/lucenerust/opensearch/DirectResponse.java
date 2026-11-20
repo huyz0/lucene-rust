@@ -22,6 +22,7 @@ import org.opensearch.search.fetch.subphase.FetchSourceContext;
 
 /** The JSON a direct search answers with: what a search response carries for a single shard, hit by hit. */
 final class DirectResponse {
+    private static final String NULL_MAX_SCORE = "null";
     /** What the request asked of the response. */
     record Shape(FetchSourceContext fetch, boolean totalAsInt, boolean ids) {
         boolean source() {
@@ -84,7 +85,7 @@ final class DirectResponse {
 
     private static String maxScore(Hits hits, int found, int size) {
         if (found == 0 || size == 0) {
-            return "null";
+            return NULL_MAX_SCORE;
         }
         return hits.sort() == null ? Float.toString(hits.scores()[0]) : hits.maxScore();
     }

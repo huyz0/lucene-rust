@@ -468,3 +468,36 @@ impl CalendarDays {
         }
     }
 }
+
+/// A keyword `cardinality` over a segment every document of which matches, none deleted: each term
+/// of the dictionary has a document, so every ordinal is set without reading a document
+/// (OpenSearch counts the terms dictionary in that case).
+pub(super) fn keyword_cardinality_all_ords(
+    n: &AggNode,
+    s: &mut State,
+    l: &mut Leaf<'_>,
+) -> Result<()> {
+    if let (
+        AggNode::Cardinality {
+            kind: CardinalityKind::Keyword,
+            ..
+        },
+        State::OrdBits(bits),
+        Col::Ords(_, map),
+    ) = (n, &mut *s, &l.col)
+    {
+        if !l.done && !map.is_empty() {
+            let words = slot(bits, 0);
+            for &g in map.iter() {
+                let Ok(g) = usize::try_from(g) else {
+                    return Err(lucene_search::Error::TermsAggType(format!(
+                        "negative global ordinal {g}"
+                    )));
+                };
+                *slot(words, g >> 6) |= 1 << (g & 63);
+            }
+            l.done = true;
+        }
+    }
+    Ok(())
+}
