@@ -338,7 +338,21 @@ pub struct RuleBreakIterator {
     pos: usize,
     /// `cachedLastKnownBreak`.
     cached_last_known_break: i64,
+    /// `handleNext()` and `handlePrevious()` depend only on the cursor they start from, so their results are
+    /// kept per cursor: `following`/`preceding` walk the same chain of breaks again for every match offset.
+    next_memo: Vec<i32>,
+    previous_memo: Vec<i32>,
+    /// `handlePrevious()` runs back until its automaton dies, which for prose is often the start of the text. Its
+    /// loop is a function of (cursor, state, whether the last character had a class), so where a walk passes a
+    /// multiple-of-16 cursor, the outcome is kept under that key and a later walk that arrives with the same key
+    /// stops there.
+    previous_checkpoints: Vec<i32>,
+    /// Off only in the test that checks the memo against the plain walk.
+    memoize: bool,
 }
+
+/// An entry not yet computed.
+const UNSET: i32 = i32::MIN;
 
 impl RuleBreakIterator {
     /// `setText(text)`.
@@ -358,6 +372,10 @@ impl RuleBreakIterator {
             text,
             pos: 0,
             cached_last_known_break: DONE,
+            next_memo: Vec::new(),
+            previous_memo: Vec::new(),
+            previous_checkpoints: Vec::new(),
+            memoize: true,
         }
     }
 
@@ -367,6 +385,20 @@ impl RuleBreakIterator {
         self.text = text;
         self.pos = 0;
         self.cached_last_known_break = DONE;
+        self.next_memo.clear();
+        self.previous_memo.clear();
+        self.previous_checkpoints.clear();
+    }
+
+    /// The memo for the current text, sized on first use.
+    fn memos(&mut self) {
+        if self.next_memo.len() != self.text.len() + 1 {
+            self.next_memo.clear();
+            self.next_memo.resize(self.text.len() + 1, UNSET);
+            self.previous_memo.clear();
+            self.previous_memo.resize(self.text.len() + 1, UNSET);
+            self.previous_checkpoints.clear();
+        }
     }
 
     /// `current()`: the cursor.
@@ -480,6 +512,23 @@ impl RuleBreakIterator {
         if self.pos == self.text.len() {
             return DONE;
         }
+        if !self.memoize {
+            return self.scan_next();
+        }
+        self.memos();
+        let start = self.pos;
+        if let Some(&m) = self.next_memo.get(start) {
+            if m != UNSET {
+                self.pos = usize::try_from(m).unwrap_or(0);
+                return i64::from(m);
+            }
+        }
+        let result = self.scan_next();
+        self.next_memo[start] = i32::try_from(result).unwrap_or(UNSET);
+        result
+    }
+
+    fn scan_next(&mut self) -> i64 {
         let rules = self.kind.rules();
         let mut result = self.get_next_index();
         let mut lookahead_result = 0usize;
@@ -509,12 +558,46 @@ impl RuleBreakIterator {
 
     /// `handlePrevious()`: a boundary at or before the cursor.
     fn handle_previous(&mut self) -> i64 {
+        if !self.memoize {
+            return self.scan_previous();
+        }
+        self.memos();
+        let start = self.pos;
+        if let Some(&m) = self.previous_memo.get(start) {
+            if m != UNSET {
+                self.pos = usize::try_from(m).unwrap_or(0);
+                return i64::from(m);
+            }
+        }
+        let result = self.scan_previous();
+        self.previous_memo[start] = i32::try_from(result).unwrap_or(UNSET);
+        result
+    }
+
+    fn scan_previous(&mut self) -> i64 {
         let rules = self.kind.rules();
+        let stride = (rules.previous.len() / rules.classes) * 2;
+        let slots = (self.text.len() >> 4) + 1;
+        if self.memoize && self.previous_checkpoints.len() != slots * stride {
+            self.previous_checkpoints.clear();
+            self.previous_checkpoints.resize(slots * stride, UNSET);
+        }
+        let mut visited: Vec<usize> = Vec::new();
         let mut state = 1usize;
         let mut category: Option<usize> = Some(0);
         let mut last_category: Option<usize> = Some(0);
         let mut c = self.get_current();
+        let mut hit: Option<usize> = None;
         while c != END_CHAR && state != 0 {
+            if self.memoize && self.pos & 15 == 0 {
+                let key = (self.pos >> 4) * stride + state * 2 + usize::from(category.is_some());
+                let m = self.previous_checkpoints[key];
+                if m != UNSET {
+                    hit = usize::try_from(m).ok();
+                    break;
+                }
+                visited.push(key);
+            }
             last_category = category;
             category = (rules.class_of)(c);
             if let Some(class) = category {
@@ -522,15 +605,24 @@ impl RuleBreakIterator {
             }
             c = self.get_previous();
         }
-        if c != END_CHAR {
-            if last_category.is_some() {
-                self.get_next();
-                self.get_next();
-            } else {
-                self.get_next();
+        let result = if let Some(h) = hit {
+            h
+        } else {
+            if c != END_CHAR {
+                if last_category.is_some() {
+                    self.get_next();
+                    self.get_next();
+                } else {
+                    self.get_next();
+                }
             }
+            self.pos
+        };
+        for key in visited {
+            self.previous_checkpoints[key] = i32::try_from(result).unwrap_or(UNSET);
         }
-        i64::try_from(self.pos).unwrap_or(i64::MAX)
+        self.pos = result;
+        i64::try_from(result).unwrap_or(i64::MAX)
     }
 
     // --- BreakIterator -----------------------------------------------------
@@ -629,5 +721,63 @@ impl RuleBreakIterator {
             out.push(b);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    /// The calls the highlighter makes, in an order that moves back and forth, on a memoizing and a plain iterator.
+    fn same(kind: Kind, text: &str) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut fast = RuleBreakIterator::from_utf16(kind, units.clone());
+        let mut plain = RuleBreakIterator::from_utf16(kind, units.clone());
+        plain.memoize = false;
+        let n = units.len();
+        let mut x = 12345u64;
+        for i in 0..=(2 * n).min(4000) {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let off = if i % 3 == 0 { (x >> 33) as usize % (n + 1) } else { (i / 2).min(n) };
+            assert_eq!(fast.preceding(off), plain.preceding(off), "preceding({off}) in {text:?}");
+            assert_eq!(fast.current(), plain.current());
+            if off > 0 {
+                assert_eq!(fast.following(off - 1), plain.following(off - 1), "following({}) in {text:?}", off - 1);
+            }
+            assert_eq!(fast.following(off.min(n)), plain.following(off.min(n)), "following({off}) in {text:?}");
+            assert_eq!(fast.current(), plain.current());
+            assert_eq!(fast.next(), plain.next());
+            assert_eq!(fast.previous(), plain.previous());
+        }
+    }
+
+    #[test]
+    fn memoized_walk_equals_the_plain_walk() {
+        let samples = [
+            "",
+            "a",
+            "Hello world. This is a test! Is it? Yes, it is.\nNew line here.\n\nAnother paragraph \"quoted.\" Then more.",
+            "Dr. Smith went to Washington, D.C. on Jan. 5th, 2020 at 10.30 a.m. He said: \u{201c}Stop.\u{201d} (Really.) 3.14 is pi... ok",
+            "emoji \u{1F600}\u{1F601} sentence. \u{4E2D}\u{6587}\u{3002}\u{65E5}\u{672C}\u{8A9E}\u{3002} \u{0939}\u{093F}\u{0928}\u{094D}\u{0926}\u{0940}\u{0964} end",
+            "  leading spaces.   trailing   \t tabs\t. x.y.z  e.g. i.e. 1,000.50 foo@bar.com http://x.org/a?b=c#d",
+        ];
+        for t in samples {
+            same(Kind::Sentence, t);
+            same(Kind::Word, t);
+        }
+    }
+
+    /// `BREAK_CORPUS=<ndjson bulk file>`: the first documents' text.
+    #[test]
+    #[ignore = "needs a bulk file of the Wikipedia corpus"]
+    fn memoized_walk_equals_the_plain_walk_on_a_corpus() {
+        let Ok(path) = std::env::var("BREAK_CORPUS") else { return };
+        let n: usize = std::env::var("BREAK_DOCS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+        let lines: Vec<String> = std::fs::read_to_string(path).unwrap().lines().map(str::to_owned).collect();
+        for l in lines.iter().skip(1).step_by(2).take(n) {
+            let text = l.split("\"text\":\"").nth(1).unwrap_or("").replace("\\n", "\n").replace("\\\"", "\"");
+            same(Kind::Sentence, &text);
+            same(Kind::Word, &text);
+        }
     }
 }
