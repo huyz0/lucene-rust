@@ -11,7 +11,7 @@ rnd = random.Random(int(sys.argv[2]))
 N = int(sys.argv[3])
 try: bn.req("DELETE", "/da")
 except Exception: pass
-bn.req("PUT", "/da", {"settings": {"index.engine.accelerated": True, "index.number_of_shards": 1, "index.number_of_replicas": 0},
+bn.req("PUT", "/da", {"settings": {"index.engine.accelerated": True, "index.number_of_shards": 1, "index.number_of_replicas": 0, "index.search.concurrent_segment_search.mode": "none"},
     "mappings": {"properties": {"body": {"type": "text"}, "f": {"type": "float"}, "i": {"type": "integer"}, "n": {"type": "long"}, "price": {"type": "double"},
     "tag": {"type": "keyword"}, "tags": {"type": "keyword"}, "ts": {"type": "date"}, "sc": {"type": "scaled_float", "scaling_factor": 100}, "h": {"type": "half_float"}, "flag": {"type": "boolean"}, "ip": {"type": "ip"}, "loc": {"type": "geo_point"}, "ts2": {"type": "date_nanos"}}}})
 words = "alpha beta gamma delta dog fox quick lazy".split()

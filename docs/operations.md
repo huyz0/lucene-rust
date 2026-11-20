@@ -428,7 +428,7 @@ A request is answered directly when all of these hold, and otherwise goes to Ope
   `sort` of field, `_score`, script or geo-distance keys (not nested ones), with `from` + `size` at most 100, or a
   `size: 0` request whose `aggs` are only top-level `min`, `max`, `sum`, `avg`, `value_count`, `stats` or `extended_stats`
   on numeric or date fields and `terms` on keyword fields (default order, no `include`/`exclude`, no script, `missing` or
-  sub-aggregation; no explicit concurrent-search setting), with the total counted in the same pass (no `post_filter`, highlight, stored fields that are mapped `store: true`, script fields, `track_scores`,
+  sub-aggregation; concurrent segment search switched off with `mode: none`, because OpenSearch's default `auto` mode runs aggregations concurrently and reports per-slice `terminated_early` and terms error bounds), with the total counted in the same pass (no `post_filter`, highlight, stored fields that are mapped `store: true`, script fields, `track_scores`,
   `terminate_after`, `timeout`, rescore, collapse ...), and the native encoder accepts the query and the sort;
 - the query string holds only `size`, `from`, `track_total_hits`, `_source`, `_source_includes`, `_source_excludes`,
   `rest_total_hits_as_int` (with an exact total), `preference` (not `_only_nodes`, `_shards` or the like), `routing`,

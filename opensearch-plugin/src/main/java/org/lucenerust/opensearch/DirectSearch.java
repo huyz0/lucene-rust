@@ -44,7 +44,7 @@ import org.opensearch.search.sort.SortBuilder;
  *
  * <p>It is a request-level shortcut for what the search would anyway do natively. Anything else is left to
  * OpenSearch untouched: query-string parameters that could change the answer, an alias, wildcard or list that
- * resolves to several indices or has a filtered alias, an index that is not a single-shard accelerated index, one with realtime search, derived source, nested
+ * resolves to several indices or has a filtered alias, an index that is not a single-shard accelerated index, one with realtime search, derived source, k-NN vectors (the k-NN source-excludes processor is part of its search), nested
  * fields, per-index accelerated search off, a query the native encoder refuses (or a shape slower than Lucene's),
  * and every body feature other than {@code query}, {@code size}, {@code from}, {@code track_total_hits}, {@code
  * _source}, {@code min_score}, {@code search_after} and field, score, script or geo-distance {@code sort} keys with {@code from + size} up
@@ -160,6 +160,7 @@ final class DirectSearch {
             && settings.getNumberOfShards() == 1
             && org.lucenerust.opensearch.engine.AcceleratedEngineSupport.REALTIME_SEARCH.get(settings.getSettings()) == false
             && settings.isDerivedSourceEnabled() == false
+            && settings.getSettings().getAsBoolean("index.knn", false) == false
             && service.mapperService().hasNested() == false;
     }
 
@@ -197,7 +198,7 @@ final class DirectSearch {
             return false;
         }
         if (source.aggregations() != null
-            && DirectAggs.slicing(cluster.get().state().metadata().settings(), service.getIndexSettings().getSettings())) {
+            && DirectAggs.slicing(cluster.get().getSettings(), cluster.get().state().metadata().settings(), service.getIndexSettings().getSettings())) {
             return false;
         }
         DirectResponse.Shape shape = applyParams(request, source);
