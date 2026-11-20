@@ -784,6 +784,18 @@ fn default_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
     if needs_scores && doc < max && scorer.prefers_batches() && super::batches_on() {
         return batch_score(scorer, published, prune, live_docs, collector, doc, max);
     }
+    if two_phase && doc < max && scorer.batch_matches() && super::batches_on() {
+        let constant = if needs_scores {
+            scorer.constant_score()
+        } else {
+            Some(0.0)
+        };
+        if let Some(score) = constant {
+            return confirm_score(
+                scorer, published, prune, live_docs, collector, score, doc, max,
+            );
+        }
+    }
     while doc < max {
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
             let score = if needs_scores { scorer.score()? } else { 0.0 };
@@ -795,6 +807,69 @@ fn default_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
         doc = scorer.next_doc()?;
     }
     Ok(doc)
+}
+
+/// Documents confirmed per [`super::Scorer::matches_batch`] call by
+/// [`confirm_score`].
+const CONFIRM_BATCH: i32 = 256;
+
+/// [`default_score`] over a constant-scored two-phase scorer whose
+/// approximation is every document ([`super::Scorer::batch_matches`]): the
+/// live documents of each window of [`CONFIRM_BATCH`] confirmed in one call,
+/// then collected in order with `score` -- the documents the
+/// document-at-a-time loop collects. `doc` is the scorer's current document,
+/// below `max`; with `prune`, the scorer's threshold is published after each
+/// hit. Returns the next document to score.
+#[allow(clippy::too_many_arguments)]
+fn confirm_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
+    published: &mut f32,
+    prune: bool,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    score: f32,
+    doc: i32,
+    max: i32,
+) -> Result<i32> {
+    let live = |d: i32| live_docs.is_none_or(|l| l.get_doc(d));
+    // A batch's documents are past the scorer's, so the current one goes alone.
+    if live(doc) && scorer.matches()? {
+        collector.collect(doc, score);
+        if prune {
+            publish(scorer, published, collector)?;
+            if !scorer.batch_matches() {
+                return Ok(NO_MORE_DOCS);
+            }
+        }
+    }
+    // The approximation is every document of the segment, which its cost counts.
+    let end = max.min(i32::try_from(scorer.cost()).unwrap_or(i32::MAX));
+    let mut docs: Vec<i32> = Vec::with_capacity(CONFIRM_BATCH as usize);
+    let mut keep = vec![false; CONFIRM_BATCH as usize];
+    let mut from = doc.saturating_add(1);
+    while from < end {
+        let to = end.min(from.saturating_add(CONFIRM_BATCH));
+        docs.clear();
+        docs.extend((from..to).filter(|&d| live(d)));
+        if !docs.is_empty() {
+            scorer.matches_batch(&docs, &mut keep[..docs.len()])?;
+            for (&d, &k) in docs.iter().zip(&keep) {
+                if k {
+                    collector.collect(d, score);
+                    // A threshold the constant cannot beat empties the scorer
+                    // right after the hit that published it, as in the loop.
+                    if prune {
+                        publish(scorer, published, collector)?;
+                        if !scorer.batch_matches() {
+                            return Ok(NO_MORE_DOCS);
+                        }
+                    }
+                }
+            }
+        }
+        from = to;
+    }
+    scorer.advance(max)
 }
 
 /// [`default_score`] over a constant-score scorer with no deleted documents

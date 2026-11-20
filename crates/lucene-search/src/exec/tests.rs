@@ -3186,6 +3186,77 @@ fn constant_wrapper_batch_confirmation_tracks_the_inner_approximation() {
 }
 
 #[test]
+fn a_dense_two_phase_scorer_is_confirmed_in_batches_with_the_loops_hits() {
+    /// Every document the segment has; the ones divisible by 7 confirm.
+    struct Sevens(AllDocs, bool);
+    impl Scorer for Sevens {
+        fn doc_id(&self) -> i32 {
+            self.0.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.0.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.0.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.0.cost()
+        }
+        fn two_phase(&self) -> bool {
+            true
+        }
+        fn matches(&mut self) -> Result<bool> {
+            Ok(self.doc_id() % 7 == 0)
+        }
+        fn batch_matches(&self) -> bool {
+            self.1
+        }
+        fn matches_batch(&mut self, docs: &[i32], keep: &mut [bool]) -> Result<()> {
+            for (&d, k) in docs.iter().zip(keep.iter_mut()) {
+                *k = d % 7 == 0;
+            }
+            if let Some(&last) = docs.last() {
+                self.advance(last)?;
+            }
+            Ok(())
+        }
+        fn score(&mut self) -> Result<f32> {
+            Ok(0.0)
+        }
+        fn max_score(&mut self, _: i32) -> Result<f32> {
+            Ok(0.0)
+        }
+    }
+
+    let max_doc = 1000;
+    let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(max_doc as usize);
+    for d in 0..max_doc as usize {
+        if d % 5 != 0 {
+            live.set(d);
+        }
+    }
+    for live_docs in [None, Some(&live)] {
+        let run = |batched: bool| {
+            let mut all = All(Vec::new());
+            let s = Sevens(AllDocs::new(max_doc), batched);
+            score_segment(
+                &mut Bulk::scorer(Box::new(s)),
+                Mode::NoScores,
+                live_docs,
+                &mut all,
+                None,
+            )
+            .unwrap();
+            all.0
+        };
+        let hits = run(true);
+        assert_eq!(hits, run(false));
+        assert!(hits.len() > 100);
+        assert!(hits.iter().all(|(d, _)| d % 7 == 0));
+    }
+}
+
+#[test]
 fn a_scorer_confirms_a_batch_one_document_at_a_time_by_default() {
     let mut s = AllDocs::new(10);
     assert!(!s.batch_matches() && !s.prefers_batches() && !s.constant_scores());
