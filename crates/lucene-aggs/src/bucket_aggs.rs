@@ -4717,9 +4717,8 @@ pub fn aggregate_tree_cached(
             for (n, s) in nodes.iter().zip(states.iter_mut()) {
                 leaves.push(open_leaf(n, &view, globals, s)?);
             }
-            // OpenSearch's filter rewrite: a top-level `date_histogram` or
-            // `range` without sub-aggregations over a segment every document
-            // of which matches is counted from the points.
+            // OpenSearch's filter rewrite: a top-level `date_histogram` or `range` without
+            // sub-aggregations over a segment every document of which matches is counted from the points.
             let all = whole && scoring.is_none() && matches!(matched, Matches::All);
             if all && seg.live_docs.is_none() {
                 for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
@@ -4727,31 +4726,7 @@ pub fn aggregate_tree_cached(
                         apply_counts(s, counts);
                         l.done = true;
                     }
-                    // A keyword `cardinality` over a segment every document of which matches, none deleted:
-                    // each term of the dictionary has a document, so every ordinal is set without reading a
-                    // document (OpenSearch counts the terms dictionary in that case).
-                    if let (
-                        AggNode::Cardinality {
-                            kind: CardinalityKind::Keyword,
-                            ..
-                        },
-                        State::OrdBits(bits),
-                        Col::Ords(_, map),
-                    ) = (n, &mut *s, &l.col)
-                    {
-                        if !l.done && !map.is_empty() {
-                            let words = slot(bits, 0);
-                            for &g in map.iter() {
-                                let Ok(g) = usize::try_from(g) else {
-                                    return Err(lucene_search::Error::TermsAggType(format!(
-                                        "negative global ordinal {g}"
-                                    )));
-                                };
-                                *slot(words, g >> 6) |= 1 << (g & 63);
-                            }
-                            l.done = true;
-                        }
-                    }
+                    keyword_cardinality_all_ords(n, s, l)?;
                 }
                 if leaves.iter().all(|l| l.done) {
                     continue;

@@ -737,14 +737,33 @@ mod memo_tests {
         let n = units.len();
         let mut x = 12345u64;
         for i in 0..=(2 * n).min(4000) {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let off = if i % 3 == 0 { (x >> 33) as usize % (n + 1) } else { (i / 2).min(n) };
-            assert_eq!(fast.preceding(off), plain.preceding(off), "preceding({off}) in {text:?}");
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let off = if i % 3 == 0 {
+                (x >> 33) as usize % (n + 1)
+            } else {
+                (i / 2).min(n)
+            };
+            assert_eq!(
+                fast.preceding(off),
+                plain.preceding(off),
+                "preceding({off}) in {text:?}"
+            );
             assert_eq!(fast.current(), plain.current());
             if off > 0 {
-                assert_eq!(fast.following(off - 1), plain.following(off - 1), "following({}) in {text:?}", off - 1);
+                assert_eq!(
+                    fast.following(off - 1),
+                    plain.following(off - 1),
+                    "following({}) in {text:?}",
+                    off - 1
+                );
             }
-            assert_eq!(fast.following(off.min(n)), plain.following(off.min(n)), "following({off}) in {text:?}");
+            assert_eq!(
+                fast.following(off.min(n)),
+                plain.following(off.min(n)),
+                "following({off}) in {text:?}"
+            );
             assert_eq!(fast.current(), plain.current());
             assert_eq!(fast.next(), plain.next());
             assert_eq!(fast.previous(), plain.previous());
@@ -771,11 +790,25 @@ mod memo_tests {
     #[test]
     #[ignore = "needs a bulk file of the Wikipedia corpus"]
     fn memoized_walk_equals_the_plain_walk_on_a_corpus() {
-        let Ok(path) = std::env::var("BREAK_CORPUS") else { return };
-        let n: usize = std::env::var("BREAK_DOCS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
-        let lines: Vec<String> = std::fs::read_to_string(path).unwrap().lines().map(str::to_owned).collect();
+        let Ok(path) = std::env::var("BREAK_CORPUS") else {
+            return;
+        };
+        let n: usize = std::env::var("BREAK_DOCS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+        let lines: Vec<String> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
         for l in lines.iter().skip(1).step_by(2).take(n) {
-            let text = l.split("\"text\":\"").nth(1).unwrap_or("").replace("\\n", "\n").replace("\\\"", "\"");
+            let text = l
+                .split("\"text\":\"")
+                .nth(1)
+                .unwrap_or("")
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"");
             same(Kind::Sentence, &text);
             same(Kind::Word, &text);
         }
