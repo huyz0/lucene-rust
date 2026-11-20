@@ -678,9 +678,9 @@ search/IndexOrDocValuesQuery	ported	crates/lucene-search/src/extended_query.rs::
 search/IndexSearcher	ported	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7 closed: setTimeout/getTimeout/timedOut (TimeLimitingBulkScorer per leaf, GenSimilaritySearch timeouts.tsv), every scoring clause (span, fuzzy, multi-phrase) scored through any similarity in the scorer tree, KNN as its DocAndScoreQuery rewrite
 search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
 search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
-search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
+search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended/fusion.rs::IndriAndScorer
 search/IndriAndWeight	ported	crates/lucene-search/src/exec/extended.rs::indri_and
-search/IndriDisjunctionScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
+search/IndriDisjunctionScorer	ported	crates/lucene-search/src/exec/extended/fusion.rs::IndriAndScorer
 search/IndriQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
 search/IndriScorer	ported	crates/lucene-search/src/exec/mod.rs::smoothing_score
 search/KnnByteVectorQuery	ported	crates/lucene-search/src/vector_query.rs::KnnByteVectorQuery
@@ -693,7 +693,7 @@ search/LeafCollector	ported	crates/lucene-search/src/collector.rs::LeafCollector
 search/LeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::LeafKey
 search/LiveFieldValues	ported	crates/lucene-search/src/reference_manager.rs::LiveFieldValues
 search/LogOddsFusionQuery	ported	crates/lucene-search/src/extended_query.rs::LogOddsFusionQuery
-search/LogOddsFusionScorer	ported	crates/lucene-search/src/exec/extended.rs::LogOddsScorer
+search/LogOddsFusionScorer	ported	crates/lucene-search/src/exec/extended/fusion.rs::LogOddsScorer
 search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
 search/LongValuesSource	ported	crates/lucene-search/src/values_source.rs::LongValuesSource
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
