@@ -183,17 +183,28 @@ def download(url, sha, dest):
         sys.exit(f"fetch-data: {dest.name} is not cached and LUCENE_RUST_DATA_OFFLINE is set")
     print(f"fetch-data: downloading {url}", file=sys.stderr)
     last = None
-    for attempt in range(4):
+    data = None
+    # Maven Central answers 429 to a busy runner pool for a minute or more, so
+    # the waits grow well past a few seconds and a Retry-After is honoured.
+    waits = [5, 15, 30, 60, 90]
+    for attempt in range(len(waits) + 1):
         try:
             with urllib.request.urlopen(url, timeout=120) as r:
                 data = r.read()
             break
-        except Exception as e:  # network error: retry with backoff
+        except Exception as e:  # network error or throttling: retry with backoff
             last = e
+            if attempt == len(waits):
+                break
             import time
 
-            time.sleep(2**attempt)
-    else:
+            retry_after = getattr(e, "headers", None) and e.headers.get("Retry-After")
+            wait = waits[attempt]
+            if retry_after and retry_after.isdigit():
+                wait = max(wait, min(int(retry_after), 120))
+            print(f"fetch-data: {e}; retrying in {wait}s", file=sys.stderr)
+            time.sleep(wait)
+    if data is None:
         sys.exit(f"fetch-data: cannot download {url}: {last}")
     got = hashlib.sha256(data).hexdigest()
     if got != sha:
