@@ -399,6 +399,83 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         }
     }
 
+    /**
+     * Applies the documents of a source {@link NativeIngest} read, from the library's copy of them
+     * (no operation blob is built), when {@code docs} are exactly that; {@code softDeletes} is null for an
+     * add, else the field a replacement of {@code uid}'s live documents sets. False when they are not,
+     * or the library no longer holds them, and the caller encodes them in Java.
+     */
+    private boolean applyPrepared(List<ParseContext.Document> docs, Term uid, Field softDeletes) throws IOException {
+        NativeIngest.Prepared prepared = NativeIngest.prepared(docs, encoder.seqNoDocValuesOnly());
+        if (prepared == null) {
+            return false;
+        }
+        if (softDeletes != null
+            && (softDeletes.numericValue() == null || encoder.isSoftDeletesField(softDeletes.name()) == false || sameId(prepared.id(), uid.bytes()) == false)) {
+            return false;
+        }
+        long estimate = reservation(prepared.weight);
+        if (breaker != null) {
+            if (REFUSABLE.get()) {
+                breaker.addEstimateBytesAndMaybeBreak(estimate, "indexing_buffers");
+            } else {
+                breaker.addWithoutBreaking(estimate);
+            }
+        }
+        long seqNo = prepared.seqID.seqNoDocValue.numericValue().longValue();
+        long primaryTerm = prepared.seqID.primaryTerm.numericValue().longValue();
+        long version = prepared.version.numericValue().longValue();
+        String softField = softDeletes == null ? null : softDeletes.name();
+        long softValue = softDeletes == null ? 0 : softDeletes.numericValue().longValue();
+        indexing.readLock().lock();
+        try {
+            synchronized (accounting) {
+                accounted += estimate;
+            }
+            ensureOpen();
+            int rc = NativeWriter.writerApplyIngested(handle, prepared.token, softField, softValue, seqNo, primaryTerm, version);
+            if (rc == NativeBridge.INVALID_HANDLE && prepared.prepareAgain()) {
+                rc = NativeWriter.writerApplyIngested(handle, prepared.token, softField, softValue, seqNo, primaryTerm, version);
+            }
+            if (rc == NativeBridge.INVALID_HANDLE) {
+                return false;
+            }
+            check(rc, "indexing");
+            docsSinceCommit.addAndGet(docs.size());
+            return true;
+        } finally {
+            reconcileBreaker();
+            indexing.readLock().unlock();
+        }
+    }
+
+    private static boolean sameId(byte[] id, org.apache.lucene.util.BytesRef bytes) {
+        return java.util.Arrays.equals(id, 0, id.length, bytes.bytes, bytes.offset, bytes.offset + bytes.length);
+    }
+
+    /** In verify mode, checks the library's copy of an operation's documents against the blob Java encoded. */
+    private void verifyPrepared(List<ParseContext.Document> docs, Blob op) {
+        if (NativeIngest.VERIFY && docs.get(docs.size() - 1) instanceof NativeIngest.Document root && root.prepared != null) {
+            NativeIngest.Prepared p = root.prepared;
+            if (p.prepareAgain() == false) {
+                NativeIngest.MISMATCHES.incrementAndGet();
+                System.err.println("accelerated source parsing: the documents of an operation were refused when read again");
+                return;
+            }
+            String difference = NativeWriter.ingestVerifyHeld(
+                p.token,
+                p.seqID.seqNoDocValue.numericValue().longValue(),
+                p.seqID.primaryTerm.numericValue().longValue(),
+                p.version.numericValue().longValue(),
+                op.toArray()
+            );
+            if (difference != null) {
+                NativeIngest.MISMATCHES.incrementAndGet();
+                System.err.println("accelerated source parsing: the applied documents differ from the encoded ones: " + difference);
+            }
+        }
+    }
+
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
     private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
 
@@ -456,14 +533,22 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         ensureOpen();
         maybeInjectFault(doc);
         List<ParseContext.Document> docs = List.of(doc);
-        apply(encoder.add(partition(docs), docs), 1);
+        if (applyPrepared(docs, uid, null) == false) {
+            Blob op = encoder.add(partition(docs), docs);
+            verifyPrepared(docs, op);
+            apply(op, 1);
+        }
         return 0;
     }
 
     @Override
     public long addDocuments(List<ParseContext.Document> docs, Term uid) throws IOException {
         ensureOpen();
-        apply(encoder.add(partition(docs), docs), docs.size());
+        if (applyPrepared(docs, uid, null) == false) {
+            Blob op = encoder.add(partition(docs), docs);
+            verifyPrepared(docs, op);
+            apply(op, docs.size());
+        }
         return 0;
     }
 
@@ -487,7 +572,12 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        Field soft = onlySoftDeletesField(softDeletesField);
+        if (applyPrepared(docs, uid, soft) == false) {
+            Blob op = encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, soft);
+            verifyPrepared(docs, op);
+            apply(op, docs.size());
+        }
     }
 
     @Override
@@ -496,7 +586,12 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
         ensureOpen();
         maybeInjectFault(doc);
         List<ParseContext.Document> docs = List.of(doc);
-        apply(encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
+        Field soft = onlySoftDeletesField(softDeletesField);
+        if (applyPrepared(docs, uid, soft) == false) {
+            Blob op = encoder.softUpdate(PartitionKey.of(partitionField, docs), uid, docs, soft);
+            verifyPrepared(docs, op);
+            apply(op, 1);
+        }
     }
 
     @Override

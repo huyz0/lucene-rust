@@ -71,6 +71,18 @@ public final class NativeWriter {
             "ffi_jvm_ingest_parse",
             FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
+        static final MethodHandle INGEST_PREPARE = bindCritical(
+            "ffi_jvm_ingest_prepare",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_APPLY_INGESTED = bind(
+            "ffi_engine_writer_apply_ingested",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle INGEST_VERIFY_HELD = bind(
+            "ffi_jvm_ingest_verify_held",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
         static final MethodHandle INGEST_VERIFY = bind(
             "ffi_jvm_ingest_verify",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -403,6 +415,85 @@ public final class NativeWriter {
                 n
             );
             return rc != OK ? 0 : (int) n.get(JAVA_LONG, 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Reads {@code src[off, off + len)} against a registered plan into the documents of the source
+     * whose encoded {@code _id} is {@code id}, held for this thread's {@link #writerApplyIngested}.
+     * {@code out} receives {@code [token, documents, weight]} and then the plan index of each nested
+     * child's object; the token is 0 when the document is refused (the document mapper takes it), as
+     * when it has more children than {@code out} has room for.
+     */
+    public static int ingestPrepare(int plan, byte[] src, int off, int len, byte[] id, long[] out) {
+        try {
+            return (int) H.INGEST_PREPARE.invokeExact(
+                plan,
+                MemorySegment.ofArray(src).asSlice(off, len),
+                (long) len,
+                MemorySegment.ofArray(id),
+                (long) id.length,
+                MemorySegment.ofArray(out),
+                (long) out.length
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, MemorySegment> SOFT_FIELD_NAMES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Applies the document {@link #ingestPrepare} held on this thread under {@code token}, with
+     * the values the engine assigned it: an add, or ({@code softField} not null) the replacement of
+     * the live documents of its id, whose {@code softField} becomes {@code softValue}. Status
+     * {@link NativeBridge#INVALID_HANDLE} means the thread no longer holds that document.
+     */
+    public static int writerApplyIngested(long handle, long token, String softField, long softValue, long seqNo, long primaryTerm, long version) {
+        try {
+            MemorySegment name = MemorySegment.NULL;
+            long length = 0;
+            if (softField != null) {
+                name = SOFT_FIELD_NAMES.computeIfAbsent(softField, f -> {
+                    byte[] b = f.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    return java.lang.foreign.Arena.global().allocateFrom(JAVA_BYTE, b);
+                });
+                length = name.byteSize();
+            }
+            return (int) H.WRITER_APPLY_INGESTED.invokeExact(
+                handle,
+                token,
+                (byte) (softField == null ? 0 : 1),
+                name,
+                length,
+                softValue,
+                seqNo,
+                primaryTerm,
+                version
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Compares the document {@link #ingestPrepare} held, given the engine's values, with the mapper's operation blob; null when they agree. */
+    public static String ingestVerifyHeld(long token, long seqNo, long primaryTerm, long version, byte[] expected) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment msg = s.alloc(4096);
+            MemorySegment n = s.alloc(Long.BYTES);
+            int rc = (int) H.INGEST_VERIFY_HELD.invokeExact(token, seqNo, primaryTerm, version, s.bytes(expected), (long) expected.length, msg, 4096L, n);
+            if (rc != OK) {
+                return "verify failed with status " + rc;
+            }
+            int length = (int) n.get(JAVA_LONG, 0);
+            if (length == 0) {
+                return null;
+            }
+            byte[] text = new byte[Math.min(length, 4096)];
+            MemorySegment.copy(msg, JAVA_BYTE, 0, text, 0, text.length);
+            return new String(text, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }

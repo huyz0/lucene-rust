@@ -290,6 +290,26 @@ fn analyzed_field(c: &mut Cursor<'_>, field_number: i32) -> Result<InvertedField
 /// A document's KNN vectors follow the operation's documents ([`decode_op`]).
 fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, Status> {
     let n = c.count(9, "stored count")?;
+    let stored = stored_entries(c, n)?;
+    let n = c.count(9, "inverted count")?;
+    let inverted = inverted_entries(c, n)?;
+    let n = c.count(9, "doc values count")?;
+    let doc_values = doc_value_entries(c, n)?;
+    let n = c.count(8, "points count")?;
+    let points = point_entries(c, n)?;
+    Ok(ExplicitDocument {
+        stored,
+        fields: ExplicitFields {
+            inverted,
+            doc_values,
+            points,
+            registered: Vec::new(),
+            term_vectors: Vec::new(),
+        },
+    })
+}
+
+fn stored_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<StoredField>, Status> {
     let mut stored = try_with_capacity(n)?;
     for _ in 0..n {
         let field_number = c.i32("stored field number")?;
@@ -298,12 +318,18 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, Status> {
             value: stored_value(c)?,
         });
     }
-    let n = c.count(9, "inverted count")?;
+    Ok(stored)
+}
+
+fn inverted_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<InvertedField>, Status> {
     let mut inverted = try_with_capacity(n)?;
     for _ in 0..n {
         inverted.push(inverted_field(c)?);
     }
-    let n = c.count(9, "doc values count")?;
+    Ok(inverted)
+}
+
+fn doc_value_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<StoredField>, Status> {
     let mut doc_values = try_with_capacity(n)?;
     for _ in 0..n {
         let field_number = c.i32("doc values field number")?;
@@ -317,7 +343,10 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, Status> {
             value,
         });
     }
-    let n = c.count(8, "points count")?;
+    Ok(doc_values)
+}
+
+fn point_entries(c: &mut Cursor<'_>, n: usize) -> Result<Vec<StoredField>, Status> {
     let mut points = try_with_capacity(n)?;
     for _ in 0..n {
         let field_number = c.i32("points field number")?;
@@ -326,16 +355,35 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, Status> {
             value: FieldValue::Binary(c.bytes("packed point")?.to_vec()),
         });
     }
-    Ok(ExplicitDocument {
-        stored,
+    Ok(points)
+}
+
+/// A document from the four sections source ingest reads, each already in the layout
+/// [`document`] documents, with the entry counts taken from outside them.
+pub fn document_from_sections(
+    counts: [i32; 4],
+    sections: [&[u8]; 4],
+) -> Result<ExplicitDocument, Status> {
+    let n = |i: usize| usize::try_from(counts[i]).map_err(|_| decode_error("entry count"));
+    let mut stored = Cursor::new(sections[0]);
+    let mut inverted = Cursor::new(sections[1]);
+    let mut doc_values = Cursor::new(sections[2]);
+    let mut points = Cursor::new(sections[3]);
+    let doc = ExplicitDocument {
+        stored: stored_entries(&mut stored, n(0)?)?,
         fields: ExplicitFields {
-            inverted,
-            doc_values,
-            points,
+            inverted: inverted_entries(&mut inverted, n(1)?)?,
+            doc_values: doc_value_entries(&mut doc_values, n(2)?)?,
+            points: point_entries(&mut points, n(3)?)?,
             registered: Vec::new(),
             term_vectors: Vec::new(),
         },
-    })
+    };
+    stored.finish("trailing bytes after the stored section")?;
+    inverted.finish("trailing bytes after the inverted section")?;
+    doc_values.finish("trailing bytes after the doc values section")?;
+    points.finish("trailing bytes after the points section")?;
+    Ok(doc)
 }
 
 /// One document's value of one vector field: `i32 len, utf8 field name,

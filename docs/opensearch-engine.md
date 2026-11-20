@@ -153,7 +153,14 @@ repeated key, a number or date in a shape the library does not reproduce (a numb
 or boolean given to a keyword, a numeric string, an integer of fewer than five
 digits given to a date), `_routing`, a comment or trailing text, or a source that is
 not JSON or not valid UTF-8. A keyword longer than `ignore_above` is skipped, as the
-mapper skips it. `GET _plugins/_accelerated/stats` counts documents handled and refused
+mapper skips it. The documents are not handed to the writer as an operation blob. The library reads the source into
+the writer's own document structures, adds `_id`, `_source` and (for a nested child) `_nested_path`
+itself, and keeps them for the thread that read them; the engine then applies them with the sequence
+number, primary term and version it assigned, which are the only values missing when the source is read.
+A thread that no longer holds the documents reads the source again. An operation whose documents gained
+a field after they were read (a stale operation's soft-deletes marker), or an index that writes `_seq_no`
+without its point after the mapping was read, is encoded in Java as before.
+`GET _plugins/_accelerated/stats` counts documents handled and refused
 (`source_parsing`). Stored fields, doc values, postings, points and the `_source`
 bytes are the same as the mapper's: the system property `accelerated.ingest.verify` runs both
 paths on every document and counts any difference, and

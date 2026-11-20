@@ -809,3 +809,92 @@ fn a_keyword_over_ignore_above_is_skipped() {
         [0, 0, 0, 0]
     );
 }
+
+/// `nested_plan`'s blob with the metadata trailer: `_id` 1, `_seq_no` 2, `_primary_term` 3,
+/// `_version` 4, `_source` 5, `_nested_path` 6, and a path per plan entry.
+fn nested_plan_with_meta(seq_point: bool) -> Arc<Plan> {
+    let mut b = blob_with(
+        &[
+            ("title", KEYWORD, 3, 40, i32::MAX, -1, &[]),
+            ("c", NESTED, 0, 0, 0, -1, &[]),
+            ("c.user", KEYWORD, 3, 41, i32::MAX, -1, &[]),
+        ],
+        100,
+    );
+    for n in [1i32, 2, 3, 4, 5, 6] {
+        b.extend_from_slice(&n.to_le_bytes());
+    }
+    b.push(u8::from(seq_point));
+    b.extend_from_slice(&3i32.to_le_bytes());
+    for path in ["", "c", ""] {
+        b.extend_from_slice(&(path.len() as i32).to_le_bytes());
+        b.extend_from_slice(path.as_bytes());
+    }
+    plan(register(&b).unwrap()).unwrap()
+}
+
+#[test]
+fn a_prepared_source_carries_the_metadata_the_mapper_adds() {
+    let plan = nested_plan_with_meta(true);
+    let src = br#"{"title":"hello world","c":[{"user":"a"},{"user":"b"}]}"#;
+    let prepared = prepare(&plan, src, b"id1").unwrap().unwrap();
+    assert_eq!(prepared.len(), 3);
+    assert_eq!(prepared.id(), b"id1");
+    assert_eq!(prepared.objects, [1, 1]);
+    let docs = prepared.finish(&plan, 7, 2, 9);
+    let number = |fields: &[lucene_codecs::stored_fields::StoredField]| {
+        fields.iter().map(|f| f.field_number).collect::<Vec<_>>()
+    };
+    for child in &docs[..2] {
+        // `_id` and `_nested_path` after the entries read from the source; no stored `_id`.
+        let inverted = number_of(&child.fields.inverted);
+        assert_eq!(&inverted[inverted.len() - 2..], &[1, 6]);
+        assert!(child.stored.is_empty());
+        assert_eq!(number(&child.fields.doc_values), [41, 2, 4]);
+        assert_eq!(number(&child.fields.points), [2]);
+    }
+    let root = &docs[2];
+    assert_eq!(number(&root.stored), [1, 5]);
+    assert_eq!(number(&root.fields.doc_values), [40, 2, 3, 4]);
+    assert_eq!(
+        format!("{:?}", root.fields.doc_values[2].value),
+        "Long(2)",
+        "the primary term"
+    );
+    assert_eq!(
+        format!("{:?}", root.fields.points[0].value),
+        format!("Binary({:?})", vec![0x80u8, 0, 0, 0, 0, 0, 0, 7])
+    );
+}
+
+fn number_of(fields: &[lucene_index::index_writer::InvertedField]) -> Vec<i32> {
+    fields.iter().map(|f| f.field_number).collect()
+}
+
+#[test]
+fn a_prepared_source_without_the_seq_no_point_has_none() {
+    let plan = nested_plan_with_meta(false);
+    let prepared = prepare(&plan, br#"{"title":"x"}"#, b"i").unwrap().unwrap();
+    let docs = prepared.finish(&plan, 0, 1, 1);
+    assert_eq!(docs.len(), 1);
+    assert!(docs[0].fields.points.is_empty());
+}
+
+#[test]
+fn a_prepare_is_refused_like_a_parse() {
+    let plan = nested_plan_with_meta(true);
+    assert!(prepare(&plan, br#"{"unmapped":1}"#, b"i")
+        .unwrap()
+        .is_none());
+    // a plan registered without the metadata cannot prepare
+    assert!(prepare(&nested_plan(100), br#"{"title":"x"}"#, b"i")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn a_negative_seq_no_sorts_below_a_positive_one() {
+    use super::prepared::long_point_for_test;
+    assert!(long_point_for_test(-1) < long_point_for_test(0));
+    assert!(long_point_for_test(0) < long_point_for_test(1));
+}

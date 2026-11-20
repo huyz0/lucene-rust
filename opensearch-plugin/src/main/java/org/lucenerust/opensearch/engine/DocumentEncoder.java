@@ -127,6 +127,30 @@ final class DocumentEncoder {
         this.seqNoDocValuesOnly = docValuesOnly;
     }
 
+    boolean isSoftDeletesField(String name) {
+        return name.equals(softDeletesField);
+    }
+
+    /** Whether {@code _seq_no} is written without its point: the setting this encoder was given. */
+    boolean seqNoDocValuesOnly() {
+        return seqNoDocValuesOnly;
+    }
+
+    /** The field numbers the shard's registry gives the fields of {@code doc}, by name: pass 1 of a document alone. */
+    Map<String, Integer> numbers(Iterable<? extends IndexableField> doc) throws IOException {
+        Workspace ws = WORKSPACE.get();
+        try {
+            schemas(ws, doc);
+            Map<String, Integer> numbers = new HashMap<>();
+            for (PerField pf : ws.order) {
+                numbers.put(pf.schema.name, pf.number);
+            }
+            return numbers;
+        } finally {
+            ws.release();
+        }
+    }
+
     /** Whether {@code field} is {@code _seq_no}'s point, which a doc-values-only layout leaves out. */
     private boolean droppedSeqNoPoint(IndexableField field) {
         return seqNoDocValuesOnly
@@ -429,7 +453,8 @@ final class DocumentEncoder {
         }
     }
 
-    private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
+    /** Pass 1 of a document: its schema per field name, checked against (or registered as) the shard's. */
+    private void schemas(Workspace ws, Iterable<? extends IndexableField> doc) throws IOException {
         // Pass 1: the document's schema per field name, checked against (or registered as) the
         // shard's -- IndexingChain.processDocument's first loop.
         ws.document++;
@@ -471,6 +496,10 @@ final class DocumentEncoder {
                 }
             }
         }
+    }
+
+    private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
+        schemas(ws, doc);
 
         // Pass 2, in document order: stored values, inversion, doc values, points.
         int storedAt = b.reserveI32();
