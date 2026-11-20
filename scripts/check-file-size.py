@@ -38,7 +38,6 @@ OVER = {
     "crates/lucene-analysis/src/snowball/algorithms/serbian.rs": 3602,
     "crates/lucene-codecs/src/postings_writer.rs": 3447,
     "crates/lucene-analysis/src/lib.rs": 3195,
-    "crates/lucene-search/src/exec/extended.rs": 3123,
 }
 
 
