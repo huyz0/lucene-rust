@@ -43,8 +43,8 @@ import org.opensearch.search.sort.SortBuilder;
  * every engine, which is most of a cheap search's time.
  *
  * <p>It is a request-level shortcut for what the search would anyway do natively. Anything else is left to
- * OpenSearch untouched: query-string parameters that could change the answer, an alias, wildcard or list of
- * indices, an index that is not a single-shard accelerated index, one with realtime search, derived source, nested
+ * OpenSearch untouched: query-string parameters that could change the answer, an alias, wildcard or list that
+ * resolves to several indices or has a filtered alias, an index that is not a single-shard accelerated index, one with realtime search, derived source, nested
  * fields, per-index accelerated search off, a query the native encoder refuses (or a shape slower than Lucene's),
  * and every body feature other than {@code query}, {@code size}, {@code from}, {@code track_total_hits}, {@code
  * _source}, {@code min_score}, {@code search_after} and field, score, script or geo-distance {@code sort} keys with {@code from + size} up
@@ -80,9 +80,47 @@ final class DirectSearch {
     private final Map<String, IndexService> services = new ConcurrentHashMap<>();
     private final Map<String, IndexShard> shards = new ConcurrentHashMap<>();
 
-    DirectSearch(NativeReaders readers, SearchStats stats) {
+    private final java.util.function.Supplier<org.opensearch.cluster.service.ClusterService> cluster;
+    private final java.util.function.Supplier<org.opensearch.cluster.metadata.IndexNameExpressionResolver> resolver;
+
+    DirectSearch(
+        NativeReaders readers,
+        SearchStats stats,
+        java.util.function.Supplier<org.opensearch.cluster.service.ClusterService> cluster,
+        java.util.function.Supplier<org.opensearch.cluster.metadata.IndexNameExpressionResolver> resolver
+    ) {
         this.readers = readers;
         this.stats = stats;
+        this.cluster = cluster;
+        this.resolver = resolver;
+    }
+
+    /**
+     * The one index a path's index expression stands for: a concrete name, or an alias, wildcard or list that
+     * resolves to exactly one index with no filtered alias on it (a filter would narrow the documents searched).
+     * Null leaves the request to OpenSearch.
+     */
+    private String concrete(String expression) {
+        if (shards.containsKey(expression)) {
+            return expression;
+        }
+        org.opensearch.cluster.service.ClusterService clusterService = cluster.get();
+        org.opensearch.cluster.metadata.IndexNameExpressionResolver names = resolver.get();
+        if (expression.indexOf(':') >= 0 || clusterService == null || names == null) {
+            return null;
+        }
+        org.opensearch.cluster.ClusterState state = clusterService.state();
+        String[] concrete = names.concreteIndexNames(state, org.opensearch.action.support.IndicesOptions.strictExpandOpenAndForbidClosedIgnoreThrottled(), expression);
+        org.opensearch.cluster.metadata.IndexMetadata meta = concrete.length == 1 ? state.metadata().index(concrete[0]) : null;
+        if (meta == null) {
+            return null;
+        }
+        for (org.opensearch.cluster.metadata.AliasMetadata alias : meta.getAliases().values()) {
+            if (alias.filteringRequired()) {
+                return null;
+            }
+        }
+        return concrete[0];
     }
 
     /** Tracks the index's service, and its one shard once started, while it is eligible. */
@@ -143,8 +181,8 @@ final class DirectSearch {
             || request.hasContent() == false) {
             return false;
         }
-        String index = path.substring(1, path.length() - "/_search".length());
-        IndexShard shard = shards.get(index);
+        String index = concrete(path.substring(1, path.length() - "/_search".length()));
+        IndexShard shard = index == null ? null : shards.get(index);
         IndexService service = services.get(index);
         if (shard == null || service == null || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED || plainParams(request) == false) {
             return false;

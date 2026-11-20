@@ -30,6 +30,7 @@ for base in (P, S):
     for i, d in docs: lines += [json.dumps({"index": {"_id": i}}), json.dumps(d)]
     req(base, "POST", "/dz/_bulk?refresh=true", ("\n".join(lines) + "\n").encode(), nd=True)
     req(base, "POST", "/dz/_forcemerge?max_num_segments=1")
+    req(base, "POST", "/_aliases", {"actions": [{"add": {"index": "dz", "alias": "dza"}}]})
 rnd = random.Random(int(sys.argv[1]))
 words = "alpha beta gamma delta dog fox quick lazy running sigma omega the a".split()
 def q():
@@ -56,7 +57,7 @@ for t in range(int(sys.argv[2])):
     if "sort" in body and "from" not in body and rnd.random() < .2 and all(len(k) == 1 and isinstance(list(k.values())[0], str) for k in body["sort"]):
         body["search_after"] = [rnd.choice([0, 5, 100, "", "a", 3000]) for _ in body["sort"]]
     if rnd.random() < .15: body.setdefault("sort", []).insert(0, "_score")
-    url = "/dz/_search?request_cache=false" + rnd.choice(["", "", "", "&rest_total_hits_as_int=true", "&preference=_local", "&size=7"])
+    url = rnd.choice(["/dz", "/dz", "/dza", "/d*"]) + "/_search?request_cache=false" + rnd.choice(["", "", "", "&rest_total_hits_as_int=true", "&preference=_local", "&size=7"])
     a = req(P, "POST", url, body)
     b = req(S, "POST", url, body)
     n += 1

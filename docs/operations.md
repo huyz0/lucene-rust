@@ -416,8 +416,9 @@ of OpenSearch's time; results are the same ids, scores, totals and sources.
 
 A request is answered directly when all of these hold, and otherwise goes to OpenSearch unchanged:
 
-- the URL is `/<index>/_search` with one concrete index name (not an alias, wildcard or list) and no query-string
-  parameter other than `request_cache`;
+- the URL is `/<index>/_search` where the index expression is a concrete name, or an alias, wildcard or list that
+  resolves to exactly one index with no filtered alias on it (several indices, remote clusters and filtered aliases go
+  to OpenSearch), with only the query-string parameters listed below;
 - the index is a one-shard accelerated-engine index with `index.search.accelerated` on, no realtime search, no derived
   source and no nested fields;
 - the index has no read block and no default search pipeline;

@@ -317,7 +317,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         // The index's one reader wrapper is the security plugin's when it is installed: stored
         // fields are then read natively one layer lower, in the engine's searchers, under it.
         this.fetchWrapper = nativeFetch && security == false;
-        this.directSearch = DirectSearch.ENABLED.get(settings) && security == false ? new DirectSearch(readers, stats) : null;
+        this.directSearch = DirectSearch.ENABLED.get(settings) && security == false ? new DirectSearch(readers, stats, clusterService::get, resolver::get) : null;
         if (nativeFetch) {
             org.lucenerust.opensearch.engine.EngineFetchLayer.install(
                 (indexSettings, reader) -> NativeStoredFieldsReader.wrap(
