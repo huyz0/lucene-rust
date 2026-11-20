@@ -209,6 +209,7 @@ JAVA_ONLY = {
     ("MultiVectorFieldMapper.java", "MAX_POOLED_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
     ("MaxSimQueryBuilder.java", "MIN_SEARCH_WIDTH"): "the query's HNSW width, k-NN's default ef_search",
     ("MaxSimQueryBuilder.java", "MAX_CANDIDATES"): "the query's validation, at k-NN's limit on k",
+    ("DirectAggs.java", "MAX_BUCKETS"): "stock's default search.max_buckets, checked in Java while the shard result is reduced",
 }
 
 JAVA_CONST = re.compile(

@@ -3232,6 +3232,7 @@ fn a_dense_two_phase_scorer_is_confirmed_in_batches_with_the_loops_hits() {
     let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(max_doc as usize);
     for d in 0..max_doc as usize {
         if d % 5 != 0 {
+            // FBS: `d < max_doc == live.len()`.
             live.set(d);
         }
     }
