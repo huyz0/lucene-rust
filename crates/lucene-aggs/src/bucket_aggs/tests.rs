@@ -1221,6 +1221,49 @@ fn a_pass_over_the_bucket_limit_stops_before_building_results() {
     }
 }
 
+// A nested `terms` holds a key for every (owning bucket, value) pair it
+// meets, while its result keeps `shard_size` of them: the pairs, not the
+// kept buckets, are bounded by the limit, at the pair that would pass it.
+#[test]
+fn a_nested_terms_stops_at_the_limit_on_its_pairs_not_its_kept_buckets() {
+    let reader = fixture("metric_aggs_index");
+    let node = AggNode::Histogram {
+        script: None,
+        missing: None,
+        field: "i".to_string(),
+        kind: ValueKind::Long,
+        interval: 1.0,
+        offset: 0.0,
+        hard_bounds: (None, None),
+        subs: vec![AggNode::NumericTerms {
+            script: None,
+            missing: None,
+            field: "ml".to_string(),
+            kind: ValueKind::Long,
+            shard_size: 1,
+            order: TermsOrder::CountDesc,
+            subs: Vec::new(),
+        }],
+    };
+    let nodes = std::slice::from_ref(&node);
+    let full = run(&reader, &all(), nodes, &whole(&reader)).unwrap();
+    let AggResult::Histogram { buckets, .. } = &full[0][0] else {
+        panic!("{:?}", full[0][0]);
+    };
+    let histogram_buckets = buckets.iter().map(Vec::len).sum::<usize>();
+    // What the pass counts from below: the histogram's buckets and one kept
+    // terms bucket (shard_size 1).
+    let limit = histogram_buckets + 1;
+    let over = run_limited(&reader, &all(), nodes, &whole(&reader), limit);
+    assert!(
+        matches!(over, Err(lucene_search::Error::TooManyBuckets(n, l)) if n > l && l == limit),
+        "{over:?}"
+    );
+    // A limit the pairs fit in passes.
+    let fits = run_limited(&reader, &all(), nodes, &whole(&reader), usize::MAX - 1).unwrap();
+    assert_eq!(fits, full);
+}
+
 #[test]
 fn histograms_and_ranges_bucket_what_a_scan_buckets() {
     let reader = fixture("metric_aggs_index");

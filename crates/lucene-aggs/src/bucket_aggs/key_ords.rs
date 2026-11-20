@@ -236,6 +236,12 @@ pub(super) struct KeyOrds {
     pub(super) dense: Vec<u32>,
     /// The keys in `slots`.
     pub(super) hashed: usize,
+    /// The most keys this table adds (`0`: no bound): a nested bucket
+    /// aggregation's, so that the keys of every owner together stay within
+    /// the request's bucket limit however many documents one window holds.
+    pub(super) cap: usize,
+    /// A key was refused for `cap`: the pass stops at its next check.
+    pub(super) over: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -304,7 +310,10 @@ impl KeyOrds {
         }
     }
 
-    /// The bucket of `(owning, key)`, appended to `keys` when new.
+    /// The bucket of `(owning, key)`, appended to `keys` when new. Past
+    /// `cap` keys a new key is not added (the dense table of a top-level keyword `terms` is unbounded, as its field's ordinals are): the table is marked `over`, the
+    /// last bucket answers, and the pass stops at its next check, so the
+    /// state never holds more than `cap` keys.
     #[inline]
     pub(super) fn ord(&mut self, keys: &mut Vec<(u32, i64)>, owning: u32, key: i64) -> u32 {
         if owning == 0 {
@@ -330,6 +339,10 @@ impl KeyOrds {
         // slot is always reached (the table is at most five eighths full).
         while let Some(slot) = self.slots.get_mut(i) {
             if slot.ord == Self::EMPTY {
+                if self.cap != 0 && keys.len() >= self.cap {
+                    self.over = true;
+                    return keys.len().saturating_sub(1) as u32;
+                }
                 let ord = keys.len() as u32;
                 *slot = KeySlot { key, owning, ord };
                 keys.push((owning, key));

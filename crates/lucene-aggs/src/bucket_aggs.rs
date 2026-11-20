@@ -1097,6 +1097,40 @@ fn buckets_made(nodes: &[AggNode], states: &[State]) -> usize {
     made
 }
 
+/// `nodes`' fresh states, each nested keyed aggregation's key table bound to
+/// `limit` keys (a top-level one holds at most the field's values, which
+/// the caller's reservation covers).
+fn new_states(nodes: &[AggNode], limit: usize) -> Vec<State> {
+    let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+    for state in &mut states {
+        bound_nested(state, limit);
+    }
+    states
+}
+
+/// Binds the key tables of `state`'s sub-aggregations, at every depth, to
+/// `limit` keys.
+fn bound_nested(state: &mut State, limit: usize) {
+    let (State::Keyed { subs, .. } | State::Fixed { subs, .. }) = state else {
+        return;
+    };
+    for sub in subs {
+        if let State::Keyed { ords, .. } = sub {
+            ords.cap = if limit == usize::MAX { 0 } else { limit.max(1) };
+        }
+        bound_nested(sub, limit);
+    }
+}
+
+/// Whether a nested key table refused a key for its bound.
+fn refused_for_bound(states: &[State]) -> bool {
+    states.iter().any(|state| match state {
+        State::Keyed { ords, subs, .. } => ords.over || refused_for_bound(subs),
+        State::Fixed { subs, .. } => refused_for_bound(subs),
+        _ => false,
+    })
+}
+
 /// The collected state of one aggregation (`BucketsAggregator` and kin).
 enum State {
     Metric(MetricCol),
@@ -4628,9 +4662,9 @@ pub fn aggregate_tree_cached(
                 lucene_util::memory::checkpoint()?;
                 if globals.bucket_limit != usize::MAX {
                     let made = buckets_made(nodes, states);
-                    if made > globals.bucket_limit {
+                    if made > globals.bucket_limit || refused_for_bound(states) {
                         return Err(lucene_search::Error::TooManyBuckets(
-                            made,
+                            made.max(globals.bucket_limit.saturating_add(1)),
                             globals.bucket_limit,
                         ));
                     }
@@ -4875,7 +4909,7 @@ pub fn aggregate_tree_cached(
         .fold(0, u64::saturating_add);
     let one =
         |slice: &[usize]| -> Result<std::result::Result<Vec<AggResult>, segment_cache::Inexact>> {
-            let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+            let mut states = new_states(nodes, globals.bucket_limit);
             let slice_docs: u64 = slice
                 .iter()
                 .filter_map(|&i| segments.get(i))
@@ -4925,7 +4959,7 @@ pub fn aggregate_tree_cached(
                     // the segment's matches.
                     let mut fresh: Vec<Vec<State>> = missed
                         .iter()
-                        .map(|_| nodes.iter().map(State::new).collect())
+                        .map(|_| new_states(nodes, globals.bucket_limit))
                         .collect();
                     let mut ranges: Vec<(i32, i32, &mut [State])> = missed
                         .iter()
@@ -4964,9 +4998,9 @@ pub fn aggregate_tree_cached(
             // after the last window's check, are counted here, before any
             // result is built.
             let made = buckets_made(nodes, &states);
-            if made > globals.bucket_limit {
+            if made > globals.bucket_limit || refused_for_bound(&states) {
                 return Err(lucene_search::Error::TooManyBuckets(
-                    made,
+                    made.max(globals.bucket_limit.saturating_add(1)),
                     globals.bucket_limit,
                 ));
             }
