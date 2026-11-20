@@ -11,8 +11,9 @@
 //! ([`date_range`](crate::date_range)): with a date resolution
 //! set for the field, a bound the locale's short date format parses becomes
 //! `DateTools.dateToString` of its date. `QueryParserBase`'s
-//! protected extension points (`newBooleanClause`, `newFieldQuery`,
-//! `getBooleanQuery`, ...) cannot be overridden.
+//! protected extension points (`newBooleanClause`, `newFieldQuery`, ...)
+//! cannot be overridden, but the query builders a subclass such as
+//! OpenSearch's `QueryStringQueryParser` overrides can ([`Overrides`]).
 
 /// `IndexSearcher.getMaxClauseCount()`'s default.
 pub(crate) const MAX_CLAUSE_COUNT: usize = 1024;
@@ -135,6 +136,85 @@ impl fmt::Display for QueryParserError {
 }
 
 impl std::error::Error for QueryParserError {}
+
+/// The methods of `QueryParserBase` a subclass overrides to build its own
+/// queries, as `QueryStringQueryParser` does in OpenSearch. Set with
+/// [`QueryParser::parse_with_overrides`]: each method is then called where
+/// `QueryParserBase` (or `MultiFieldQueryParser`) builds that query, with
+/// the field as the grammar names it (`None` for a clause with no field),
+/// and what it returns stands for the query. A clause's own boost, `^n`, is
+/// applied by the grammar afterwards, as in Java.
+pub trait Overrides: Send + Sync {
+    /// `getFieldQuery(field, queryText, quoted)`.
+    fn field_query(
+        &self,
+        field: Option<&str>,
+        text: &str,
+        quoted: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getFieldQuery(field, queryText, slop)`.
+    fn field_query_slop(
+        &self,
+        field: Option<&str>,
+        text: &str,
+        slop: i32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getRangeQuery(field, part1, part2, startInclusive, endInclusive)`.
+    fn range_query(
+        &self,
+        field: Option<&str>,
+        part1: Option<&str>,
+        part2: Option<&str>,
+        start_inclusive: bool,
+        end_inclusive: bool,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getWildcardQuery(field, termStr)`, `termStr` with its escapes.
+    fn wildcard_query(
+        &self,
+        field: Option<&str>,
+        term: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getRegexpQuery(field, termStr)`.
+    fn regexp_query(
+        &self,
+        field: Option<&str>,
+        term: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getPrefixQuery(field, termStr)`.
+    fn prefix_query(
+        &self,
+        field: Option<&str>,
+        term: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getFuzzyQuery(field, termStr, minSimilarity)`.
+    fn fuzzy_query(
+        &self,
+        field: Option<&str>,
+        term: &str,
+        min_similarity: f32,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `handleBareFuzzy(field, fuzzySlop, termImage)`: `fuzzy_slop` is the
+    /// `~` token's image, `~` and what follows it.
+    fn bare_fuzzy(
+        &self,
+        field: Option<&str>,
+        fuzzy_slop: &str,
+        term_image: &str,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+
+    /// `getBooleanQuery(clauses)`.
+    fn boolean_query(
+        &self,
+        clauses: Vec<(Occur, ParsedQuery)>,
+    ) -> Result<Option<ParsedQuery>, QueryParserError>;
+}
 
 /// `QueryParser`: a default field, an analyzer, and the settings of
 /// `QueryParserBase` and `QueryBuilder`.
@@ -460,6 +540,21 @@ impl QueryParser {
     /// # Errors
     /// The `ParseException`, or a runtime exception a query constructor
     /// threw (an invalid regular expression, a negative slop).
+    pub fn parse_with_overrides(
+        &self,
+        query: &str,
+        overrides: &dyn Overrides,
+    ) -> Result<ParsedQuery, QueryParserError> {
+        let mut p = parser::Parser::new(self, query);
+        p.set_overrides(overrides);
+        let mut q = self.parse_top(&mut p, self.field.as_deref(), query)?;
+        if self.complex_phrase_in_order.is_some() {
+            self.resolve_phrases(&mut q)?;
+        }
+        Ok(q)
+    }
+
+    /// `parse(query)`, with a subclass's [`Overrides`].
     pub fn parse(&self, query: &str) -> Result<ParsedQuery, QueryParserError> {
         let mut p = parser::Parser::new(self, query);
         let mut q = self.parse_top(&mut p, self.field.as_deref(), query)?;
