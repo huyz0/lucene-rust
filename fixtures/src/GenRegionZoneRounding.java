@@ -217,10 +217,10 @@ public class GenRegionZoneRounding {
       ZoneId zoneId = ZoneId.of(zone);
       ZoneRules rules = zoneId.getRules();
       List<Long> points = new ArrayList<>();
-      // Around transitions from 1990 to 2030, and the last ones before.
+      // Around transitions from 1990 to 2022 (later rules change with each tz release), and the last ones before.
       long[] around = {-60 * 60_000L, -1L, 0L, 1L, 30 * 60_000L, 90 * 60_000L, 86_400_000L, -86_400_000L, 8 * 86_400_000L};
       Instant t = Instant.parse("1990-01-01T00:00:00Z");
-      Instant end = Instant.parse("2030-01-01T00:00:00Z");
+      Instant end = Instant.parse("2022-12-31T00:00:00Z");
       int taken = 0;
       while (true) {
         ZoneOffsetTransition tr = rules.nextTransition(t);
@@ -245,7 +245,7 @@ public class GenRegionZoneRounding {
         for (long d : new long[] {-1L, 0L, 1L, 3_600_000L}) points.add(t.toEpochMilli() + d);
       }
       for (int i = 0; i < 24; i++) {
-        points.add(-2_208_988_800_000L + (long) (random.nextDouble() * 6.0e12));
+        points.add(-2_208_988_800_000L + (long) (random.nextDouble() * 3.85e12));
       }
       for (int u = 0; u < UNITS.length + INTERVALS.length; u++) {
         GenRegionZoneRounding r =
