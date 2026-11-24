@@ -123,6 +123,14 @@ pub fn resolve(advice: ReadAdvice, len: u64) -> ReadAdvice {
     }
 }
 
+/// Whether a file of `len` bytes is small next to the memory this process
+/// may use ([`crate::directory::memory_available`]: at most an eighth of
+/// it), so reading it in whole ahead of use costs little. `false` when the
+/// memory is unknown.
+pub fn fits_warm(len: u64) -> bool {
+    crate::directory::memory_available().is_some_and(|avail| len <= avail / 8)
+}
+
 /// Replaces the table with `spec`: comma-separated `ext:advice` (or
 /// `ext=advice`) entries, `*` for every other extension. An empty spec
 /// restores the defaults. Extensions not listed and no `*` get

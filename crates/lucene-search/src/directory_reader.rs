@@ -1263,6 +1263,45 @@ impl SegmentReader {
         Ok(f.graph_reader.get_or_init(|| graph).as_ref())
     }
 
+    /// The bytes of this segment's vector files that a search reads at
+    /// random (`.vec`, `.vex`, scalar-quantized and HNSW codes, IVF
+    /// vectors, disk-HNSW nodes) and that are small next to the memory this
+    /// process may use ([`lucene_store::read_advice::fits_warm`]): what the
+    /// open reads in whole when [`lucene_store::read_advice::warm_random`] is
+    /// on. A caller that turned that off hands these ranges, of every
+    /// segment, to [`lucene_store::prefetch`] when its first vector search
+    /// starts, so a store read by range fetches them in one batch and a
+    /// search that never reads a vector fetches none. Empty for a segment
+    /// with no vectors.
+    pub fn vector_warm_ranges(&self) -> Vec<&[u8]> {
+        fn add<'a>(ranges: &mut Vec<&'a [u8]>, input: &'a Input) {
+            let bytes: &[u8] = input;
+            if !bytes.is_empty() && lucene_store::read_advice::fits_warm(bytes.len() as u64) {
+                ranges.push(bytes);
+            }
+        }
+        let mut ranges: Vec<&[u8]> = Vec::new();
+        for files in &self.vectors {
+            add(&mut ranges, &files.data);
+            if let Some(index) = &files.index {
+                add(&mut ranges, index);
+            }
+            if let Some(scalar) = &files.scalar_quantized {
+                add(&mut ranges, &scalar.data);
+            }
+            if let Some(codes) = &files.hnsw_codes {
+                add(&mut ranges, &codes.data);
+            }
+            if let Some(ivf) = &files.ivf {
+                add(&mut ranges, &ivf.vectors);
+            }
+            if let Some(disk) = &files.disk_hnsw {
+                add(&mut ranges, &disk.nodes);
+            }
+        }
+        ranges
+    }
+
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
     /// segment's KNN vectors (`.vec`/`.vemf`), `None` when it has none.
     ///
