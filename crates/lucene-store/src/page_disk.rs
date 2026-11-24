@@ -49,11 +49,26 @@ struct Slot {
     generation: u16,
     /// CLOCK's reference bit (bit 0), pinned (bit 1), being written (bit 2).
     flags: u8,
+    /// Reads since the page was stored, up to `u8::MAX`.
+    hits: u8,
 }
 
 const REFERENCED: u8 = 1;
 const PINNED: u8 = 2;
 const WRITING: u8 = 4;
+
+/// A cached page, as listed by [`DiskTier::resident`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resident {
+    /// The file's cache key.
+    pub key: Arc<str>,
+    /// The page of that file.
+    pub page: u64,
+    /// Bytes stored.
+    pub len: u32,
+    /// Reads since it was stored, up to `u8::MAX`.
+    pub hits: u8,
+}
 
 /// A file the tier has seen: its page-to-slot table.
 struct FileSlots {
@@ -238,11 +253,65 @@ impl DiskTier {
     }
 
     pub(crate) fn get(&self, key: &Arc<str>, page: u64) -> Option<Arc<[u8]>> {
+        self.read(key, page, true)
+    }
+
+    /// The bytes of a cached page, without counting a read or sparing the
+    /// page from eviction: for a page handed to another node.
+    pub(crate) fn peek(&self, key: &str, page: u64) -> Option<Arc<[u8]>> {
+        let key: Arc<str> = {
+            let st = lock_ignoring_poison(&self.state);
+            Arc::clone(st.ids.get_key_value(key)?.0)
+        };
+        self.read(&key, page, false)
+    }
+
+    /// Up to `limit` cached pages of files whose key starts with `prefix`,
+    /// the most read first (ties by file and page).
+    pub(crate) fn resident(&self, prefix: &str, limit: usize) -> Vec<Resident> {
+        let st = lock_ignoring_poison(&self.state);
+        let mut out: Vec<Resident> = Vec::new();
+        for (key, id) in st.ids.iter().filter(|(k, _)| k.starts_with(prefix)) {
+            let Some(file) = st.files.get(id) else {
+                continue;
+            };
+            for (page, &slot) in file.pages.iter().enumerate() {
+                if slot == NONE {
+                    continue;
+                }
+                let Some(rec) = st
+                    .slot(slot)
+                    .filter(|r| r.file == *id && r.flags & WRITING == 0)
+                else {
+                    continue;
+                };
+                out.push(Resident {
+                    key: Arc::clone(key),
+                    page: page as u64,
+                    len: rec.len,
+                    hits: rec.hits,
+                });
+            }
+        }
+        out.sort_by(|a, b| {
+            b.hits
+                .cmp(&a.hits)
+                .then_with(|| a.key.cmp(&b.key))
+                .then(a.page.cmp(&b.page))
+        });
+        out.truncate(limit);
+        out
+    }
+
+    fn read(&self, key: &Arc<str>, page: u64, count: bool) -> Option<Arc<[u8]>> {
         let (slot, generation, len) = {
             let mut st = lock_ignoring_poison(&self.state);
             let slot = Self::slot_of(&st, key, page)?;
             let rec = st.slot_mut(slot)?;
-            rec.flags |= REFERENCED;
+            if count {
+                rec.flags |= REFERENCED;
+                rec.hits = rec.hits.saturating_add(1);
+            }
             (slot, rec.generation, rec.len)
         };
         let mut buf = vec![0u8; len as usize];
@@ -289,6 +358,7 @@ impl DiskTier {
             rec.len = len;
             rec.generation = rec.generation.wrapping_add(1);
             rec.flags = WRITING | if pinned { PINNED } else { 0 };
+            rec.hits = 0;
             let generation = rec.generation;
             st.held = st.held.saturating_add(u64::from(self.class_len[class]));
             (slot, id, generation)
