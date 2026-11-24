@@ -29,6 +29,7 @@ use crate::error::{Error, Result};
 use crate::fetch_budget::{FetchBudget, FetchPermit};
 use crate::lock::lock_ignoring_poison;
 use crate::page_disk::DiskTier;
+pub use crate::page_disk::Resident as ResidentPage;
 
 /// How a stored file maps onto decoded bytes, unit by unit: stored unit `i`
 /// is `stored_unit` bytes at `origin + i * stored_unit` (the last one
@@ -616,6 +617,36 @@ impl PageCache {
             heap_open_bytes: self.heap_open.load(Ordering::Relaxed),
             heap_opens: c.heap_opens.load(Ordering::Relaxed),
             demand_paged_opens: c.demand_paged_opens.load(Ordering::Relaxed),
+        }
+    }
+
+    /// For each of `prefixes`, up to `limit` pages held in the disk tier for
+    /// files whose cache key starts with it, the most read first, taken in
+    /// one pass over the tier. Empty lists without a disk tier. A file
+    /// matching several prefixes is listed under the first.
+    pub fn resident_pages(&self, prefixes: &[&str], limit: usize) -> Vec<Vec<ResidentPage>> {
+        self.disk.as_ref().map_or_else(
+            || prefixes.iter().map(|_| Vec::new()).collect(),
+            |d| d.resident(prefixes, limit),
+        )
+    }
+
+    /// The stored bytes of page `page` of the file with cache key `key`, if
+    /// the disk tier holds it. Not a read: it neither counts toward the
+    /// page's hits nor spares it from eviction, and it never fetches.
+    pub fn peek_page(&self, key: &str, page: u64) -> Option<Arc<[u8]>> {
+        self.disk.as_ref()?.peek(key, page)
+    }
+
+    /// Stores `bytes` as page `page` of the file with cache key `key`, as
+    /// if it had been fetched: for a page another node held. A page already
+    /// held, one too large for a slot, or a cache with no disk tier is left
+    /// as it is. The caller vouches that the bytes are the file's stored
+    /// bytes at that page: a file's key names its length, and a blob is
+    /// immutable, so they are the same on every node.
+    pub fn insert_page(&self, key: &str, page: u64, bytes: &[u8]) {
+        if let Some(d) = &self.disk {
+            d.put(&Arc::from(key), page, bytes);
         }
     }
 
