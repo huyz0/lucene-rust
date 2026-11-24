@@ -253,6 +253,7 @@ pub fn date_rounding(c: &mut Cursor<'_>) -> Result<DateRounding, Status> {
     Ok(DateRounding {
         kind,
         zone_ms,
+        region: None,
         offset,
     })
 }

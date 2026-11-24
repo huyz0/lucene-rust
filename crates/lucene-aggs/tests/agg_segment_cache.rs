@@ -183,6 +183,7 @@ fn date_histogram(interval: i64, subs: Vec<AggNode>) -> AggNode {
         rounding: DateRounding {
             kind: RoundingKind::Interval(interval),
             zone_ms: 0,
+            region: None,
             offset: 0,
         },
         hard_bounds: (None, None),

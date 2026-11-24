@@ -138,6 +138,9 @@ zstd-safe = { version = "7", default-features = false, features = ["std"] }
 unicode-segmentation = "1"
 rayon = "1"
 proptest = "1"
+# IANA time zone rules (`lucene-aggs`' region-zone `date_histogram` rounding),
+# with the tz database bundled so no host tzdata is read.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 criterion = "0.5"
 
 # The "arithmetic on a value read off disk" gate.

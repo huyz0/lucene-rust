@@ -530,6 +530,7 @@ fn check_buckets(pair: &Pair) {
         rounding: DateRounding {
             kind,
             zone_ms,
+            region: None,
             offset,
         },
         hard_bounds,
