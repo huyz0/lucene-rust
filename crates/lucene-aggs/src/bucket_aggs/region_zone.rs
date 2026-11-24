@@ -79,7 +79,7 @@ impl RegionZone {
     }
 
     /// `ZoneRules.getOffset(Instant)`, in milliseconds.
-    pub(super) fn offset_ms(&self, utc: i64) -> i64 {
+    pub fn offset_ms(&self, utc: i64) -> i64 {
         i64::from(self.0.tz.to_offset(timestamp(utc)).seconds()) * 1000
     }
 
