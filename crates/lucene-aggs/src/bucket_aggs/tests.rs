@@ -31,6 +31,7 @@ fn date_grid_matches_rounding() {
                 let r = DateRounding {
                     kind,
                     zone_ms,
+                    region: None,
                     offset,
                 };
                 let first = 1_735_700_000_000_i64;
@@ -57,6 +58,7 @@ fn date_grid_matches_rounding() {
     let month = DateRounding {
         kind: RoundingKind::Unit(DateUnit::Month),
         zone_ms: 0,
+        region: None,
         offset: 0,
     };
     assert!(DateGrid::new(&month, 1_735_700_000_000).is_none());
@@ -605,6 +607,7 @@ fn calendar_units_round_as_opensearch_does() {
     let r = |unit| DateRounding {
         kind: RoundingKind::Unit(unit),
         zone_ms: 0,
+        region: None,
         offset: 0,
     };
     assert_eq!(r(DateUnit::Second).round(t), t);
@@ -669,6 +672,7 @@ fn intervals_zones_and_offsets_round_as_opensearch_does() {
     let fixed = DateRounding {
         kind: RoundingKind::Interval(90 * 60_000),
         zone_ms: 0,
+        region: None,
         offset: 17 * 60_000,
     };
     let v = t - 17 * 60_000;
@@ -678,6 +682,7 @@ fn intervals_zones_and_offsets_round_as_opensearch_does() {
     let neg = DateRounding {
         kind: RoundingKind::Interval(1_000),
         zone_ms: 0,
+        region: None,
         offset: 0,
     };
     assert_eq!(neg.round(-1), -1_000);
@@ -686,12 +691,14 @@ fn intervals_zones_and_offsets_round_as_opensearch_does() {
     let india = DateRounding {
         kind: RoundingKind::Unit(DateUnit::Day),
         zone_ms: 19_800_000,
+        region: None,
         offset: 0,
     };
     assert_eq!(india.round(t), 1_699_986_600_000);
     let hour = DateRounding {
         kind: RoundingKind::Unit(DateUnit::Hour),
         zone_ms: 19_800_000,
+        region: None,
         offset: 0,
     };
     assert_eq!(hour.round(t), 1_699_999_200_000 - 1_800_000);
@@ -716,6 +723,7 @@ fn a_bucket_is_the_run_of_values_rounding_the_same() {
             let r = DateRounding {
                 kind,
                 zone_ms,
+                region: None,
                 offset,
             };
             for _ in 0..500 {
@@ -739,12 +747,14 @@ fn a_bucket_is_the_run_of_values_rounding_the_same() {
     let day = DateRounding {
         kind: RoundingKind::Unit(DateUnit::Day),
         zone_ms: 0,
+        region: None,
         offset: 0,
     };
     assert_eq!(day.bucket(i64::MAX - 5), None);
     let far = DateRounding {
         kind: RoundingKind::Unit(DateUnit::Day),
         zone_ms: 5,
+        region: None,
         offset: i64::MIN,
     };
     assert_eq!(far.bucket(0), None);
@@ -1445,6 +1455,7 @@ fn counting_buckets_from_points_matches_bucketing_each_value() {
         let rounding = DateRounding {
             kind: RoundingKind::Interval(interval),
             zone_ms: 0,
+            region: None,
             offset: 3,
         };
         for bounds in [(None, None), (Some(0), Some(20_000))] {
@@ -1544,6 +1555,7 @@ fn counting_month_buckets_in_a_zone_from_points_matches_bucketing_each_value() {
         let rounding = DateRounding {
             kind: RoundingKind::Unit(DateUnit::Month),
             zone_ms,
+            region: None,
             offset: 0,
         };
         let mid = rounding.round(values[5000]);
@@ -1596,6 +1608,7 @@ fn date_histograms_bucket_each_rounded_value_once() {
             let rounding = DateRounding {
                 kind,
                 zone_ms: 0,
+                region: None,
                 offset: 3,
             };
             for bounds in [(None, None), (Some(0), Some(500))] {
@@ -1651,6 +1664,7 @@ fn windows_answer_what_documents_one_at_a_time_answer() {
     let rounding = DateRounding {
         kind: RoundingKind::Interval(7),
         zone_ms: 0,
+        region: None,
         offset: 3,
     };
     let date = |field: &str, subs| AggNode::DateHistogram {
@@ -3646,6 +3660,7 @@ fn calendar_days_answer_the_buckets_put_in() {
         let r = DateRounding {
             kind: RoundingKind::Unit(DateUnit::Month),
             zone_ms: shift,
+            region: None,
             offset: 0,
         };
         let mut days = CalendarDays::default();
@@ -3743,4 +3758,121 @@ fn a_keyword_cardinality_over_whole_segments_equals_the_live_terms() {
             );
         }
     }
+}
+
+fn region(id: &str) -> RegionZone {
+    RegionZone::named(id).unwrap()
+}
+
+/// A region zone is named as the tz database spells it: a fixed offset, a
+/// misspelt case or an unknown id is not one.
+#[test]
+fn region_zones_are_named_as_the_tz_database_spells_them() {
+    let paris = region("Europe/Paris");
+    assert_eq!(paris.id(), "Europe/Paris");
+    assert_eq!(paris, region("Europe/Paris"));
+    assert_ne!(paris, region("America/New_York"));
+    assert_eq!(format!("{paris:?}"), "RegionZone(Europe/Paris)");
+    for bad in ["europe/paris", "Europe/Nowhere", "+02:00", "UTC+2", ""] {
+        assert!(RegionZone::named(bad).is_none(), "{bad:?}");
+    }
+    assert_eq!(paris.offset_ms(1_700_000_000_000), 3_600_000);
+    assert_eq!(paris.offset_ms(1_690_000_000_000), 7_200_000);
+    // Dates past the tz database's range take its nearest rules.
+    assert_eq!(
+        paris.offset_ms(i64::MAX),
+        paris.offset_ms(253_402_207_199_999)
+    );
+    assert_eq!(
+        paris.offset_ms(i64::MIN),
+        paris.offset_ms(-377_705_116_800_000)
+    );
+}
+
+/// A day is 23 hours long when the clocks go forward and 25 when they go
+/// back; a day, week, month and hour in Paris start where the local clock
+/// says, and an offset shifts them.
+#[test]
+fn region_zone_buckets_follow_the_clock() {
+    const H: i64 = 3_600_000;
+    let paris = region("Europe/Paris");
+    let day =
+        |utc| DateRounding::in_region(RoundingKind::Unit(DateUnit::Day), paris, 0).bucket(utc);
+    // 2021-03-28 (spring forward): midnight CET is 2021-03-27T23:00Z.
+    let spring = 1_616_886_000_000;
+    assert_eq!(day(spring + 5 * H), Some((spring, spring + 23 * H)));
+    // 2021-10-31 (fall back): midnight CEST is 2021-10-30T22:00Z.
+    let fall = 1_635_631_200_000;
+    assert_eq!(day(fall + 5 * H), Some((fall, fall + 25 * H)));
+    // An ordinary day.
+    let (f, t) = day(fall - 30 * H).unwrap();
+    assert_eq!(t - f, 24 * H);
+    let month = DateRounding::in_region(RoundingKind::Unit(DateUnit::Month), paris, 0);
+    // October 2021 in Paris starts at 2021-09-30T22:00Z and has 745 hours.
+    let oct = 1_633_039_200_000;
+    assert_eq!(month.bucket(fall), Some((oct, oct + 745 * H)));
+    // A 3-hour offset moves the day to start at 03:00 local.
+    let shifted = DateRounding::in_region(RoundingKind::Unit(DateUnit::Day), paris, 3 * H);
+    assert_eq!(shifted.round(spring + 5 * H), spring + 3 * H);
+    assert_eq!(shifted.bucket(spring + 5 * H).unwrap().0, spring + 3 * H);
+    // A bucket that overflows is no bucket.
+    assert_eq!(month.bucket(i64::MAX), None);
+    assert_eq!(shifted.bucket(i64::MIN), None);
+    // A region zone has no uniform grid and no calendar cache.
+    assert!(DateGrid::new(&shifted, spring).is_none());
+}
+
+/// Counting a region-zone day histogram from the points tree gives the
+/// buckets of rounding each value, across both daylight-saving changes.
+#[test]
+fn counting_region_zone_buckets_from_points_matches_bucketing_each_value() {
+    use lucene_index::document::{Document, LongPoint};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    let start = 1_609_459_200_000_i64; // 2021-01-01T00:00Z
+    let mut values = Vec::new();
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(1024.0).unwrap();
+        for i in 0..9_000i64 {
+            let v = start + i * 3_600_000 * 11 / 5 + (i % 3) * 60_000;
+            values.push(v);
+            let mut d = Document::new();
+            d.add(LongPoint::new("ts", &[v]).unwrap());
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let mut counted = 0;
+    for zone in ["Europe/Paris", "America/Sao_Paulo", "Australia/Lord_Howe"] {
+        for unit in [DateUnit::Day, DateUnit::Hour, DateUnit::Month] {
+            let rounding = DateRounding::in_region(RoundingKind::Unit(unit), region(zone), 0);
+            let node = AggNode::DateHistogram {
+                script: None,
+                missing: None,
+                field: "ts".to_string(),
+                rounding,
+                hard_bounds: (None, None),
+                subs: vec![],
+            };
+            let mut want: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
+            for &v in &values {
+                *want.entry(rounding.round(v)).or_default() += 1;
+            }
+            // The walk counts from the points or declines; where it counts, it is exact.
+            if let Some(PointCounts::Keyed(got)) =
+                count_from_points(&node, &segments[0], None).unwrap()
+            {
+                assert_eq!(got, want.into_iter().collect::<Vec<_>>(), "{zone} {unit:?}");
+                counted += 1;
+            }
+        }
+    }
+    assert!(counted > 0, "the walk counted no region-zone histogram");
 }
