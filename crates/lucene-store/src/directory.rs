@@ -249,7 +249,7 @@ impl Input {
     pub fn advise_random_and_warm(&self) {
         self.advise_random();
         let len = self.len() as u64;
-        if len > 0 && memory_available().is_some_and(|avail| len <= avail / 8) {
+        if len > 0 && crate::read_advice::fits_warm(len) {
             let _ = self.will_need(0, self.len());
         }
     }
