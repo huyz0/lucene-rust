@@ -165,7 +165,7 @@ fn a_page_counts_its_reads_and_a_peek_counts_none() {
     d.get(&a, 1).unwrap();
     assert_eq!(&d.peek(&a, 0).unwrap()[..], &[1; 10][..]);
     assert!(d.peek(&a, 7).is_none() && d.peek(&key("z"), 0).is_none());
-    let hot = d.resident("a/", 10);
+    let hot = d.resident(&["a/"], 10).remove(0);
     let seen: Vec<(u64, u32, u8)> = hot.iter().map(|p| (p.page, p.len, p.hits)).collect();
     assert_eq!(
         seen,
@@ -173,9 +173,9 @@ fn a_page_counts_its_reads_and_a_peek_counts_none() {
         "hottest first, a peek is no read"
     );
     assert!(hot.iter().all(|p| &*p.key == "a/1"));
-    assert_eq!(d.resident("a/", 1).len(), 1, "bounded by the limit");
-    assert_eq!(d.resident("b/", 10).len(), 1);
-    assert!(d.resident("c/", 10).is_empty());
+    assert_eq!(d.resident(&["a/"], 1)[0].len(), 1, "bounded by the limit");
+    assert_eq!(d.resident(&["b/"], 10)[0].len(), 1);
+    assert!(d.resident(&["c/"], 10)[0].is_empty());
 }
 
 #[test]
@@ -187,8 +187,29 @@ fn reads_count_up_to_a_ceiling_and_a_reused_slot_starts_over() {
     for _ in 0..300 {
         d.get(&a, 0).unwrap();
     }
-    assert_eq!(d.resident("a", 1)[0].hits, u8::MAX);
+    assert_eq!(d.resident(&["a"], 1)[0][0].hits, u8::MAX);
     d.forget_prefix("a");
     d.put(&b, 0, &[2; 10]);
-    assert_eq!(d.resident("b", 1)[0].hits, 0, "a new page starts uncounted");
+    assert_eq!(
+        d.resident(&["b"], 1)[0][0].hits,
+        0,
+        "a new page starts uncounted"
+    );
+}
+
+#[test]
+fn several_prefixes_are_listed_in_one_pass_each_with_its_own_limit() {
+    let tmp = lucene_util::test_support::TempDir::new("page-disk-prefixes");
+    let d = DiskTier::open(&tmp.path().join("t"), 8 * 4096, 4096).unwrap();
+    for (k, pages) in [("a/1", 3), ("b/1", 2), ("c/1", 1)] {
+        for p in 0..pages {
+            d.put(&key(k), p, &[1; 10]);
+        }
+    }
+    d.get(&key("a/1"), 2).unwrap();
+    let listed = d.resident(&["a/", "b/", "z/"], 2);
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[0].iter().map(|p| p.page).collect::<Vec<_>>(), [2, 0]);
+    assert_eq!(listed[1].len(), 2);
+    assert!(listed[2].is_empty(), "c/ was not asked for");
 }

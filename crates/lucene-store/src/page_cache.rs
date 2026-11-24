@@ -620,12 +620,15 @@ impl PageCache {
         }
     }
 
-    /// Up to `limit` pages held in the disk tier for files whose cache key
-    /// starts with `prefix`, the most read first. Empty without a disk tier.
-    pub fn resident_pages(&self, prefix: &str, limit: usize) -> Vec<ResidentPage> {
-        self.disk
-            .as_ref()
-            .map_or_else(Vec::new, |d| d.resident(prefix, limit))
+    /// For each of `prefixes`, up to `limit` pages held in the disk tier for
+    /// files whose cache key starts with it, the most read first, taken in
+    /// one pass over the tier. Empty lists without a disk tier. A file
+    /// matching several prefixes is listed under the first.
+    pub fn resident_pages(&self, prefixes: &[&str], limit: usize) -> Vec<Vec<ResidentPage>> {
+        self.disk.as_ref().map_or_else(
+            || prefixes.iter().map(|_| Vec::new()).collect(),
+            |d| d.resident(prefixes, limit),
+        )
     }
 
     /// The stored bytes of page `page` of the file with cache key `key`, if

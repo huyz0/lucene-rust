@@ -266,12 +266,16 @@ impl DiskTier {
         self.read(&key, page, false)
     }
 
-    /// Up to `limit` cached pages of files whose key starts with `prefix`,
-    /// the most read first (ties by file and page).
-    pub(crate) fn resident(&self, prefix: &str, limit: usize) -> Vec<Resident> {
+    /// For each of `prefixes`, up to `limit` cached pages of files whose key
+    /// starts with it, the most read first (ties by file and page); one
+    /// pass over the tier under one hold of its lock.
+    pub(crate) fn resident(&self, prefixes: &[&str], limit: usize) -> Vec<Vec<Resident>> {
         let st = lock_ignoring_poison(&self.state);
-        let mut out: Vec<Resident> = Vec::new();
-        for (key, id) in st.ids.iter().filter(|(k, _)| k.starts_with(prefix)) {
+        let mut out: Vec<Vec<Resident>> = prefixes.iter().map(|_| Vec::new()).collect();
+        for (key, id) in &st.ids {
+            let Some(at) = prefixes.iter().position(|p| key.starts_with(p)) else {
+                continue;
+            };
             let Some(file) = st.files.get(id) else {
                 continue;
             };
@@ -285,7 +289,7 @@ impl DiskTier {
                 else {
                     continue;
                 };
-                out.push(Resident {
+                out[at].push(Resident {
                     key: Arc::clone(key),
                     page: page as u64,
                     len: rec.len,
@@ -293,13 +297,15 @@ impl DiskTier {
                 });
             }
         }
-        out.sort_by(|a, b| {
-            b.hits
-                .cmp(&a.hits)
-                .then_with(|| a.key.cmp(&b.key))
-                .then(a.page.cmp(&b.page))
-        });
-        out.truncate(limit);
+        for pages in &mut out {
+            pages.sort_by(|a, b| {
+                b.hits
+                    .cmp(&a.hits)
+                    .then_with(|| a.key.cmp(&b.key))
+                    .then(a.page.cmp(&b.page))
+            });
+            pages.truncate(limit);
+        }
         out
     }
 
