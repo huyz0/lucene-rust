@@ -1,6 +1,7 @@
 //! `Rounding.Prepared` for a `date_histogram` in a fixed-offset or region zone.
 
-use super::region_zone::RegionZone;
+mod region_zone;
+pub use region_zone::RegionZone;
 
 /// A calendar unit of `Rounding.DateTimeUnit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +218,14 @@ impl DateRounding {
             region: Some(region),
             offset,
         }
+    }
+
+    /// The shift of the zone's calendar days from the rounding's: none for a
+    /// region zone, whose days differ in width.
+    pub(super) fn calendar_shift(&self) -> Option<i64> {
+        self.region
+            .is_none()
+            .then(|| self.zone_ms.checked_sub(self.offset))?
     }
 
     /// `utc`'s bucket: its rounded value and the first value past it that

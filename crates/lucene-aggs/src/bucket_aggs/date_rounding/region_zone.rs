@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 
-use super::date_rounding::{DateUnit, RoundingKind};
+use super::{DateUnit, RoundingKind};
 
 /// A zone's rules, kept for the life of the process: a handle is `Copy`, and
 /// the table holds one entry for each id ever asked for, which is at most the
