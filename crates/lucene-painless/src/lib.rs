@@ -9,6 +9,7 @@ pub mod check;
 pub mod compare;
 pub mod compile;
 pub mod def;
+pub mod front;
 pub mod ir;
 pub mod jmap;
 pub mod lambda;
