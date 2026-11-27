@@ -188,6 +188,38 @@ impl SegScanExec {
             props,
         })
     }
+
+    /// This scan's predicates, in the order the plan holds them.
+    pub fn preds(&self) -> &[Pred] {
+        &self.preds
+    }
+
+    /// The same scan with every predicate literal that `lookup` knows replaced
+    /// by what it returns; also how many were replaced.
+    pub fn bind(&self, lookup: &dyn Fn(&str) -> Option<String>) -> (SegScanExec, usize) {
+        let mut replaced = 0;
+        let preds = self
+            .preds
+            .iter()
+            .map(|p| match lookup(p.literal()) {
+                Some(v) => {
+                    replaced += 1;
+                    p.with_literal(&v)
+                }
+                None => p.clone(),
+            })
+            .collect();
+        let scan = SegScanExec {
+            snapshot: self.snapshot.clone(),
+            projection: self.projection.clone(),
+            preds,
+            fetch: self.fetch,
+            groups: self.groups.clone(),
+            schema: self.schema.clone(),
+            props: self.props.clone(),
+        };
+        (scan, replaced)
+    }
 }
 
 impl DisplayAs for SegScanExec {

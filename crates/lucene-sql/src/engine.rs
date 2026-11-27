@@ -9,6 +9,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::error::{Error, Result};
+use crate::plan_cache::PlanCache;
 use crate::pred::{knn_udf, match_text_udf};
 use crate::provider::LuceneTable;
 use crate::router::Router;
@@ -26,6 +27,9 @@ pub struct SqlConfig {
     pub worker_threads: usize,
     /// Scan partitions DataFusion plans for.
     pub target_partitions: usize,
+    /// Keep physical plans by statement shape so a repeated shape is not
+    /// planned again.
+    pub plan_cache: bool,
 }
 
 impl Default for SqlConfig {
@@ -35,6 +39,7 @@ impl Default for SqlConfig {
             memory_limit: 512 << 20,
             worker_threads: cpus,
             target_partitions: cpus,
+            plan_cache: true,
         }
     }
 }
@@ -45,6 +50,7 @@ pub struct SqlEngine {
     router: Router,
     ctx: SessionContext,
     runtime: tokio::runtime::Runtime,
+    plans: Option<PlanCache>,
 }
 
 fn read_only() -> SQLOptions {
@@ -90,6 +96,7 @@ impl SqlEngine {
             snapshot,
             ctx,
             runtime,
+            plans: config.plan_cache.then(PlanCache::default),
         })
     }
 
@@ -121,11 +128,30 @@ impl SqlEngine {
         self.standard(sql).await
     }
 
-    /// Runs `sql` through DataFusion only, as the fallback path does.
+    /// How the plan cache has been used (`None` when it is off).
+    pub fn plan_cache_stats(&self) -> Option<crate::plan_cache::PlanCacheStats> {
+        self.plans.as_ref().map(PlanCache::stats)
+    }
+
+    /// Runs `sql` through DataFusion only, as the fallback path does: from a
+    /// cached plan when its shape has one, else planned from the text.
     ///
     /// # Errors
     /// As [`Self::query`].
     pub async fn standard(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        if let Some(plans) = &self.plans {
+            if let Some(batches) = plans.run(&self.ctx, read_only(), sql).await? {
+                return Ok(batches);
+            }
+        }
+        self.uncached(sql).await
+    }
+
+    /// Plans `sql` from its text and runs it, bypassing the plan cache.
+    ///
+    /// # Errors
+    /// As [`Self::query`].
+    pub async fn uncached(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         let df = self.ctx.sql_with_options(sql, read_only()).await?;
         Ok(df.collect().await?)
     }

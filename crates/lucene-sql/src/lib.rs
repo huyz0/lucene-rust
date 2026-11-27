@@ -16,6 +16,7 @@ pub mod engine;
 pub mod error;
 pub mod group;
 pub mod native;
+pub mod plan_cache;
 pub mod pred;
 pub mod provider;
 pub mod router;
