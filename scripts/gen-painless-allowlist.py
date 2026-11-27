@@ -25,8 +25,10 @@ types joined by `,`):
   parent  CHILD PARENT                           every allowlisted class CHILD is assignable to
   ctor    CLASS PARAMS  FILE
   method  CLASS NAME RET PARAMS FLAGS FILE       FLAGS: `static`, `nondeterministic`,
-                                                 `augment=CLASS` (comma joined) or `-`
+                                                 `augment=CLASS`, `inject=N` (parameter N, 1-based, is a
+                                                 constant the compiler passes) (comma joined) or `-`
   field   CLASS NAME TYPE FLAGS FILE             FLAGS: `static`, `final` or `-`
+  iface   CLASS NAME RET PARAMS                  the one abstract method of a functional interface
   import  NAME  RET PARAMS KIND TARGET FILE      static_import: KIND `from_class` or `bound_to`
 """
 import os
@@ -66,6 +68,10 @@ public class Reflect {
     for (int i = 0; i < dims; i++) c = Array.newInstance(c, 0).getClass();
     return c;
   }
+  static String tn(Class<?> c) {
+    if (c.isArray()) return tn(c.getComponentType()) + "[]";
+    return c.getName();
+  }
   public static void main(String[] a) throws Exception {
     BufferedReader r = new BufferedReader(new InputStreamReader(System.in));
     List<String> classes = new ArrayList<>();
@@ -80,6 +86,26 @@ public class Reflect {
     }
     for (String c : cs.keySet()) for (String p : cs.keySet())
       if (!c.equals(p) && cs.get(p).isAssignableFrom(cs.get(c))) System.out.println("parent\t" + c + "\t" + p);
+    for (String n : cs.keySet()) {
+      Class<?> c = cs.get(n);
+      if (!c.isInterface()) continue;
+      Method only = null;
+      int count = 0;
+      for (Method m : c.getMethods()) {
+        if (!Modifier.isAbstract(m.getModifiers())) continue;
+        boolean object = false;
+        try { Object.class.getMethod(m.getName(), m.getParameterTypes()); object = true; } catch (NoSuchMethodException e) { }
+        if (object) continue;
+        boolean dup = false;
+        if (only != null && only.getName().equals(m.getName()) && Arrays.equals(only.getParameterTypes(), m.getParameterTypes())) dup = true;
+        if (!dup) { only = m; count++; }
+      }
+      if (count == 1) {
+        StringBuilder ps = new StringBuilder();
+        for (Class<?> p : only.getParameterTypes()) { if (ps.length() > 0) ps.append(','); ps.append(tn(p)); }
+        System.out.println("iface\t" + n + "\t" + only.getName() + "\t" + tn(only.getReturnType()) + "\t" + ps);
+      }
+    }
     for (String[] q : reqs) {
       Class<?> c = cs.get(q[1]);
       String res = "?";
@@ -170,6 +196,9 @@ def parse(files):
             flags = []
             if "@nondeterministic" in line:
                 flags.append("nondeterministic")
+            inject = re.search(r"@inject_constant\[(\d+)=", line)
+            if inject:
+                flags.append("inject=" + inject.group(1))
             line = re.sub(r"@\w+(\[[^\]]*\])?", "", line).strip()
             if in_imports:
                 m = re.match(r"^(\S+)\s+(\w+)\(([^)]*)\)\s*(from_class|bound_to)\s+(\S+)$", line)
@@ -236,17 +265,19 @@ def reflect(classes, rows):
             check=True,
             cwd=d,
         ).stdout
-    parents, missing, static = [], [], {}
+    parents, missing, static, ifaces = [], [], {}, []
     for line in out.splitlines():
         f = line.split("\t")
         if f[0] == "parent":
             parents.append((f[1], f[2]))
+        elif f[0] == "iface":
+            ifaces.append((f[1], f[2], f[3], f[4]))
         elif f[0] == "missing":
             missing.append(f[1])
         elif f[0] == "static":
             # static, M|F, class, name, [params,] result
             static[(f[1], f[2], f[3], f[4] if f[1] == "M" else "")] = f[-1]
-    return sorted(parents), sorted(missing), static
+    return sorted(parents), sorted(missing), static, sorted(ifaces)
 
 
 def is_static(kind, cls, name, params, static):
@@ -261,7 +292,7 @@ def is_static(kind, cls, name, params, static):
 def render(spi):
     files = read_files(spi)
     classes, rows = parse(files)
-    parents, missing, static = reflect(classes, rows)
+    parents, missing, static, ifaces = reflect(classes, rows)
     methods = []
     for c, name, ret, params, flags, f in rows["method"]:
         fl = [x for x in flags.split(",") if x != "-"]
@@ -278,6 +309,7 @@ def render(spi):
     ]
     out += ["class\t%s\t%s\t%s" % r for r in rows["class"]]
     out += ["parent\t%s\t%s" % r for r in parents]
+    out += ["iface\t%s\t%s\t%s\t%s" % r for r in ifaces]
     out += ["ctor\t%s\t%s\t%s" % r for r in rows["ctor"]]
     out += ["method\t%s\t%s\t%s\t%s\t%s\t%s" % r for r in methods]
     out += ["field\t%s\t%s\t%s\t%s\t%s" % r for r in fields]

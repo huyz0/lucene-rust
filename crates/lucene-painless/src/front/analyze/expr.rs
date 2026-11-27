@@ -1,8 +1,10 @@
 //! Expressions: typing, conversion and the operators.
 
 use super::literal::number;
-use super::ty::{boxed, is_numeric, promote, promote_one, widens, STRING};
+use super::place::PlaceUpdate;
+use super::ty::{boxed, is_numeric, is_primitive, promote, promote_one, unboxed, widens, STRING};
 use super::{compile_error, unsupported, Cx, Res};
+use crate::front::allowlist::Allowlist;
 use crate::front::ast::{self, AssignOp, BinOp, ExprKind, UnOp};
 use crate::ir::{self, Constant, Node};
 use crate::types::{words, DEF};
@@ -13,8 +15,13 @@ pub struct Typed {
     pub ty: String,
 }
 
+const PATTERN: &str = "java.util.regex.Pattern";
+
+/// The compiler's default `regex_limit_factor`, which `FIND` and `MATCH` carry.
+pub(super) const REGEX_LIMIT_FACTOR: i32 = 6;
+
 /// `BinaryMath`'s flag for a compound assignment (`def.rs`'s `COMPOUND`).
-const COMPOUND: i32 = 1 << 1;
+pub(super) const COMPOUND: i32 = 1 << 1;
 
 fn typed(node: Node, ty: &str) -> Typed {
     Typed {
@@ -96,7 +103,11 @@ impl Cx<'_> {
             });
         }
         if from == DEF {
-            return if to_prim || to == STRING {
+            return if to_prim
+                || to == STRING
+                || to.starts_with('[')
+                || Allowlist::get().class(to).is_some()
+            {
                 Ok(cast(DEF, t.node, no_cast()))
             } else {
                 refuse()
@@ -158,6 +169,122 @@ impl Cx<'_> {
         if from == "char" && to == STRING && explicit {
             return Ok(cast("char", t.node, no_cast()));
         }
+        if from_prim
+            || to_prim
+            || (Allowlist::get().class(from).is_some() && Allowlist::get().class(to).is_some())
+        {
+            return self.coerce_class(pos, t, to, explicit);
+        }
+        if from.starts_with('[') && to.starts_with('[') {
+            return unsupported(format!("conversion of [{from}] to [{to}]"));
+        }
+        refuse()
+    }
+
+    /// A conversion with a class on one side: boxing, unboxing, or the
+    /// class hierarchy. What Painless would do and this does not know is
+    /// refused as unsupported, never guessed.
+    fn coerce_class(&self, pos: u32, t: Typed, to: &str, explicit: bool) -> Res<Typed> {
+        let from = t.ty.clone();
+        let al = Allowlist::get();
+        let cast = |extra: ir::Cast, node: Node| {
+            typed(
+                Node::Cast {
+                    ty: to.into(),
+                    cast: Some(ir::Cast {
+                        from: from.clone(),
+                        to: to.into(),
+                        explicit,
+                        ..extra
+                    }),
+                    child: Box::new(node),
+                },
+                to,
+            )
+        };
+        let refuse = || {
+            compile_error(
+                pos,
+                format!(
+                    "cannot cast from [{}] to [{}]",
+                    crate::types::canonical(&from),
+                    crate::types::canonical(to)
+                ),
+            )
+        };
+        if (from == STRING && is_primitive(to)) || (is_primitive(&from) && to == STRING) {
+            return refuse();
+        }
+        if is_primitive(&from) {
+            if let Some(p) = unboxed(to) {
+                let ok = from == p
+                    || widens(&from, p)
+                    || (explicit && is_numeric(&from) && is_numeric(p));
+                return if ok {
+                    Ok(cast(
+                        ir::Cast {
+                            box_to: Some(p.into()),
+                            ..no_cast()
+                        },
+                        t.node,
+                    ))
+                } else {
+                    refuse()
+                };
+            }
+            if al.is_assignable(boxed(&from), to) {
+                return Ok(cast(
+                    ir::Cast {
+                        box_from: Some(from.clone()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ));
+            }
+            return if al.class(to).is_some() && !explicit {
+                refuse()
+            } else {
+                unsupported(format!("cast of [{from}] to [{to}]"))
+            };
+        }
+        if let (Some(p), true) = (unboxed(&from), is_primitive(to)) {
+            let ok = widens(p, to) || (explicit && is_numeric(p) && is_numeric(to));
+            return if ok {
+                Ok(cast(
+                    ir::Cast {
+                        unbox_from: Some(p.into()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ))
+            } else {
+                refuse()
+            };
+        }
+        if is_primitive(to) {
+            return unsupported(format!("cast of [{from}] to [{to}]"));
+        }
+        if let (Some(p), Some(q)) = (unboxed(&from), unboxed(to)) {
+            if is_numeric(p) && is_numeric(q) && p != q && (explicit || widens(p, q)) {
+                return Ok(cast(
+                    ir::Cast {
+                        unbox_from: Some(p.into()),
+                        box_to: Some(q.into()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ));
+            }
+        }
+        if al.is_assignable(&from, to) {
+            return Ok(typed(t.node, to));
+        }
+        if explicit && al.is_assignable(to, &from) {
+            return Ok(cast(no_cast(), t.node));
+        }
+        if explicit {
+            return unsupported(format!("cast of [{from}] to [{to}]"));
+        }
         refuse()
     }
 
@@ -188,6 +315,31 @@ impl Cx<'_> {
                 },
                 STRING,
             ),
+            ExprKind::Regex(pattern, flags) => {
+                let mut bits = 0;
+                for f in flags.chars() {
+                    bits |= match f {
+                        'c' => 128,
+                        'i' => 2,
+                        'l' => 16,
+                        'm' => 8,
+                        's' => 32,
+                        'U' => 256,
+                        'u' => 64,
+                        'x' => 4,
+                        _ => {
+                            return compile_error(e.pos, format!("unknown regex flag [{f}]"));
+                        }
+                    };
+                }
+                typed(
+                    Node::Constant {
+                        ty: PATTERN.into(),
+                        value: Constant::Pattern(pattern.clone(), bits),
+                    },
+                    PATTERN,
+                )
+            }
             ExprKind::Paren(inner) => self.expr(inner)?,
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(ty) => {
@@ -200,6 +352,20 @@ impl Cx<'_> {
                         &ty,
                     )
                 }
+                None if name == "params" => typed(
+                    Node::InvokeCallMember {
+                        ty: "java.util.Map".into(),
+                        member: ir::Member::Local {
+                            name: "getParams".into(),
+                            internal: true,
+                            is_static: false,
+                            params: Vec::new(),
+                            ret: "java.util.Map".into(),
+                        },
+                        args: Vec::new(),
+                    },
+                    "java.util.Map",
+                ),
                 None => return unsupported(format!("variable [{name}]")),
             },
             ExprKind::Unary(UnOp::Minus, inner) => match &inner.kind {
@@ -238,10 +404,48 @@ impl Cx<'_> {
                 prefix: true,
                 inc,
                 target,
-            } => self.incdec(e.pos, *inc, target, true)?,
-            ExprKind::IncDec { .. } => return unsupported("postfix increment as a value"),
+            } => self.incdec(e.pos, *inc, target, true, true)?,
+            ExprKind::IncDec { inc, target, .. } => {
+                self.incdec(e.pos, *inc, target, true, false)?
+            }
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
-            other => return unsupported(kind_name(other)),
+            ExprKind::InstanceOf(inner, ty) => {
+                let instance = super::ty::resolve(ty)?;
+                let t = self.expr(inner)?;
+                if t.ty == "void" || t.ty == "null" {
+                    return compile_error(inner.pos, "instanceof needs a value");
+                }
+                let t = if is_primitive(&t.ty) {
+                    self.coerce(inner.pos, t, "java.lang.Object", false)?
+                } else {
+                    t
+                };
+                typed(
+                    Node::Instanceof {
+                        ty: "boolean".into(),
+                        instance_ty: instance,
+                        child: Box::new(t.node),
+                    },
+                    "boolean",
+                )
+            }
+            ExprKind::NewObject(ty, args) => self.new_object(e.pos, ty, args, true)?,
+            ExprKind::NewArray(ty, dims) => self.new_array(e.pos, ty, dims)?,
+            ExprKind::NewArrayInit(ty, values) => self.new_array_init(e.pos, ty, values)?,
+            ExprKind::Index(recv, index) => self.index_read(recv, index)?,
+            ExprKind::List(values) => self.list_init(values)?,
+            ExprKind::Map(pairs) => self.map_init(pairs)?,
+            ExprKind::Call {
+                recv,
+                name,
+                args,
+                null_safe,
+            } => self.call(e.pos, recv, name, args, *null_safe)?,
+            ExprKind::Field {
+                recv,
+                name,
+                null_safe,
+            } => self.field(e.pos, recv, name, *null_safe)?,
         })
     }
 
@@ -253,10 +457,16 @@ impl Cx<'_> {
                 Ok(self.assign(e.pos, *op, target, value, false)?.node)
             }
             ExprKind::IncDec { inc, target, .. } => {
-                Ok(self.incdec(e.pos, *inc, target, false)?.node)
+                Ok(self.incdec(e.pos, *inc, target, false, true)?.node)
             }
             ExprKind::CallLocal(name, args) => Ok(self.call_local(e.pos, name, args)?.node),
-            ExprKind::Call { .. } => unsupported("method call"),
+            ExprKind::Call {
+                recv,
+                name,
+                args,
+                null_safe,
+            } => Ok(self.call(e.pos, recv, name, args, *null_safe)?.node),
+            ExprKind::NewObject(ty, args) => Ok(self.new_object(e.pos, ty, args, false)?.node),
             _ => compile_error(e.pos, "not a statement"),
         }
     }
@@ -304,6 +514,10 @@ impl Cx<'_> {
     fn conditional(&mut self, c: &ast::Expr, a: &ast::Expr, b: &ast::Expr) -> Res<Typed> {
         let cond = self.cond(c)?;
         let (l, r) = (self.expr(a)?, self.expr(b)?);
+        let plain = |t: &str| is_primitive(t) || matches!(t, DEF | STRING | "null");
+        if l.ty != r.ty && !(plain(&l.ty) && plain(&r.ty)) {
+            return unsupported("conditional of different classes");
+        }
         let ty = if l.ty == r.ty {
             l.ty.clone()
         } else if l.ty == DEF || r.ty == DEF {
@@ -423,10 +637,88 @@ impl Cx<'_> {
                     ),
                 }
             }
-            B::Lsh | B::Rsh | B::Ush => unsupported("shift operators"),
-            B::Find | B::Match => unsupported("regex operators"),
-            B::Elvis => unsupported("elvis operator"),
+            B::Lsh | B::Rsh | B::Ush => self.shift(pos, op, l, r, flags),
+            B::Find | B::Match => {
+                let l = self.coerce(pos, l, STRING, false)?;
+                let r = self.coerce(pos, r, PATTERN, false)?;
+                let name = if op == B::Find { "FIND" } else { "MATCH" };
+                Ok(typed(
+                    Node::BinaryMath {
+                        ty: "boolean".into(),
+                        op: name.into(),
+                        binary_ty: "boolean".into(),
+                        shift_ty: None,
+                        flags,
+                        regex_limit: REGEX_LIMIT_FACTOR,
+                        left: Box::new(l.node),
+                        right: Box::new(r.node),
+                    },
+                    "boolean",
+                ))
+            }
+            B::Elvis => {
+                let ty = if l.ty == r.ty || r.ty == "null" {
+                    l.ty.clone()
+                } else if l.ty == DEF || r.ty == DEF {
+                    DEF.into()
+                } else {
+                    return unsupported("elvis of different classes");
+                };
+                if is_primitive(&ty) || ty == "null" {
+                    return compile_error(pos, "elvis cannot apply to a primitive");
+                }
+                let l = self.coerce(pos, l, &ty, false)?;
+                let r = self.coerce(pos, r, &ty, false)?;
+                Ok(typed(
+                    Node::Elvis {
+                        ty: ty.clone(),
+                        left: Box::new(l.node),
+                        right: Box::new(r.node),
+                    },
+                    &ty,
+                ))
+            }
         }
+    }
+
+    /// `<<`, `>>`, `>>>`: the left operand is promoted to `int` or `long`
+    /// and the distance to one of them on its own; `def` on either side
+    /// makes both `def`.
+    fn shift(&mut self, pos: u32, op: BinOp, l: Typed, r: Typed, flags: i32) -> Res<Typed> {
+        let name = match op {
+            BinOp::Lsh => "LSH",
+            BinOp::Rsh => "RSH",
+            _ => "USH",
+        };
+        let (pl, pr) = (promote_one(&l.ty), promote_one(&r.ty));
+        let int_or_long = |t: &Option<String>| {
+            t.as_deref()
+                .filter(|t| matches!(*t, "int" | "long" | DEF))
+                .map(str::to_string)
+        };
+        let (Some(pl), Some(pr)) = (int_or_long(&pl), int_or_long(&pr)) else {
+            return compile_error(pos, format!("cannot shift [{}] by [{}]", l.ty, r.ty));
+        };
+        let (bt, st) = if pl == DEF || pr == DEF {
+            (DEF.to_string(), DEF.to_string())
+        } else {
+            (pl, pr)
+        };
+        let l = self.coerce(pos, l, &bt, false)?;
+        let r = self.coerce(pos, r, &st, false)?;
+        Ok(typed(
+            Node::BinaryMath {
+                ty: bt.clone(),
+                op: name.into(),
+                binary_ty: bt.clone(),
+                shift_ty: Some(st),
+                flags,
+                regex_limit: 0,
+                left: Box::new(l.node),
+                right: Box::new(r.node),
+            },
+            &bt,
+        ))
     }
 
     fn math(&mut self, pos: u32, op: &str, p: &str, l: Typed, r: Typed, flags: i32) -> Res<Typed> {
@@ -473,19 +765,20 @@ impl Cx<'_> {
     }
 
     fn equality(&mut self, pos: u32, op: BinOp, l: Typed, r: Typed) -> Res<Typed> {
-        let reference = matches!(op, BinOp::EqRef | BinOp::NeRef);
         let objects = |t: &Typed| t.ty == STRING || t.ty == "null";
         if objects(&l) && objects(&r) {
             return self.compare(pos, op, "java.lang.Object", l, r);
-        }
-        if reference {
-            return unsupported("reference equality outside strings");
         }
         if l.ty == DEF || r.ty == DEF {
             return self.compare(pos, op, DEF, l, r);
         }
         if l.ty == "boolean" && r.ty == "boolean" {
             return self.compare(pos, op, "boolean", l, r);
+        }
+        if !(is_numeric(&l.ty) && is_numeric(&r.ty))
+            && (!is_primitive(&l.ty) || !is_primitive(&r.ty))
+        {
+            return self.compare(pos, op, "java.lang.Object", l, r);
         }
         match promote(&l.ty, &r.ty) {
             Some(p) => self.compare(pos, op, &p, l, r),
@@ -501,6 +794,14 @@ impl Cx<'_> {
         value: &ast::Expr,
         want_value: bool,
     ) -> Res<Typed> {
+        if let Some(place) = self.place_of(target)? {
+            let v = self.expr(value)?;
+            let update = match op {
+                AssignOp::Set => PlaceUpdate::Set(v, value.pos),
+                AssignOp::With(b) => PlaceUpdate::With(b, v),
+            };
+            return self.assign_place(pos, place, update, want_value);
+        }
         let (name, ty) = self.target(target)?;
         let v = self.expr(value)?;
         let child = match op {
@@ -520,15 +821,36 @@ impl Cx<'_> {
         Ok(self.store(&name, &ty, child, want_value))
     }
 
-    fn incdec(&mut self, pos: u32, inc: bool, target: &ast::Expr, want_value: bool) -> Res<Typed> {
+    /// `++x`, `x++`, `--x`, `x--`; a postfix one used for its value leaves
+    /// the variable's old value, kept by a `Dup` before the arithmetic.
+    fn incdec(
+        &mut self,
+        pos: u32,
+        inc: bool,
+        target: &ast::Expr,
+        want_value: bool,
+        prefix: bool,
+    ) -> Res<Typed> {
+        if let Some(place) = self.place_of(target)? {
+            return self.assign_place(pos, place, PlaceUpdate::Step { inc, prefix }, want_value);
+        }
         let (name, ty) = self.target(target)?;
-        let load = typed(
+        let mut load = typed(
             Node::LoadVariable {
                 ty: ty.clone(),
                 name: name.clone(),
             },
             &ty,
         );
+        let post = want_value && !prefix;
+        if post {
+            load.node = Node::Dup {
+                ty: ty.clone(),
+                size: words(&ty) as i32,
+                depth: 0,
+                child: Box::new(load.node),
+            };
+        }
         let one = typed(
             Node::Constant {
                 ty: "int".into(),
@@ -539,6 +861,17 @@ impl Cx<'_> {
         let op = if inc { BinOp::Add } else { BinOp::Sub };
         let r = self.binary(pos, op, load, one, COMPOUND)?;
         let child = self.coerce(pos, r, &ty, true)?;
+        if post {
+            return Ok(typed(
+                Node::StoreVariable {
+                    ty: ty.clone(),
+                    store_ty: ty.clone(),
+                    name,
+                    child: Box::new(child.node),
+                },
+                &ty,
+            ));
+        }
         Ok(self.store(&name, &ty, child, want_value))
     }
 
@@ -594,11 +927,7 @@ impl Cx<'_> {
         }
         let mut lowered = Vec::new();
         for (arg, ty) in args.iter().zip(&sig.params) {
-            let ast::Arg::Expr(e) = arg else {
-                return unsupported("lambda or method reference argument");
-            };
-            let t = self.expr(e)?;
-            lowered.push(self.coerce(e.pos, t, ty, false)?.node);
+            lowered.push(self.arg(arg, ty)?);
         }
         Ok(typed(
             Node::InvokeCallMember {
@@ -636,7 +965,7 @@ fn narrow_to(a: &Typed, b: &Typed) -> Option<String> {
     (fits && b.ty == "int").then(|| a.ty.clone())
 }
 
-fn unparen(e: &ast::Expr) -> &ast::Expr {
+pub(super) fn unparen(e: &ast::Expr) -> &ast::Expr {
     match &e.kind {
         ExprKind::Paren(inner) => unparen(inner),
         _ => e,

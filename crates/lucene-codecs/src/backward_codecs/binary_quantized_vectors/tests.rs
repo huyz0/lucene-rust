@@ -113,7 +113,7 @@ fn write(fields: &[TestField]) -> (Vec<u8>, Vec<u8>) {
             let dp: f32 = centroid.iter().map(|c| c * c).sum();
             meta.write_i32(dp.to_bits() as i32);
         }
-        crate::vectors::write_stored_meta(&mut meta, &mut data, &f.docs, f.max_doc);
+        crate::vectors::write_stored_meta(&mut meta, &mut data, 0, &f.docs, f.max_doc);
     }
     meta.write_i32(-1);
     codec_util::write_footer(&mut meta);

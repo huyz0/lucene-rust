@@ -2,12 +2,18 @@
 //! reads, with every type resolved and every cast explicit, as Painless's
 //! own front end leaves it.
 //!
-//! This covers the core: primitives, `def` and `String`, locals, user
-//! functions, operators and control flow. A construct beyond it is refused
-//! as [`Refusal::Unsupported`] naming it, never mis-lowered.
+//! This covers the core (primitives, `def`, locals, user functions,
+//! operators and control flow) and the allowlisted classes: their types
+//! and boxing, method calls (on `def` by name, on a class by name and
+//! arity, static), static and getter fields. A construct beyond it is
+//! refused as [`Refusal::Unsupported`] naming it, never mis-lowered.
 
+mod call;
 mod expr;
+mod init;
+mod lambda;
 mod literal;
+mod place;
 #[cfg(test)]
 mod tests;
 mod ty;
@@ -59,9 +65,30 @@ struct Signature {
     ret: String,
 }
 
+/// The synthetic functions the lambdas of a script lower to.
+#[derive(Default)]
+pub(super) struct Lambdas {
+    count: std::cell::Cell<usize>,
+    done: std::cell::RefCell<Vec<ir::Function>>,
+}
+
+impl Lambdas {
+    /// The number the next lambda is named by.
+    fn next(&self) -> usize {
+        let n = self.count.get();
+        self.count.set(n + 1);
+        n
+    }
+
+    fn push(&self, f: ir::Function) {
+        self.done.borrow_mut().push(f);
+    }
+}
+
 /// The state while one function lowers.
 pub(super) struct Cx<'a> {
     funcs: &'a HashMap<String, Signature>,
+    lambdas: &'a Lambdas,
     scopes: Vec<HashMap<String, String>>,
     ret: String,
     loops: usize,
@@ -83,10 +110,11 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             return compile_error(f.pos, format!("function [{}] is already defined", f.name));
         }
     }
+    let lambdas = Lambdas::default();
     let mut out = Vec::new();
     for f in &script.functions {
         let sig = funcs[&f.name].clone();
-        let mut cx = Cx::new(&funcs, sig.ret.clone());
+        let mut cx = Cx::new(&funcs, &lambdas, sig.ret.clone());
         for ((_, name), ty) in f.params.iter().zip(&sig.params) {
             cx.declare(f.pos, name, ty)?;
         }
@@ -102,7 +130,7 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         });
     }
-    let mut cx = Cx::new(&funcs, DEF.to_string());
+    let mut cx = Cx::new(&funcs, &lambdas, DEF.to_string());
     let body = cx.body_of(&script.body, true)?;
     out.insert(
         0,
@@ -117,6 +145,7 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         },
     );
+    out.extend(lambdas.done.take());
     Ok(ir::Script {
         functions: out,
         classes: ir::ClassTable::default(),
@@ -125,9 +154,10 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
 }
 
 impl<'a> Cx<'a> {
-    fn new(funcs: &'a HashMap<String, Signature>, ret: String) -> Self {
+    fn new(funcs: &'a HashMap<String, Signature>, lambdas: &'a Lambdas, ret: String) -> Self {
         Cx {
             funcs,
+            lambdas,
             scopes: vec![HashMap::new()],
             ret,
             loops: 0,
@@ -309,9 +339,117 @@ impl<'a> Cx<'a> {
             }
             K::Break => ir::Node::Break,
             K::Continue => ir::Node::Continue,
-            K::Each { .. } => return unsupported("for-each loop"),
-            K::Try { .. } => return unsupported("try"),
-            K::Throw(_) => return unsupported("throw"),
+            K::Each {
+                ty,
+                name,
+                iterable,
+                body,
+            } => self.each(s.pos, ty.as_ref(), name, iterable, body)?,
+            K::Try { body, catches } => {
+                let body = self.block(&body.stmts)?;
+                let mut out = Vec::new();
+                for c in catches {
+                    let exception = ty::resolve(&c.ty)?;
+                    let al = crate::front::allowlist::Allowlist::get();
+                    if exception != "java.lang.Exception"
+                        && !al.is_assignable(&exception, "java.lang.Exception")
+                    {
+                        return compile_error(
+                            c.pos,
+                            format!(
+                                "[{}] is not an exception type",
+                                crate::types::canonical(&exception)
+                            ),
+                        );
+                    }
+                    let body = self.scoped(|cx| {
+                        cx.declare(c.pos, &c.name, &exception)?;
+                        cx.block(&c.body.stmts)
+                    })?;
+                    out.push(ir::Node::Catch {
+                        exception,
+                        symbol: c.name.clone(),
+                        body: Some(Box::new(body)),
+                    });
+                }
+                ir::Node::Try {
+                    body: Box::new(body),
+                    catches: out,
+                }
+            }
+            K::Throw(e) => {
+                let t = self.expr(e)?;
+                let t = self.coerce(e.pos, t, "java.lang.Exception", false)?;
+                ir::Node::Throw(Box::new(t.node))
+            }
+        })
+    }
+
+    /// `for (T x : e)` over an array or an `Iterable` (or a `def`).
+    fn each(
+        &mut self,
+        pos: u32,
+        written: Option<&ast::Type>,
+        name: &str,
+        iterable: &ast::Expr,
+        body: &ast::Stmt,
+    ) -> Res<ir::Node> {
+        let var_ty = match written {
+            Some(t) => ty::resolve(t)?,
+            None => DEF.to_string(),
+        };
+        let it = self.expr(iterable)?;
+        let element = match ty::component(&it.ty) {
+            Some(c) => c,
+            None => DEF.to_string(),
+        };
+        let is_array = ty::component(&it.ty).is_some();
+        if !is_array
+            && it.ty != DEF
+            && !crate::front::allowlist::Allowlist::get()
+                .is_assignable(&it.ty, "java.lang.Iterable")
+        {
+            return compile_error(
+                iterable.pos,
+                format!(
+                    "Illegal for each type [{}].",
+                    crate::types::canonical(&it.ty)
+                ),
+            );
+        }
+        let probe = expr::Typed {
+            node: ir::Node::Null {
+                ty: element.clone(),
+            },
+            ty: element.clone(),
+        };
+        let cast = match self.coerce(pos, probe, &var_ty, true)?.node {
+            ir::Node::Cast { cast, .. } => cast,
+            _ => None,
+        };
+        let body = self.scoped(|cx| {
+            cx.declare(pos, name, &var_ty)?;
+            cx.body(&Some(Box::new(body.clone())))
+        })?;
+        Ok(if is_array {
+            ir::Node::ForEachArray {
+                var_ty,
+                var: name.into(),
+                cast,
+                array_ty: it.ty.clone(),
+                indexed_ty: element,
+                iterable: Box::new(it.node),
+                body,
+            }
+        } else {
+            ir::Node::ForEachIterable {
+                var_ty,
+                var: name.into(),
+                cast,
+                method: None,
+                iterable: Box::new(it.node),
+                body,
+            }
         })
     }
 
