@@ -1,7 +1,7 @@
 //! Script source to the IR a node runs: what an engine does with the source
 //! of a `script` it is given, and which document fields that script reads.
 
-use crate::front::{analyze_returning, parse, Binding, Limits, Refusal, AGG, DOC, SCORE};
+use crate::front::{analyze_returning, parse, Binding, Limits, Refusal, AGG, DOC, INGEST, SCORE};
 use crate::ir::{Member, Node, Script};
 
 /// Why source is not a script this runtime runs.
@@ -24,12 +24,13 @@ impl std::fmt::Display for Refused {
 
 /// The variables a script of engine context `context` reads (`0` and `1`
 /// score, `2` filter, `3` and `4` number sort, `5` aggregation, `6`
-/// `terms_set`); `None` for a context the front end does not serve.
+/// `terms_set`, `10` an ingest script processor); `None` for a context the front end does not serve.
 pub fn bindings(context: u8) -> Option<&'static [Binding]> {
     Some(match context {
         0 | 1 | 4 => SCORE,
         2 | 3 | 6 => DOC,
         5 => AGG,
+        10 => INGEST,
         _ => return None,
     })
 }
@@ -51,6 +52,7 @@ pub fn compile(source: &str, context: u8) -> Result<Script, Refused> {
     let ret = match context {
         0 | 1 | 3 | 4 => "double",
         2 => "boolean",
+        10 => "void",
         _ => crate::types::DEF,
     };
     analyze_returning(&ast, bindings, ret).map_err(|r| match r {

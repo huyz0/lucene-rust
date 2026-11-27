@@ -116,6 +116,20 @@ pub const DOC: &[Binding] = &[
     },
 ];
 
+/// What an ingest `script` processor reads: `params` and `ctx`, the document.
+pub const INGEST: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "ctx",
+        getter: "getCtx",
+        ty: "java.util.Map",
+    },
+];
+
 /// What an `aggs` script reads: `params`, `doc` and `_value`.
 pub const AGG: &[Binding] = &[
     Binding {

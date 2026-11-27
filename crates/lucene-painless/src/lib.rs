@@ -10,6 +10,7 @@ pub mod compare;
 pub mod compile;
 pub mod def;
 pub mod front;
+pub mod ingest;
 pub mod ir;
 pub mod jmap;
 pub mod lambda;
