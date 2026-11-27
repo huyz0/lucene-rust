@@ -11,14 +11,23 @@ use crate::index_writer::{ExplicitDocument, Result};
 impl<'d> ConcurrentIndexWriter<'d> {
     /// Turns the hot tier on, once: see [`crate::hot_tier`].
     pub fn enable_hot_tier(&self, cfg: crate::hot_tier::HotTierConfig) -> bool {
-        self.hot
-            .set(Arc::new(crate::hot_tier::HotTier::new(cfg)))
-            .is_ok()
+        self.hot_cfg.set(cfg).is_ok()
+    }
+
+    /// The tier, built by the first update that needs it.
+    pub(super) fn hot_tier(&self) -> Option<&Arc<crate::hot_tier::HotTier>> {
+        let cfg = self.hot_cfg.get()?;
+        Some(
+            self.hot
+                .get_or_init(|| Arc::new(crate::hot_tier::HotTier::new(cfg.clone()))),
+        )
     }
 
     /// The hot tier's counters, when it is on.
     pub fn hot_tier_stats(&self) -> Option<crate::hot_tier::HotTierStats> {
-        self.hot.get().map(|h| h.stats())
+        self.hot_cfg
+            .get()
+            .map(|_| self.hot.get().map(|h| h.stats()).unwrap_or_default())
     }
 
     /// Applies every held operation: what a flush, a commit, a snapshot and

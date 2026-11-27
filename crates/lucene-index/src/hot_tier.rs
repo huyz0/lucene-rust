@@ -59,6 +59,37 @@ use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::{DocumentVector, ExplicitDocument};
 
 const SHARDS: usize = 64;
+
+/// The memory every tier of the process shares: a node's hot tiers together
+/// stay within [`set_node_limit`], and each tier holding anything gets an equal
+/// share of it (the limit over the tiers now holding memory), so many busy
+/// shards cannot take more than one does and an idle shard takes nothing.
+struct NodePool {
+    /// `0`: no node-wide limit.
+    limit: AtomicUsize,
+    used: AtomicUsize,
+    /// Tiers holding at least a byte.
+    active: AtomicUsize,
+}
+
+static NODE: NodePool = NodePool {
+    limit: AtomicUsize::new(0),
+    used: AtomicUsize::new(0),
+    active: AtomicUsize::new(0),
+};
+
+/// Caps the memory all hot tiers of the process hold together (`0` lifts the
+/// cap), shared fairly: see [`HotTierConfig::max_bytes`] for the per-shard bound
+/// that applies as well. A tier already over its new share keeps what it holds
+/// until its next drain and admits nothing more.
+pub fn set_node_limit(bytes: usize) {
+    NODE.limit.store(bytes, Ordering::Release);
+}
+
+/// What every hot tier of the process holds now (sketches and held operations).
+pub fn node_bytes() -> usize {
+    NODE.used.load(Ordering::Acquire)
+}
 /// The heat sketch is cut into this many independently locked stripes.
 const STRIPES: usize = 64;
 /// Slots per row of a stripe's sketch when it is first needed (two byte rows
@@ -356,6 +387,27 @@ pub struct HotTier {
     admit: u8,
 }
 
+/// Takes `n` bytes of the node's pool, when `limit` (0: none) leaves room.
+fn node_take(n: usize, limit: usize) -> bool {
+    if limit == 0 {
+        NODE.used.fetch_add(n, Ordering::AcqRel);
+        return true;
+    }
+    NODE.used
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| {
+            (u.saturating_add(n) <= limit).then_some(u.saturating_add(n))
+        })
+        .is_ok()
+}
+
+impl Drop for HotTier {
+    /// A closed shard gives back what it still holds.
+    fn drop(&mut self) {
+        let held = self.bytes.load(Ordering::Acquire);
+        self.release(held);
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -539,32 +591,59 @@ impl HotTier {
     }
 
     fn release(&self, n: usize) {
-        let _ = self
+        if let Ok(prev) = self
             .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |b| {
                 Some(b.saturating_sub(n))
-            });
+            })
+        {
+            let freed = n.min(prev);
+            NODE.used.fetch_sub(freed, Ordering::AcqRel);
+            if freed > 0 && prev == freed {
+                NODE.active.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
     }
 
-    /// Whether `n` more bytes fit, reserving them when they do.
+    /// Whether `n` more bytes fit, reserving them when they do: within this
+    /// tier's budget, within its equal share of the node's, and with room left
+    /// in the node's.
     fn reserve(&self, n: usize) -> bool {
         let mut cur = self.bytes.load(Ordering::Acquire);
         loop {
-            if cur.saturating_add(n) > self.cfg.max_bytes {
+            let want = cur.saturating_add(n);
+            if want > self.cfg.max_bytes {
                 return false;
             }
-            match self.bytes.compare_exchange_weak(
-                cur,
-                cur.saturating_add(n),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            let limit = NODE.limit.load(Ordering::Acquire);
+            if limit > 0 {
+                let tiers = NODE
+                    .active
+                    .load(Ordering::Acquire)
+                    .saturating_add(usize::from(cur == 0))
+                    .max(1);
+                if want > limit.checked_div(tiers).unwrap_or(limit) {
+                    return false;
+                }
+            }
+            if !node_take(n, limit) {
+                return false;
+            }
+            match self
+                .bytes
+                .compare_exchange_weak(cur, want, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => {
-                    self.peak
-                        .fetch_max(cur.saturating_add(n), Ordering::Relaxed);
+                    if cur == 0 {
+                        NODE.active.fetch_add(1, Ordering::AcqRel);
+                    }
+                    self.peak.fetch_max(want, Ordering::Relaxed);
                     return true;
                 }
-                Err(c) => cur = c,
+                Err(c) => {
+                    NODE.used.fetch_sub(n, Ordering::AcqRel);
+                    cur = c;
+                }
             }
         }
     }
@@ -733,6 +812,12 @@ impl HotTier {
 
     /// Applies every held operation.
     pub fn drain<E>(&self, apply: &mut dyn FnMut(HeldOp) -> Result<(), E>) -> Result<usize, E> {
+        // A tier with nothing held and no sketch has nothing to apply or age:
+        // a refresh of an idle shard costs two loads.
+        if self.rows.load(Ordering::Acquire) == 0 && self.sketch_bytes.load(Ordering::Acquire) == 0
+        {
+            return Ok(0);
+        }
         self.drains.fetch_add(1, Ordering::Relaxed);
         // A cut is when an idle tier lets go of the sketch it no longer needs.
         self.age();

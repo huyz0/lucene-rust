@@ -880,7 +880,7 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
      * next refresh; an update it replaces leaves a no-op tombstone, so the {@code _tombstone} field is
      * registered here.
      */
-    void setHotTier(long maxBytes, double rate) throws IOException { registry.resolve(FieldSchema.numericDocValues("_tombstone")); locked(() -> NativeWriter.writerSetHotTier(handle, maxBytes, rate), "setting index.hot_tier.max_memory"); }
+    void setHotTier(long maxBytes, double rate, long nodeBytes) throws IOException { registry.resolve(FieldSchema.numericDocValues("_tombstone")); locked(() -> NativeWriter.writerSetHotTier(handle, maxBytes, rate, nodeBytes), "setting index.hot_tier.max_memory"); }
 
     /**
      * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the

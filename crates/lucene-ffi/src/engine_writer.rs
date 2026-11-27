@@ -1051,16 +1051,18 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 /// the writer holds the latest update of a row updated more than
 /// `min_updates_per_second` times a second, within `max_bytes`, and applies it
 /// at the next flush, commit, snapshot or live view. `max_bytes == 0` leaves it
-/// off. Call once, when the writer opens.
+/// off. `node_max_bytes` (`indices.hot_tier.max_memory`; `0` is no limit)
+/// bounds all the process's hot tiers together. Call once, when the writer opens.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_set_hot_tier(
     handle: u64,
     max_bytes: i64,
     min_updates_per_second: f64,
+    node_max_bytes: i64,
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            set_hot_tier(w, max_bytes, min_updates_per_second)
+            set_hot_tier(w, max_bytes, min_updates_per_second, node_max_bytes)
         })
     })
 }

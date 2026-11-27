@@ -134,7 +134,7 @@ public final class NativeWriter {
         );
         static final MethodHandle WRITER_SET_HOT_TIER = bind(
             "ffi_engine_writer_set_hot_tier",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_DOUBLE)
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_DOUBLE, JAVA_LONG)
         );
         static final MethodHandle WRITER_SET_IVF_PARTITION_CLUSTERS = bind(
             "ffi_engine_writer_set_ivf_partition_clusters",
@@ -796,10 +796,12 @@ public final class NativeWriter {
      * The hot tier ({@code index.hot_tier.max_memory}, {@code index.hot_tier.min_update_rate}): the writer
      * holds the latest update of a row updated more than {@code minUpdatesPerSecond} times a second, within
      * {@code maxBytes} ({@code 0} leaves it off), and applies it at the next refresh, flush or live view.
+     * {@code nodeMaxBytes} ({@code indices.hot_tier.max_memory}, {@code 0} for none) bounds all the node's
+     * hot tiers together.
      */
-    public static int writerSetHotTier(long handle, long maxBytes, double minUpdatesPerSecond) {
+    public static int writerSetHotTier(long handle, long maxBytes, double minUpdatesPerSecond, long nodeMaxBytes) {
         try {
-            return (int) H.WRITER_SET_HOT_TIER.invokeExact(handle, maxBytes, minUpdatesPerSecond);
+            return (int) H.WRITER_SET_HOT_TIER.invokeExact(handle, maxBytes, minUpdatesPerSecond, nodeMaxBytes);
         } catch (Throwable t) {
             throw rethrow(t);
         }

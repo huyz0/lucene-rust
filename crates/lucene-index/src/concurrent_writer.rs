@@ -425,6 +425,9 @@ pub struct ConcurrentIndexWriter<'d> {
     /// The next buffer's id for live search, from 1.
     next_buffer_id: AtomicU64,
     /// [`Self::enable_hot_tier`]: held updates of rows that keep changing.
+    hot_cfg: std::sync::OnceLock<crate::hot_tier::HotTierConfig>,
+    /// Built by the first update of a row, so a shard nothing updates holds
+    /// no tier.
     hot: std::sync::OnceLock<Arc<crate::hot_tier::HotTier>>,
     /// Set when applying a held operation failed: the update was acknowledged
     /// and is lost, so every later write and cut reports it.
@@ -655,6 +658,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_docs,
             live: AtomicBool::new(false),
             next_buffer_id: AtomicU64::new(1),
+            hot_cfg: std::sync::OnceLock::new(),
             hot: std::sync::OnceLock::new(),
             hot_failed: Mutex::new(None),
         })
@@ -1490,7 +1494,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
-        if let Some(hot) = self.hot.get() {
+        if let Some(hot) = self.hot_tier() {
             self.hot_check()?;
             // The documents it holds count against the limit as they are
             // acknowledged, so applying them later cannot be refused.
