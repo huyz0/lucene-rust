@@ -86,6 +86,57 @@ impl JObject for Lambda {
     }
 }
 
+/// Calls a function value a library method takes as `interface`'s `method`.
+/// A script function the method binds to the wrong number of arguments is
+/// refused as Painless refuses it when it binds the reference.
+pub fn invoke_as(
+    vm: &mut Vm,
+    f: &Value,
+    interface: &str,
+    method: &str,
+    args: &[Value],
+) -> Result<Value, Throw> {
+    check_as(vm, f, interface, method, args.len())?;
+    invoke(vm, f, args)
+}
+
+/// The refusal for binding `f` as `interface`'s `method` taking `nargs`
+/// arguments, when `f` is a script function of another arity.
+pub fn check_as(
+    vm: &Vm,
+    f: &Value,
+    interface: &str,
+    method: &str,
+    nargs: usize,
+) -> Result<(), Throw> {
+    if let Value::Object(o) = f {
+        if let Some(Lambda {
+            target: Target::Local(func),
+            captures,
+            iface: None,
+            ..
+        }) = o.as_any().downcast_ref::<Lambda>()
+        {
+            if vm.function_arity(*func) != captures.len() + nargs {
+                let name = vm.function_name(*func).to_string();
+                let why = if name.contains('$') {
+                    " due to an incorrect number of arguments"
+                } else {
+                    ""
+                };
+                return Err(Throw::new(
+                    "java.lang.IllegalArgumentException",
+                    format!(
+                        "function reference [this::{name}/{}] matching [{interface}, {method}/{nargs}] not found{why}",
+                        captures.len() + nargs,
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Calls a function value with `args`.
 pub fn invoke(vm: &mut Vm, f: &Value, args: &[Value]) -> Result<Value, Throw> {
     match f {

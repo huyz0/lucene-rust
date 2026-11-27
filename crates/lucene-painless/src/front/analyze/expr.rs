@@ -515,13 +515,14 @@ impl Cx<'_> {
         let cond = self.cond(c)?;
         let (l, r) = (self.expr(a)?, self.expr(b)?);
         let plain = |t: &str| is_primitive(t) || matches!(t, DEF | STRING | "null");
-        if l.ty != r.ty && !(plain(&l.ty) && plain(&r.ty)) {
-            return unsupported("conditional of different classes");
-        }
         let ty = if l.ty == r.ty {
             l.ty.clone()
         } else if l.ty == DEF || r.ty == DEF {
             DEF.into()
+        } else if !(plain(&l.ty) && plain(&r.ty)) {
+            // Two different classes (or a class and a primitive): their
+            // common type is `Object`.
+            "java.lang.Object".into()
         } else if l.ty == "null" {
             r.ty.clone()
         } else if r.ty == "null" {
@@ -662,7 +663,7 @@ impl Cx<'_> {
                 } else if l.ty == DEF || r.ty == DEF {
                     DEF.into()
                 } else {
-                    return unsupported("elvis of different classes");
+                    "java.lang.Object".into()
                 };
                 if is_primitive(&ty) || ty == "null" {
                     return compile_error(pos, "elvis cannot apply to a primitive");
