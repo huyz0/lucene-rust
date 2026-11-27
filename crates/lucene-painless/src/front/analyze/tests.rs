@@ -485,3 +485,36 @@ fn a_conditional_or_elvis_of_two_classes_is_an_object() {
         Value::Int(5)
     ));
 }
+
+#[test]
+fn locale_constants_name_their_language_and_country() {
+    assert!(matches!(
+        eval("'abc'.toUpperCase(Locale.ROOT)"),
+        Value::Str(s) if &*s == "ABC"
+    ));
+    assert!(matches!(
+        eval("Locale.UK.toLanguageTag()"),
+        Value::Str(s) if &*s == "en-GB"
+    ));
+    assert!(matches!(
+        eval("Locale.GERMANY.toString()"),
+        Value::Str(s) if &*s == "de_DE"
+    ));
+    assert!(matches!(
+        eval("Locale.ROOT.toLanguageTag()"),
+        Value::Str(s) if &*s == "und"
+    ));
+    assert!(matches!(
+        eval("Locale.FRENCH.getLanguage() + Locale.FRANCE.getCountry()"),
+        Value::Str(s) if &*s == "frFR"
+    ));
+    assert!(matches!(eval("Locale.US == Locale.US"), Value::Bool(true)));
+    assert!(matches!(
+        eval("Locale.US.equals(Locale.UK)"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Locale.US.hashCode() == Locale.US.hashCode()"),
+        Value::Bool(true)
+    ));
+}

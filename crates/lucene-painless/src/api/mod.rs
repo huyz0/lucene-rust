@@ -13,6 +13,7 @@ pub mod dynamic;
 pub mod functional;
 pub mod iter;
 pub mod list;
+pub mod locale;
 pub mod map;
 pub mod math;
 pub mod number;
@@ -132,7 +133,7 @@ pub fn static_field(class: &str, name: &str) -> Option<Value> {
             crate::value::MapKind::Immutable,
             crate::jmap::JMap::new(crate::jmap::Order::Hash),
         ),
-        _ => return time::static_field(class, name),
+        _ => return locale::static_field(class, name).or_else(|| time::static_field(class, name)),
     })
 }
 
