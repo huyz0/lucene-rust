@@ -2,7 +2,7 @@
 
 use super::expr::Typed;
 use super::ty::{self, from_table};
-use super::{compile_error, unsupported, Cx, Res};
+use super::{compile_error, Cx, Res};
 use crate::front::allowlist::Allowlist;
 use crate::front::ast;
 use crate::ir::{self, Node};
@@ -42,11 +42,7 @@ impl Cx<'_> {
         };
         let mut lowered = Vec::new();
         for (arg, param) in args.iter().zip(&ctor.params) {
-            let ast::Arg::Expr(e) = arg else {
-                return unsupported("lambda or method reference argument");
-            };
-            let t = self.expr(e)?;
-            lowered.push(self.coerce(e.pos, t, &from_table(param), false)?.node);
+            lowered.push(self.arg(arg, param)?);
         }
         let ty = if read { class.as_str() } else { "void" };
         Ok(typed(

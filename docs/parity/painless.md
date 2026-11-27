@@ -4,21 +4,17 @@
 sends the IR (`PainlessIr.java`); Rust compiles it to a register program and runs it with Painless's
 runtime semantics (`def` dispatch, `DefMath`, casts, the allowlisted classes).
 
-**Checked before it runs.** A script runs natively from its first document to its last, or not
-at all. `lucene-painless/src/check.rs::check` decides statically, on
+**Checked before it runs.** A script runs natively throughout, or not at all. `lucene-painless/src/check.rs::check` decides statically, on
 the specialised program, that every call, `def` access and cast resolves as Painless's would for
-each class its static type admits (`PainlessIr.siteTable`),
-every `doc` read is a constant mapped field with a native reading, every `params` read folds, and
-only methods the context serves are used. Refused: regexes `regex` does not match exactly
+each class its static type admits (`PainlessIr.siteTable`), every `doc` read is a constant mapped field with a native reading, every `params` read folds, and
+only served methods are used. Refused: regexes `regex` does not match exactly
 (`api/regex.rs::translate`), changes to live collection views, casts of views, method references
-without a target. A refusal runs in Java (`*_painless`), cached per script, params and kinds.
+without a target. A refusal runs in Java (`*_painless`), cached per script.
 
-**Never re-run.** A checked script that throws fails the search as in Java, same
-`ScriptException` (class, message, `script_stack`, position): the plugin runs it once more in Java
+**Never re-run.** A checked script that throws fails the search as in Java, same `ScriptException` (class, message, `script_stack`, position): the plugin runs it once more in Java
 there (`PainlessScore.failure`) for the JVM's message and frames; stats count `script_errors`. A
-runtime gap (`Unsupported`) is the plugin's failure and falls back. Tested by
-`tests/corpus.rs` and `e2e/verify_opensearch.py::script_errors`. Gap: three corpus scripts
-whose JVM `WrongMethodTypeException` error throws another message.
+runtime gap (`Unsupported`) is the plugin's failure and falls back. Tested by `tests/corpus.rs` and
+`e2e/verify_opensearch.py::script_errors`. Gap: three corpus scripts whose JVM `WrongMethodTypeException` error throws another message.
 
 | Java | Rust | Status |
 |---|---|---|
@@ -26,7 +22,7 @@ whose JVM `WrongMethodTypeException` error throws another message.
 | `painless/Def`, `DefMath`, `DefBootstrap`, `AnalyzerCaster` | `lucene-painless/src/def.rs`, `lucene-painless/src/types.rs`, `lucene-painless/src/number.rs`, `lucene-painless/src/compare.rs`, `lucene-painless/src/value.rs`, `lucene-painless/src/object.rs`, `lucene-painless/src/jmap.rs`, `lucene-painless/src/lambda.rs` | **ported** for the corpus: `def` operators promote by runtime class, results convert as `DefMath` does, `HashMap` iterates in Java's order. |
 | the allowlisted JDK classes (`java.lang`, `java.util`, `java.util.regex`, `java.util.function`) | `lucene-painless/src/api/mod.rs`, `lucene-painless/src/api/array.rs`, `lucene-painless/src/api/collection.rs`, `lucene-painless/src/api/dynamic.rs`, `lucene-painless/src/api/functional.rs`, `lucene-painless/src/api/iter.rs`, `lucene-painless/src/api/list.rs`, `lucene-painless/src/api/map.rs`, `lucene-painless/src/api/math.rs`, `lucene-painless/src/api/number.rs`, `lucene-painless/src/api/objects.rs`, `lucene-painless/src/api/regex.rs`, `lucene-painless/src/api/string.rs` | **partial**: what Painless's test suite calls; `Math` on fdlibm (`StrictMath`): a HotSpot intrinsic may differ in the last bit. No streams, `Optional`. `java.time` is in `lucene-painless/src/api/time.rs` (below). |
 | `ScoreScript`, `LeafDocLookup`, `ScriptDocValues.{Longs, Doubles, Booleans, Strings, Dates}`, `ScoreScriptUtils` | `lucene-painless/src/api/doc.rs::{DocLookup, DocValues, DocKind}`, `lucene-painless/src/api/score.rs::{static_lookup, class_binding}` | **partial**: `doc[...]` views, `saturation`, `sigmoid`, numeric decays, `randomScore` (doc and field). Gap: `termFreq`, `_source`, geo, ip. |
-| -- | `lucene-painless/src/front/mod.rs`, `lucene-painless/src/front/allowlist.rs`, `lucene-painless/src/front/ast.rs`, `lucene-painless/src/front/lex.rs`, `lucene-painless/src/front/parse.rs`, `lucene-painless/src/front/tests.rs`, `lucene-painless/src/front/analyze/mod.rs`, `lucene-painless/src/front/analyze/call.rs`, `lucene-painless/src/front/analyze/expr.rs`, `lucene-painless/src/front/analyze/init.rs`, `lucene-painless/src/front/analyze/place.rs`, `lucene-painless/src/front/analyze/literal.rs`, `lucene-painless/src/front/analyze/ty.rs`, `lucene-painless/src/front/analyze/tests.rs` | **Rust-only** (ADR 0069): 4,811 corpus scripts lower and match Painless; allowlist: `scripts/gen-painless-allowlist.py`. |
+| -- | `lucene-painless/src/front/mod.rs`, `lucene-painless/src/front/allowlist.rs`, `lucene-painless/src/front/ast.rs`, `lucene-painless/src/front/lex.rs`, `lucene-painless/src/front/parse.rs`, `lucene-painless/src/front/tests.rs`, `lucene-painless/src/front/analyze/mod.rs`, `lucene-painless/src/front/analyze/call.rs`, `lucene-painless/src/front/analyze/expr.rs`, `lucene-painless/src/front/analyze/init.rs`, `lucene-painless/src/front/analyze/lambda.rs`, `lucene-painless/src/front/analyze/place.rs`, `lucene-painless/src/front/analyze/literal.rs`, `lucene-painless/src/front/analyze/ty.rs`, `lucene-painless/src/front/analyze/tests.rs` | **Rust-only** (ADR 0069): 4,846 corpus scripts lower and match Painless; allowlist: `scripts/gen-painless-allowlist.py`. |
 | (none: Painless compiles to bytecode the JIT specialises) | `lucene-painless/src/specialize.rs::{specialize, Facts}`, `lucene-painless/src/typed.rs::{lower, Typed, BatchEnv, BatchRegs}` | **no Java counterpart**: a per-query pass folds `params`, turns `doc['f']` reads into direct reads and types `def` arithmetic by the known classes; a script of numbers and strings then runs on unboxed registers, and one with forward branches only runs a batch of documents per instruction. Corpus: 2,364 typed, 381 batched, as the VM. |
 | `java.time`: `ZonedDateTime`, `Instant`, `Duration`, `ZoneOffset`, `DayOfWeek`, `Month`, `ChronoUnit`, `ChronoField` | `lucene-painless/src/api/time.rs::{Zoned, Inst, Dur, Offset, DayOfWeek, Month, Unit, Field}` | **partial**: fixed-offset zones, the getters, `plus*`/`minus*`/`with*`/`truncatedTo`/`until`/`between`, `get`/`getLong`/`isSupported` by `ChronoField`, `toString`, `equals`, `hashCode`, `compareTo`. Equal to OpenSearch on 100 e2e shapes (`e2e/scripts_equal.py`). Not native (left to Java): region zones (`ZoneId.of`), `DateTimeFormatter`/`format`/`parse`, `LocalDate`/`LocalDateTime`/`LocalTime`/`Period`, `with(TemporalAdjuster)`, `range`. |
 | OpenSearch `lang-expression` scripts (`ExpressionScriptEngine`: score, filter, sort, aggregation, terms_set) | `lucene-engine/src/painless_score/expr.rs::{ExprSource, ExprBinding}` (context flag `0x40`), over `lucene-expressions` | **partial**: the expression compiled by `lucene-expressions`, each variable bound as the engine binds it: `_score`, params, numeric/date fields (`value`, `min`, `max`, `avg`, `median`, `sum`, `empty`, `length`, `count`) over every numeric field type, `Calendar` and Joda date parts, `geo_point` lat/lon/empty. Equal to OpenSearch on 130 e2e shapes (`e2e/scripts_equal.py`). `_value` and `_score` in sort stay in Java. |
