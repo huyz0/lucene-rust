@@ -278,3 +278,27 @@ fn objects_lists_and_maps_are_built() {
     assert!(message("new ArrayList(1, 2, 3)").contains("Unknown new call"));
     assert!(message("new List()").contains("Unknown new call"));
 }
+
+#[test]
+fn reference_equality_compares_as_painless_does() {
+    assert!(matches!(
+        eval("def a = 1; def b = 1; a === b"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("def x = (byte)7; def y = (int)7; x === y"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m === null"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m !== null"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("boolean x = true; boolean y = true; x === y"),
+        Value::Bool(true)
+    ));
+}

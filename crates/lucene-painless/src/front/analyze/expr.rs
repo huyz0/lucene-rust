@@ -653,13 +653,9 @@ impl Cx<'_> {
     }
 
     fn equality(&mut self, pos: u32, op: BinOp, l: Typed, r: Typed) -> Res<Typed> {
-        let reference = matches!(op, BinOp::EqRef | BinOp::NeRef);
         let objects = |t: &Typed| t.ty == STRING || t.ty == "null";
         if objects(&l) && objects(&r) {
             return self.compare(pos, op, "java.lang.Object", l, r);
-        }
-        if reference {
-            return unsupported("reference equality outside strings");
         }
         if l.ty == DEF || r.ty == DEF {
             return self.compare(pos, op, DEF, l, r);
