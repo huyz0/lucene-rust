@@ -2,6 +2,7 @@
 //! statement list does at its end.
 
 use super::{unsupported, Res};
+use crate::front::allowlist::Allowlist;
 use crate::front::ast;
 use crate::types::DEF;
 
@@ -17,9 +18,47 @@ pub fn resolve(t: &ast::Type) -> Res<String> {
         "boolean" | "byte" | "short" | "char" | "int" | "long" | "float" | "double" | "void" => {
             t.name.clone()
         }
-        "String" | "java.lang.String" => STRING.to_string(),
-        other => return unsupported(format!("type {other}")),
+        other => match Allowlist::get().resolve(other) {
+            Some(class) => class.to_string(),
+            None => return unsupported(format!("type {other}")),
+        },
     })
+}
+
+/// The IR name of a type as the allowlist table writes it (`def` is the
+/// only name that differs).
+pub fn from_table(name: &str) -> String {
+    if name == "def" {
+        DEF.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// The primitive a wrapper class holds (`java.lang.Integer` is `int`).
+pub fn unboxed(ty: &str) -> Option<&'static str> {
+    Some(match ty {
+        "java.lang.Boolean" => "boolean",
+        "java.lang.Byte" => "byte",
+        "java.lang.Short" => "short",
+        "java.lang.Character" => "char",
+        "java.lang.Integer" => "int",
+        "java.lang.Long" => "long",
+        "java.lang.Float" => "float",
+        "java.lang.Double" => "double",
+        _ => return None,
+    })
+}
+
+/// A primitive type name, `boolean` included.
+pub fn is_primitive(ty: &str) -> bool {
+    is_numeric(ty) || ty == "boolean"
+}
+
+/// The primitive an operand of arithmetic is read as: itself, or the one a
+/// wrapper class holds.
+pub fn operand(ty: &str) -> &str {
+    unboxed(ty).filter(|p| is_numeric(p)).unwrap_or(ty)
 }
 
 pub fn is_numeric(ty: &str) -> bool {
@@ -45,6 +84,7 @@ fn rank(ty: &str) -> u8 {
 /// converted to: `def` when either is, else the wider of the two, at least
 /// `int`. `None` when an operand is not numeric.
 pub fn promote(a: &str, b: &str) -> Option<String> {
+    let (a, b) = (operand(a), operand(b));
     let ok = |t: &str, other: &str| is_numeric(t) || t == DEF || (t == "null" && other == DEF);
     if !ok(a, b) || !ok(b, a) {
         return None;

@@ -2,10 +2,13 @@
 //! reads, with every type resolved and every cast explicit, as Painless's
 //! own front end leaves it.
 //!
-//! This covers the core: primitives, `def` and `String`, locals, user
-//! functions, operators and control flow. A construct beyond it is refused
-//! as [`Refusal::Unsupported`] naming it, never mis-lowered.
+//! This covers the core (primitives, `def`, locals, user functions,
+//! operators and control flow) and the allowlisted classes: their types
+//! and boxing, method calls (on `def` by name, on a class by name and
+//! arity, static), static and getter fields. A construct beyond it is
+//! refused as [`Refusal::Unsupported`] naming it, never mis-lowered.
 
+mod call;
 mod expr;
 mod literal;
 #[cfg(test)]

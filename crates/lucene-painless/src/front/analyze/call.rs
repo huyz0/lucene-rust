@@ -1,0 +1,295 @@
+//! Method calls and field reads: against a `def` receiver by name at run
+//! time, against a class by what the allowlist lists (by name and arity,
+//! as Painless resolves them), and against a class named in the script for
+//! its static members.
+
+use super::expr::Typed;
+use super::ty::{from_table, is_primitive, unboxed, STRING};
+use super::{compile_error, unsupported, Cx, Res};
+use crate::front::allowlist::{Allowlist, MethodSig};
+use crate::front::ast::{self, ExprKind};
+use crate::ir::{self, Node};
+use crate::types::{canonical, DEF};
+
+/// What a call or a field is read from.
+enum Prefix {
+    /// A class named by the script: its static members.
+    Class(String),
+    /// A value, lowered, of this type.
+    Value(Box<Typed>),
+}
+
+fn typed(node: Node, ty: &str) -> Typed {
+    Typed {
+        node,
+        ty: ty.to_string(),
+    }
+}
+
+/// `left` evaluated, then `right` applied to it.
+fn chain(ty: &str, left: Node, right: Node) -> Node {
+    Node::BinaryImpl {
+        ty: ty.into(),
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+/// The name a chain of plain member reads spells (`Map.Entry`,
+/// `java.lang.Math`), with its first word.
+fn dotted(e: &ast::Expr) -> Option<(&str, String)> {
+    match &e.kind {
+        ExprKind::Var(name) => Some((name, name.clone())),
+        ExprKind::Field {
+            recv,
+            name,
+            null_safe: false,
+        } => dotted(recv).map(|(root, written)| (root, format!("{written}.{name}"))),
+        _ => None,
+    }
+}
+
+/// The wrapper class of a primitive, or the type itself.
+fn lookup_class(ty: &str) -> String {
+    if is_primitive(ty) {
+        super::ty::boxed(ty).to_string()
+    } else {
+        ty.to_string()
+    }
+}
+
+/// The method of `class` Painless resolves: by name and arity, the class's
+/// own first, then those it inherits.
+fn find_method<'a>(
+    class: &str,
+    name: &str,
+    arity: usize,
+    is_static: bool,
+) -> Option<&'a MethodSig> {
+    Allowlist::get()
+        .methods(class, name)
+        .into_iter()
+        .find(|m| m.params.len() == arity && (m.is_static == is_static || m.augment.is_some()))
+}
+
+impl Cx<'_> {
+    /// The prefix of a member: a class when it names one and no variable
+    /// hides it.
+    fn prefix(&mut self, e: &ast::Expr) -> Res<Prefix> {
+        if let Some((root, written)) = dotted(e) {
+            if self.lookup(root).is_none() {
+                if let Some(class) = Allowlist::get().resolve(&written) {
+                    return Ok(Prefix::Class(class.to_string()));
+                }
+            }
+        }
+        self.expr(e).map(|t| Prefix::Value(Box::new(t)))
+    }
+
+    /// `recv.name(args)` or `recv?.name(args)`.
+    pub(super) fn call(
+        &mut self,
+        pos: u32,
+        recv: &ast::Expr,
+        name: &str,
+        args: &[ast::Arg],
+        null_safe: bool,
+    ) -> Res<Typed> {
+        let prefix = self.prefix(recv)?;
+        let mut exprs = Vec::new();
+        for arg in args {
+            match arg {
+                ast::Arg::Expr(e) => exprs.push(e),
+                _ => return unsupported("lambda or method reference argument"),
+            }
+        }
+        let unknown = |class: &str| {
+            compile_error(
+                pos,
+                format!(
+                    "Unknown call [{name}] with [{}] arguments on type [{}].",
+                    args.len(),
+                    canonical(class)
+                ),
+            )
+        };
+        let (left, receiver, class, is_static) = match prefix {
+            Prefix::Class(c) => (Node::Static { ty: c.clone() }, c.clone(), c, true),
+            Prefix::Value(t) if t.ty == DEF => {
+                return self.call_def(pos, *t, name, &exprs, null_safe);
+            }
+            Prefix::Value(t) if t.ty == "void" || t.ty == "null" => {
+                return compile_error(pos, format!("cannot call a method on [{}]", t.ty));
+            }
+            Prefix::Value(t) => {
+                let class = lookup_class(&t.ty);
+                (t.node, t.ty, class, false)
+            }
+        };
+        if null_safe && (is_static || is_primitive(&receiver)) {
+            return unsupported("null-safe call on a class or a primitive");
+        }
+        let Some(sig) = find_method(&class, name, exprs.len(), is_static) else {
+            return unknown(&class);
+        };
+        let mut lowered = Vec::new();
+        for (e, param) in exprs.iter().zip(&sig.params) {
+            let t = self.expr(e)?;
+            lowered.push(self.coerce(e.pos, t, &from_table(param), false)?.node);
+        }
+        let ret = from_table(&sig.ret);
+        let method = ir::Method {
+            target: class.clone(),
+            name: name.to_string(),
+            declaring: sig.augment.clone().unwrap_or_else(|| class.clone()),
+            is_static: sig.augment.is_none() && sig.is_static,
+            params: sig.params.iter().map(|p| from_table(p)).collect(),
+            ret: ret.clone(),
+        };
+        let boxed = (!is_static && is_primitive(&receiver)).then(|| receiver.clone());
+        let result = if null_safe && is_primitive(&ret) {
+            super::ty::boxed(&ret).to_string()
+        } else {
+            ret.clone()
+        };
+        let mut call = Node::InvokeCall {
+            ty: ret,
+            method: Some(method),
+            boxed,
+            args: lowered,
+        };
+        if null_safe {
+            call = Node::NullSafeSub {
+                ty: result.clone(),
+                child: Box::new(call),
+            };
+        }
+        Ok(typed(chain(&result, left, call), &result))
+    }
+
+    /// A call on a `def` receiver: resolved at run time, its arguments as
+    /// written.
+    fn call_def(
+        &mut self,
+        _pos: u32,
+        recv: Typed,
+        name: &str,
+        args: &[&ast::Expr],
+        null_safe: bool,
+    ) -> Res<Typed> {
+        let mut lowered = Vec::new();
+        for e in args {
+            let t = self.expr(e)?;
+            if t.ty == "void" {
+                return compile_error(e.pos, "cannot pass a void argument");
+            }
+            let t = if t.ty == "null" {
+                self.coerce(e.pos, t, "java.lang.Object", false)?
+            } else {
+                t
+            };
+            lowered.push(t.node);
+        }
+        let mut call = Node::InvokeCallDef {
+            ty: DEF.into(),
+            name: name.into(),
+            args: lowered,
+        };
+        if null_safe {
+            call = Node::NullSafeSub {
+                ty: DEF.into(),
+                child: Box::new(call),
+            };
+        }
+        Ok(typed(chain(DEF, recv.node, call), DEF))
+    }
+
+    /// `recv.name` or `recv?.name`: a static field of a class, a field or
+    /// getter of a value, or a `def` member by name.
+    pub(super) fn field(
+        &mut self,
+        pos: u32,
+        recv: &ast::Expr,
+        name: &str,
+        null_safe: bool,
+    ) -> Res<Typed> {
+        let prefix = self.prefix(recv)?;
+        let al = Allowlist::get();
+        let (left, class, is_static) = match prefix {
+            Prefix::Class(c) => (Node::Static { ty: c.clone() }, c, true),
+            Prefix::Value(t) if t.ty == DEF => {
+                let mut read = Node::LoadDotDef {
+                    ty: DEF.into(),
+                    name: name.into(),
+                };
+                if null_safe {
+                    read = Node::NullSafeSub {
+                        ty: DEF.into(),
+                        child: Box::new(read),
+                    };
+                }
+                return Ok(typed(chain(DEF, t.node, read), DEF));
+            }
+            Prefix::Value(t) if t.ty == "void" || t.ty == "null" => {
+                return compile_error(pos, format!("cannot read a field of [{}]", t.ty));
+            }
+            Prefix::Value(t) => {
+                let class = lookup_class(&t.ty);
+                if is_primitive(&t.ty) || null_safe {
+                    return unsupported("field of a primitive, or a null-safe field");
+                }
+                (t.node, class, false)
+            }
+        };
+        if let Some(f) = al.field(&class, name).filter(|f| f.is_static == is_static) {
+            let ty = from_table(&f.ty);
+            let read = Node::LoadDot {
+                ty: ty.clone(),
+                field: ir::Field {
+                    class: class.clone(),
+                    name: name.into(),
+                    is_static,
+                    ty: ty.clone(),
+                },
+            };
+            return Ok(typed(chain(&ty, left, read), &ty));
+        }
+        if !is_static {
+            let cap = {
+                let mut c = name.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                    .unwrap_or_default()
+            };
+            let getter = find_method(&class, &format!("get{cap}"), 0, false)
+                .map(|m| (format!("get{cap}"), m))
+                .or_else(|| {
+                    find_method(&class, &format!("is{cap}"), 0, false)
+                        .map(|m| (format!("is{cap}"), m))
+                });
+            if let Some((getter_name, sig)) = getter {
+                let ty = from_table(&sig.ret);
+                let method = ir::Method {
+                    target: class.clone(),
+                    name: getter_name,
+                    declaring: sig.augment.clone().unwrap_or_else(|| class.clone()),
+                    is_static: false,
+                    params: Vec::new(),
+                    ret: ty.clone(),
+                };
+                let read = Node::LoadDotShortcut {
+                    ty: ty.clone(),
+                    getter: Some(method),
+                };
+                return Ok(typed(chain(&ty, left, read), &ty));
+            }
+            if class != STRING && unboxed(&class).is_none() {
+                return unsupported("list or map shortcut");
+            }
+        }
+        compile_error(
+            pos,
+            format!("Unknown field [{name}] for type [{}].", canonical(&class)),
+        )
+    }
+}
