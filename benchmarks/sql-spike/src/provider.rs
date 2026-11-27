@@ -36,6 +36,7 @@ use crate::index::SpikeIndex;
 
 pub const WINDOW: usize = 1024;
 /// Nanoseconds spent in the native search of scans (bench diagnostics).
+pub static SETUP_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static SEARCH_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Candidates a `knn()` predicate yields per partition when no `LIMIT k` was
 /// pushed to the scan.
@@ -127,6 +128,10 @@ pub fn parse_filter(e: &Expr) -> Option<Filter> {
         }
         Expr::ScalarFunction(f) if f.name() == "knn" && f.args.len() == 2 => {
             let text = lit_str(&f.args[1])?;
+            // `?` is a cached template's placeholder, bound at execution.
+            if text == "?" {
+                return Some(Filter::Knn(Vec::new()));
+            }
             let v: Result<Vec<f32>, _> = text.split(',').map(|s| s.trim().parse()).collect();
             v.ok().map(Filter::Knn)
         }
@@ -277,6 +282,37 @@ impl SegScanExec {
             schema,
             props,
         }
+    }
+}
+
+impl SegScanExec {
+    /// The same scan with its literals bound: the i-th filter takes `lits[i]`.
+    pub fn bind(&self, lits: &[String]) -> Option<SegScanExec> {
+        let mut filters = Vec::with_capacity(self.filters.len());
+        for (f, lit) in self.filters.iter().zip(lits) {
+            filters.push(match f {
+                Filter::Term { field, .. } => Filter::Term {
+                    field: field.clone(),
+                    term: lit.clone(),
+                },
+                Filter::Match(_) => {
+                    Filter::Match(lit.split_whitespace().map(str::to_lowercase).collect())
+                }
+                Filter::Knn(_) => {
+                    let v: Result<Vec<f32>, _> = lit.split(',').map(|x| x.trim().parse()).collect();
+                    Filter::Knn(v.ok()?)
+                }
+            });
+        }
+        Some(SegScanExec {
+            ix: self.ix,
+            slices: self.slices.clone(),
+            projection: self.projection.clone(),
+            filters,
+            fetch: self.fetch,
+            schema: self.schema.clone(),
+            props: self.props.clone(),
+        })
     }
 }
 
@@ -528,7 +564,12 @@ impl ExecutionPlan for SegScanExec {
             if !started {
                 started = true;
                 let batches = (|| -> Result<Vec<Result<RecordBatch>>> {
+                    let t0 = std::time::Instant::now();
                     let mut cols = open_cols(ix);
+                    SETUP_NANOS.fetch_add(
+                        t0.elapsed().as_nanos() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     let mut out = Vec::new();
                     if filters.is_empty() {
                         let mut budget = fetch.unwrap_or(usize::MAX);

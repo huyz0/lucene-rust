@@ -4,6 +4,7 @@
 pub mod data;
 pub mod direct;
 pub mod index;
+pub mod plancache;
 pub mod provider;
 pub mod router;
 pub mod rule;
