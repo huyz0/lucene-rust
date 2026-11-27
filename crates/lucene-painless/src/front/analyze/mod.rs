@@ -180,6 +180,17 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
 /// Lowers a parsed script to IR, with `bindings` as the variables the
 /// context supplies.
 pub fn analyze_in(script: &ast::Script, bindings: &'static [Binding]) -> Res<ir::Script> {
+    analyze_returning(script, bindings, DEF)
+}
+
+/// [`analyze_in`] for a context whose `execute` returns `ret` (`double`,
+/// `boolean`, `def`): what the script returns is cast to it, or refused as
+/// Painless refuses the cast.
+pub fn analyze_returning(
+    script: &ast::Script,
+    bindings: &'static [Binding],
+    ret: &str,
+) -> Res<ir::Script> {
     let mut funcs: HashMap<String, Signature> = HashMap::new();
     for f in &script.functions {
         let sig = Signature {
@@ -214,13 +225,13 @@ pub fn analyze_in(script: &ast::Script, bindings: &'static [Binding]) -> Res<ir:
             body,
         });
     }
-    let mut cx = Cx::new(&funcs, &lambdas, DEF.to_string());
+    let mut cx = Cx::new(&funcs, &lambdas, ret.to_string());
     let body = cx.body_of(&script.body, true)?;
     out.insert(
         0,
         ir::Function {
             name: "execute".into(),
-            ret: DEF.into(),
+            ret: ret.into(),
             param_types: Vec::new(),
             param_names: Vec::new(),
             is_static: false,

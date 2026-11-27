@@ -1,7 +1,7 @@
 //! Script source to the IR a node runs: what an engine does with the source
 //! of a `script` it is given, and which document fields that script reads.
 
-use crate::front::{analyze_in, parse, Binding, Limits, Refusal, AGG, DOC, SCORE};
+use crate::front::{analyze_returning, parse, Binding, Limits, Refusal, AGG, DOC, SCORE};
 use crate::ir::{Member, Node, Script};
 
 /// Why source is not a script this runtime runs.
@@ -46,7 +46,14 @@ pub fn compile(source: &str, context: u8) -> Result<Script, Refused> {
         offset: e.offset,
         message: e.message,
     })?;
-    analyze_in(&ast, bindings).map_err(|r| match r {
+    // The type `execute` returns: a score or a sort key is a `double`, a
+    // filter a `boolean`.
+    let ret = match context {
+        0 | 1 | 3 | 4 => "double",
+        2 => "boolean",
+        _ => crate::types::DEF,
+    };
+    analyze_returning(&ast, bindings, ret).map_err(|r| match r {
         Refusal::Compile { offset, message } => Refused::Compile {
             offset: offset as usize,
             message,
@@ -280,6 +287,21 @@ mod tests {
     fn a_script_reads_the_score_or_does_not() {
         assert!(reads_score(&lower("_score * 2")));
         assert!(!reads_score(&lower("doc['f'].value")));
+    }
+
+    #[test]
+    fn what_a_script_returns_is_cast_to_its_contexts_type() {
+        // A filter returns a boolean, a score or a sort key a double.
+        assert!(compile("doc['f'].value > 1", 2).is_ok());
+        assert!(compile("1 + 1", 2).is_err());
+        assert!(compile("return 'a';", 2).is_err());
+        assert!(compile("doc['f'].value", 0).is_ok());
+        assert!(compile("return 'a';", 0).is_err());
+        assert!(compile("return true;", 3).is_err());
+        // `def` casts at run time; an aggregation's script returns any object.
+        assert!(compile("params.x", 2).is_ok());
+        let r = compile("return 'a';", 5);
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[test]
