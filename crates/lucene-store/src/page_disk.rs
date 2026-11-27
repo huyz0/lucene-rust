@@ -267,34 +267,58 @@ impl DiskTier {
     }
 
     /// For each of `prefixes`, up to `limit` cached pages of files whose key
-    /// starts with it, the most read first (ties by file and page); one
-    /// pass over the tier under one hold of its lock.
+    /// starts with it, the most read first (ties by file and page). A file
+    /// matching several prefixes is listed under the first asked.
+    ///
+    /// The tier's lock is held for one pass that does a hash lookup for each
+    /// distinct prefix length a file's key could match, and nothing else;
+    /// the ordering happens after it is released, so a long list of prefixes
+    /// or of files does not hold up the reads and writes of other threads.
     pub(crate) fn resident(&self, prefixes: &[&str], limit: usize) -> Vec<Vec<Resident>> {
-        let st = lock_ignoring_poison(&self.state);
+        // The first index asked of each distinct prefix, and the lengths
+        // prefixes have, so a key is looked up once per length.
+        let mut first: HashMap<&str, usize> = HashMap::with_capacity(prefixes.len());
+        for (at, p) in prefixes.iter().enumerate() {
+            first.entry(p).or_insert(at);
+        }
+        let mut lengths: Vec<usize> = first.keys().map(|p| p.len()).collect();
+        lengths.sort_unstable();
+        lengths.dedup();
         let mut out: Vec<Vec<Resident>> = prefixes.iter().map(|_| Vec::new()).collect();
-        for (key, id) in &st.ids {
-            let Some(at) = prefixes.iter().position(|p| key.starts_with(p)) else {
-                continue;
-            };
-            let Some(file) = st.files.get(id) else {
-                continue;
-            };
-            for (page, &slot) in file.pages.iter().enumerate() {
-                if slot == NONE {
-                    continue;
-                }
-                let Some(rec) = st
-                    .slot(slot)
-                    .filter(|r| r.file == *id && r.flags & WRITING == 0)
-                else {
+        if first.is_empty() {
+            return out;
+        }
+        {
+            let st = lock_ignoring_poison(&self.state);
+            for (key, id) in &st.ids {
+                let at = lengths
+                    .iter()
+                    .take_while(|len| **len <= key.len())
+                    .filter_map(|len| key.get(..*len).and_then(|head| first.get(head)))
+                    .min();
+                let Some(&at) = at else {
                     continue;
                 };
-                out[at].push(Resident {
-                    key: Arc::clone(key),
-                    page: page as u64,
-                    len: rec.len,
-                    hits: rec.hits,
-                });
+                let Some(file) = st.files.get(id) else {
+                    continue;
+                };
+                for (page, &slot) in file.pages.iter().enumerate() {
+                    if slot == NONE {
+                        continue;
+                    }
+                    let Some(rec) = st
+                        .slot(slot)
+                        .filter(|r| r.file == *id && r.flags & WRITING == 0)
+                    else {
+                        continue;
+                    };
+                    out[at].push(Resident {
+                        key: Arc::clone(key),
+                        page: page as u64,
+                        len: rec.len,
+                        hits: rec.hits,
+                    });
+                }
             }
         }
         for pages in &mut out {
