@@ -97,6 +97,11 @@ held operation and checked against a counting allocator (0 to 10% above what the
 
 What it changes, and what it does not:
 
+- **Many shards.** A shard builds its tier on its first update of a row (about 7 KB), so a shard nothing updates
+  holds nothing and its refresh skips the tier. The node setting `indices.hot_tier.max_memory` (a size or a
+  percentage of the heap, default `2%`, native memory; `0` lifts it) bounds every shard's tier together: each
+  shard holding anything may take the limit divided by the number of such shards, so 100,000 busy shards hold
+  what one does, and what does not fit is written through at the normal cost.
 - **Visibility.** A held update is applied at the next refresh, flush, commit or realtime view, and a refresh is
   when any update becomes searchable, so search results are the same as without the tier. `GET` by id reads the
   version map as before.

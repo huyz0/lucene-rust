@@ -366,6 +366,19 @@ public final class AcceleratedEngineSupport {
     );
 
     /**
+     * The memory all the hot tiers of a node hold together ({@code indices.hot_tier.max_memory}, a size
+     * or a percentage of the heap, default 2%), as native memory outside the heap. Shards share it
+     * equally: each shard holding anything may take the limit divided by the number of such shards (and
+     * never more than {@link #HOT_TIER_MAX_MEMORY}), so a node with a hundred thousand shards holds what
+     * one shard does, and a shard that is idle holds nothing. {@code 0} lifts the node limit.
+     */
+    public static final Setting<ByteSizeValue> NODE_HOT_TIER_MAX_MEMORY = Setting.memorySizeSetting(
+        "indices.hot_tier.max_memory",
+        "2%",
+        Setting.Property.NodeScope
+    );
+
+    /**
      * Updates a second above which a row is held by the hot tier (default 1, so a row updated more
      * than once a second); between 0.5 and 100. A row updated about once a second is not held, and
      * one a little faster is held on some of its updates and not on others, with no cost either way.
@@ -779,7 +792,11 @@ public final class AcceleratedEngineSupport {
             writer.setIndexFormat(IndexFormatSettings.resolve(indexSettings.getSettings()));
             long hotTierBytes = HOT_TIER_MAX_MEMORY.get(indexSettings.getSettings()).getBytes();
             if (hotTierBytes > 0) {
-                writer.setHotTier(hotTierBytes, HOT_TIER_MIN_UPDATE_RATE.get(indexSettings.getSettings()));
+                writer.setHotTier(
+                    hotTierBytes,
+                    HOT_TIER_MIN_UPDATE_RATE.get(indexSettings.getSettings()),
+                    NODE_HOT_TIER_MAX_MEMORY.get(indexSettings.getNodeSettings()).getBytes()
+                );
             }
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {

@@ -791,6 +791,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
             AcceleratedEngineSupport.IVF_PARTITION_CLUSTERS,
             AcceleratedEngineSupport.HOT_TIER_MAX_MEMORY,
             AcceleratedEngineSupport.HOT_TIER_MIN_UPDATE_RATE,
+            AcceleratedEngineSupport.NODE_HOT_TIER_MAX_MEMORY,
             AcceleratedEngineSupport.KNN_TARGET_RECALL,
             AcceleratedEngineSupport.KNN_RECALL_SAMPLE_RATE,
             AcceleratedEngineSupport.KNN_RECALL_CHECK_BUDGET,

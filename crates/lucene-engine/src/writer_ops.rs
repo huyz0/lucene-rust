@@ -548,17 +548,29 @@ pub fn set_index_format(w: &EngineWriter, format: i32) -> Result<(), Status> {
 /// `index.hot_tier.max_memory` and `index.hot_tier.min_update_rate`: the
 /// hot tier ([`lucene_index::hot_tier`]) holds the latest update of rows
 /// updated faster than `min_updates_per_second` within `max_bytes`. `0` bytes
-/// leaves it off. Set once, when the writer opens.
+/// leaves it off. `node_max_bytes` (`indices.hot_tier.max_memory`, `0` for no
+/// limit) bounds every hot tier of the process together, shared equally by the
+/// shards holding anything. Set once, when the writer opens.
 pub fn set_hot_tier(
     w: &EngineWriter,
     max_bytes: i64,
     min_updates_per_second: f64,
+    node_max_bytes: i64,
 ) -> Result<(), Status> {
     use lucene_index::hot_tier::HotTierConfig;
     let bytes = match usize::try_from(max_bytes) {
         Ok(n) => n,
         Err(_) => {
             set_last_error(format!("hot tier memory must be >= 0; got {max_bytes}"));
+            return Err(Status::InvalidArgument);
+        }
+    };
+    let node = match usize::try_from(node_max_bytes) {
+        Ok(n) => n,
+        Err(_) => {
+            set_last_error(format!(
+                "hot tier node memory must be >= 0; got {node_max_bytes}"
+            ));
             return Err(Status::InvalidArgument);
         }
     };
@@ -577,6 +589,7 @@ pub fn set_hot_tier(
         source: Some(("_source".to_string(), b"superseded".to_vec())),
     });
     if bytes > 0 {
+        lucene_index::hot_tier::set_node_limit(node);
         w.writer().enable_hot_tier(cfg);
     }
     Ok(())
