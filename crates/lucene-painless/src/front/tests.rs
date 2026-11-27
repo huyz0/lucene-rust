@@ -338,3 +338,120 @@ fn bounds_refuse_before_anything_runs() {
     let blocks = format!("{}x(){}", "if (a) {".repeat(150), "}".repeat(150));
     assert!(fails(&blocks).message.contains("nests deeper"));
 }
+
+mod allowlist_tests {
+    use super::super::allowlist::Allowlist;
+
+    fn al() -> &'static Allowlist {
+        Allowlist::get()
+    }
+
+    #[test]
+    fn short_names_resolve_to_classes() {
+        assert_eq!(al().resolve("String"), Some("java.lang.String"));
+        assert_eq!(al().resolve("Map.Entry"), Some("java.util.Map$Entry"));
+        assert_eq!(
+            al().resolve("java.util.ArrayList"),
+            Some("java.util.ArrayList")
+        );
+        assert_eq!(
+            al().resolve("ScoreScript"),
+            None,
+            "a no_import class has no short name"
+        );
+        assert_eq!(al().resolve("Nope"), None);
+    }
+
+    #[test]
+    fn methods_are_found_on_the_class_and_inherited() {
+        let own = al().methods("java.lang.Integer", "parseInt");
+        assert!(own.len() >= 2 && own.iter().all(|m| m.is_static));
+        // `length` is listed on CharSequence, not on String.
+        let len = al().methods("java.lang.String", "length");
+        assert_eq!(len.len(), 1);
+        assert_eq!(len[0].ret, "int");
+        assert!(!len[0].is_static);
+        // an ArrayList has Collection's and Iterable's methods
+        assert!(!al().methods("java.util.ArrayList", "size").is_empty());
+        assert!(!al().methods("java.util.ArrayList", "forEach").is_empty());
+        assert!(al().methods("java.lang.String", "noSuchMethod").is_empty());
+    }
+
+    #[test]
+    fn a_subclass_overload_hides_the_parents() {
+        let m = al().methods("java.util.ArrayList", "add");
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            m.iter().all(|x| seen.insert(&x.params)),
+            "one entry for each parameter list"
+        );
+    }
+
+    #[test]
+    fn augmented_methods_and_flags() {
+        let replace = al().methods("java.lang.CharSequence", "replaceAll");
+        assert!(replace
+            .iter()
+            .any(|m| m.augment.as_deref() == Some("org.opensearch.painless.api.Augmentation")));
+        let random = al().methods("java.lang.Math", "random");
+        assert!(random[0].nondeterministic && random[0].is_static);
+        assert!(al().methods("java.lang.System", "currentTimeMillis")[0].nondeterministic);
+        assert!(!al().methods("java.lang.Math", "abs")[0].nondeterministic);
+    }
+
+    #[test]
+    fn fields_constructors_and_imports() {
+        assert!(
+            al().field("java.lang.Integer", "MAX_VALUE")
+                .unwrap()
+                .is_static
+        );
+        assert_eq!(al().field("java.lang.Integer", "NOPE"), None);
+        assert!(al().ctors("java.util.ArrayList").len() >= 2);
+        assert!(al().ctors("java.lang.Math").is_empty());
+        let sat = al()
+            .imports()
+            .iter()
+            .find(|i| i.name == "saturation")
+            .unwrap();
+        assert_eq!((sat.kind.as_str(), sat.params.len()), ("from_class", 2));
+        assert!(al().imports().iter().any(|i| i.kind == "bound_to"));
+    }
+
+    #[test]
+    fn assignability_follows_the_hierarchy() {
+        assert!(al().is_assignable("java.util.ArrayList", "java.util.List"));
+        assert!(al().is_assignable("java.util.ArrayList", "java.lang.Object"));
+        assert!(al().is_assignable("java.lang.String", "java.lang.CharSequence"));
+        assert!(!al().is_assignable("java.lang.String", "java.util.List"));
+        assert!(al().is_assignable("java.lang.String", "java.lang.String"));
+    }
+
+    #[test]
+    fn every_type_the_table_names_is_a_class_or_primitive() {
+        let prims = [
+            "boolean", "byte", "short", "char", "int", "long", "float", "double", "def", "void",
+        ];
+        let known = |t: &str| {
+            let base = t.trim_end_matches("[]");
+            prims.contains(&base) || al().class(base).is_some()
+        };
+        for (name, c) in al().classes() {
+            for (m, sigs) in &c.methods {
+                for s in sigs {
+                    assert!(
+                        known(&s.ret) && s.params.iter().all(|p| known(p)),
+                        "{name}.{m}"
+                    );
+                }
+            }
+            for f in c.fields.values() {
+                assert!(known(&f.ty), "{name} field {}", f.ty);
+            }
+            assert!(
+                c.parents.iter().all(|p| al().class(p).is_some()),
+                "{name} parents"
+            );
+        }
+    }
+}

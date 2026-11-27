@@ -4,6 +4,7 @@
 //! `lang-painless`, parsed by hand. Later phases (analysis and lowering to
 //! [`crate::ir`]) consume the tree; nothing here resolves a type or a name.
 
+pub mod allowlist;
 pub mod ast;
 mod lex;
 mod parse;
