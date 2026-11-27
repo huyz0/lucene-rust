@@ -185,7 +185,12 @@ pub fn call(vm: &mut Vm, s: &Rc<str>, name: &str, args: &[Value]) -> Option<Resu
             ("toCharArray", 0) => {
                 Value::array("char", utf16(s).into_iter().map(Value::Char).collect())
             }
-            ("chars", 0) => return Err(crate::compile::missing("String.chars")),
+            ("chars", 0) => super::stream::of_ints(
+                utf16(s)
+                    .into_iter()
+                    .map(|c| Value::Int(i32::from(c)))
+                    .collect(),
+            ),
             ("codePointAt", 1) => {
                 let i = int_arg(&args[0])?;
                 let u = utf16(s);

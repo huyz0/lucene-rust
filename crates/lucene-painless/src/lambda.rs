@@ -96,6 +96,19 @@ pub fn invoke_as(
     method: &str,
     args: &[Value],
 ) -> Result<Value, Throw> {
+    check_as(vm, f, interface, method, args.len())?;
+    invoke(vm, f, args)
+}
+
+/// The refusal for binding `f` as `interface`'s `method` taking `nargs`
+/// arguments, when `f` is a script function of another arity.
+pub fn check_as(
+    vm: &Vm,
+    f: &Value,
+    interface: &str,
+    method: &str,
+    nargs: usize,
+) -> Result<(), Throw> {
     if let Value::Object(o) = f {
         if let Some(Lambda {
             target: Target::Local(func),
@@ -104,7 +117,7 @@ pub fn invoke_as(
             ..
         }) = o.as_any().downcast_ref::<Lambda>()
         {
-            if vm.function_arity(*func) != captures.len() + args.len() {
+            if vm.function_arity(*func) != captures.len() + nargs {
                 let name = vm.function_name(*func).to_string();
                 let why = if name.contains('$') {
                     " due to an incorrect number of arguments"
@@ -114,15 +127,14 @@ pub fn invoke_as(
                 return Err(Throw::new(
                     "java.lang.IllegalArgumentException",
                     format!(
-                        "function reference [this::{name}/{}] matching [{interface}, {method}/{}] not found{why}",
-                        captures.len(),
-                        args.len()
+                        "function reference [this::{name}/{}] matching [{interface}, {method}/{nargs}] not found{why}",
+                        captures.len() + nargs,
                     ),
                 ));
             }
         }
     }
-    invoke(vm, f, args)
+    Ok(())
 }
 
 /// Calls a function value with `args`.

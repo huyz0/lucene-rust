@@ -580,3 +580,57 @@ fn an_optional_holds_a_value_or_none() {
         Value::Int(2)
     ));
 }
+
+#[test]
+fn a_stream_pipeline_runs_lazily_once() {
+    let int = |src: &str, want: i32| match eval(src) {
+        Value::Int(n) => assert_eq!(n, want, "{src}"),
+        other => panic!("{src}: {other:?}"),
+    };
+    int("[1, 2, 3].stream().mapToInt(x -> x * 2).sum()", 12);
+    int(
+        "[1, 2, 3, 4].stream().filter(x -> x % 2 == 0).collect(Collectors.toList()).size()",
+        2,
+    );
+    int(
+        "[1, 1, 2].stream().distinct().collect(Collectors.toList()).size()",
+        2,
+    );
+    int(
+        "[1, 2, 3, 4].stream().skip(1).limit(2).collect(Collectors.toList()).get(0)",
+        2,
+    );
+    int("[1, 2, 3].stream().toArray().length", 3);
+    int("'abc'.chars().sum()", 294);
+    // `limit` stops the source: the mapper runs only for taken elements.
+    int(
+        "int[] n = new int[1]; [1, 2, 3].stream().peek(x -> n[0]++).limit(2).count(); n[0]",
+        2,
+    );
+    assert!(matches!(
+        eval("[1, 2].stream().anyMatch(x -> x == 2)"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("[1, 2].stream().allMatch(x -> x == 2)"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("[1, 2].stream().noneMatch(x -> x == 3)"),
+        Value::Bool(true)
+    ));
+    assert_eq!(
+        eval("['a', 'b'].stream().collect(Collectors.joining(',', '[', ']'))").java_to_string(),
+        "[a,b]"
+    );
+    assert!(matches!(
+        eval("[7, 8].stream().findFirst().get()"),
+        Value::Int(7)
+    ));
+    // A stream is used once.
+    assert_eq!(
+        eval("def s = [1].stream(); s.count(); try { s.count(); return 'no'; } catch (IllegalStateException e) { return 'used'; }")
+            .java_to_string(),
+        "used"
+    );
+}

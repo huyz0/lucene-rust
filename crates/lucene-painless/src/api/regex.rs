@@ -308,7 +308,7 @@ pub fn match_op(_vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
     Ok(Value::Bool(p.full.is_match(&s)))
 }
 
-trait CharSeq {
+pub(super) trait CharSeq {
     fn java_to_string_checked(&self) -> Result<String, Throw>;
 }
 
@@ -675,6 +675,14 @@ impl JObject for JPattern {
                         .collect(),
                 ))
             })(),
+            ("splitAsStream", 1) => args[0].java_to_string_checked().map(|s| {
+                super::stream::of(
+                    split(&self.re, &s, 0)
+                        .into_iter()
+                        .map(Value::string)
+                        .collect(),
+                )
+            }),
             ("asPredicate", 0) => Err(crate::compile::missing("Pattern.asPredicate")),
             _ => return None,
         })

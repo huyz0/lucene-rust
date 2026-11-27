@@ -17,7 +17,7 @@ const PREDICATE: &str = "java.util.function.Predicate";
 #[derive(Debug)]
 struct Optional(Option<Value>);
 
-fn wrap(v: Option<Value>) -> Value {
+pub(super) fn wrap(v: Option<Value>) -> Value {
     Value::object(Optional(v))
 }
 
