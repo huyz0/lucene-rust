@@ -245,6 +245,13 @@ impl Cx<'_> {
             Prefix::Value(t) if t.ty == "void" || t.ty == "null" => {
                 return compile_error(pos, format!("cannot read a field of [{}]", t.ty));
             }
+            Prefix::Value(t) if t.ty.starts_with('[') => {
+                if name != "length" || null_safe {
+                    return unsupported("field of an array");
+                }
+                let read = Node::LoadDotArrayLength { ty: "int".into() };
+                return Ok(typed(chain("int", t.node, read), "int"));
+            }
             Prefix::Value(t) => {
                 let class = lookup_class(&t.ty);
                 if is_primitive(&t.ty) {

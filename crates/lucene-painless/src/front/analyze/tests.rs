@@ -104,7 +104,6 @@ fn what_is_not_lowered_yet_is_named() {
     for (src, what) in [
         ("for (def x : [1]) { }", "for-each"),
         ("try { } catch (Exception e) { }", "try"),
-        ("int[] a = new int[1];", "array"),
         ("return doc", "variable"),
     ] {
         match refusal(src) {
@@ -315,4 +314,74 @@ fn params_map_keys_and_elvis_read_as_painless_does() {
     assert!(matches!(eval("String s = null; s ?: 'z'"), Value::Str(z) if &*z == "z"));
     assert!(message("int i = 1; i ?: 2").contains("elvis"));
     assert!(message("'a'.nope").contains("Unknown field [nope]"));
+}
+
+#[test]
+fn arrays_are_made_indexed_and_assigned() {
+    assert!(matches!(
+        eval("int[] a = new int[3]; a.length"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[] {4, 5, 6}; a[1] + a[-1]"),
+        Value::Int(11)
+    ));
+    assert!(matches!(
+        eval("int[][] a = new int[2][3]; a[1][2] = 7; a[1][2]"),
+        Value::Int(7)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; a[0] += 5; a[0] *= 3; a[0]"),
+        Value::Int(15)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; a[1] = 4; int b = a[1]++; b * 10 + a[1]"),
+        Value::Int(45)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; int b = ++a[0] + a[0]--; b * 10 + a[0]"),
+        Value::Int(20)
+    ));
+    assert!(
+        matches!(eval("String[] s = new String[] {'a', 'b'}; s[1]"), Value::Str(x) if &*x == "b")
+    );
+    assert!(matches!(
+        eval("def a = new int[] {1, 2}; a[1]"),
+        Value::Int(2)
+    ));
+    assert!(message("int[] a = new int[1]; a['x']").contains("cannot cast"));
+    assert!(message("int a = 1; a[0]").contains("Cannot apply []"));
+    assert!(matches!(
+        refusal("int[] a = new int[1]; long[] b = a;"),
+        Refusal::Unsupported(_)
+    ));
+}
+
+#[test]
+fn elements_and_members_of_lists_maps_and_defs_are_assigned() {
+    assert!(matches!(
+        eval("List l = [1, 2]; l[0] = 9; l[0] + l[-1]"),
+        Value::Int(11)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m['k'] = 3; m['k'] += 4; m.k"),
+        Value::Int(7)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m.k = 3; m['k']"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("def m = new HashMap(); m.k = 5; m.k++; m.k"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("def a = [1, 2]; a[0] = 8; a[0]"),
+        Value::Int(8)
+    ));
+    assert!(matches!(
+        eval("List l = [1]; int x = (l[0] = 6); x"),
+        Value::Int(6)
+    ));
+    assert!(message("String s = 'a'; s?.x = 1").contains("null-safe"));
 }

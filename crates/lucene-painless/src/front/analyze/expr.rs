@@ -1,6 +1,7 @@
 //! Expressions: typing, conversion and the operators.
 
 use super::literal::number;
+use super::place::PlaceUpdate;
 use super::ty::{boxed, is_numeric, is_primitive, promote, promote_one, unboxed, widens, STRING};
 use super::{compile_error, unsupported, Cx, Res};
 use crate::front::allowlist::Allowlist;
@@ -15,7 +16,7 @@ pub struct Typed {
 }
 
 /// `BinaryMath`'s flag for a compound assignment (`def.rs`'s `COMPOUND`).
-const COMPOUND: i32 = 1 << 1;
+pub(super) const COMPOUND: i32 = 1 << 1;
 
 fn typed(node: Node, ty: &str) -> Typed {
     Typed {
@@ -97,7 +98,11 @@ impl Cx<'_> {
             });
         }
         if from == DEF {
-            return if to_prim || to == STRING || Allowlist::get().class(to).is_some() {
+            return if to_prim
+                || to == STRING
+                || to.starts_with('[')
+                || Allowlist::get().class(to).is_some()
+            {
                 Ok(cast(DEF, t.node, no_cast()))
             } else {
                 refuse()
@@ -164,6 +169,9 @@ impl Cx<'_> {
             || (Allowlist::get().class(from).is_some() && Allowlist::get().class(to).is_some())
         {
             return self.coerce_class(pos, t, to, explicit);
+        }
+        if from.starts_with('[') && to.starts_with('[') {
+            return unsupported(format!("conversion of [{from}] to [{to}]"));
         }
         refuse()
     }
@@ -372,6 +380,9 @@ impl Cx<'_> {
             }
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
             ExprKind::NewObject(ty, args) => self.new_object(e.pos, ty, args, true)?,
+            ExprKind::NewArray(ty, dims) => self.new_array(e.pos, ty, dims)?,
+            ExprKind::NewArrayInit(ty, values) => self.new_array_init(e.pos, ty, values)?,
+            ExprKind::Index(recv, index) => self.index_read(recv, index)?,
             ExprKind::List(values) => self.list_init(values)?,
             ExprKind::Map(pairs) => self.map_init(pairs)?,
             ExprKind::Call {
@@ -717,6 +728,14 @@ impl Cx<'_> {
         value: &ast::Expr,
         want_value: bool,
     ) -> Res<Typed> {
+        if let Some(place) = self.place_of(target)? {
+            let v = self.expr(value)?;
+            let update = match op {
+                AssignOp::Set => PlaceUpdate::Set(v, value.pos),
+                AssignOp::With(b) => PlaceUpdate::With(b, v),
+            };
+            return self.assign_place(pos, place, update, want_value);
+        }
         let (name, ty) = self.target(target)?;
         let v = self.expr(value)?;
         let child = match op {
@@ -746,6 +765,9 @@ impl Cx<'_> {
         want_value: bool,
         prefix: bool,
     ) -> Res<Typed> {
+        if let Some(place) = self.place_of(target)? {
+            return self.assign_place(pos, place, PlaceUpdate::Step { inc, prefix }, want_value);
+        }
         let (name, ty) = self.target(target)?;
         let mut load = typed(
             Node::LoadVariable {
@@ -881,7 +903,7 @@ fn narrow_to(a: &Typed, b: &Typed) -> Option<String> {
     (fits && b.ty == "int").then(|| a.ty.clone())
 }
 
-fn unparen(e: &ast::Expr) -> &ast::Expr {
+pub(super) fn unparen(e: &ast::Expr) -> &ast::Expr {
     match &e.kind {
         ExprKind::Paren(inner) => unparen(inner),
         _ => e,

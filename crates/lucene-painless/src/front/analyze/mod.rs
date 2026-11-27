@@ -12,6 +12,7 @@ mod call;
 mod expr;
 mod init;
 mod literal;
+mod place;
 #[cfg(test)]
 mod tests;
 mod ty;
