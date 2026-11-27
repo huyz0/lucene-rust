@@ -311,6 +311,9 @@ tasks.register('indexingBench', JavaExec) {
 // that needs Maven Central: the YAML runner is OpenSearch's test framework.
 repositories {
     mavenCentral()
+    // Gradle tries repositories in order and moves on when one fails, so a
+    // throttled Central falls back to this mirror for every dependency.
+    maven { url = uri('https://maven-central.storage-download.googleapis.com/maven2') }
 }
 sourceSets {
     yamlRestTest {

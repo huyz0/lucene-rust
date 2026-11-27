@@ -9,7 +9,17 @@
 # `lucene_classpath <module>...` to get a ready `:`-joined classpath.
 
 LUCENE_VERSION="${LUCENE_VERSION:-10.6.0}"
-MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
+MAVEN_ROOT="https://repo1.maven.org/maven2"
+# Central throttles busy runner pools (HTTP 429); this mirror serves the same
+# artifacts, and every jar is checked by its consumer, so it is tried next.
+MAVEN_MIRROR="https://maven-central.storage-download.googleapis.com/maven2"
+MAVEN_BASE="$MAVEN_ROOT/org/apache/lucene"
+
+# maven_get <path under maven2> <dest>: Central first, then the mirror.
+maven_get() {
+  curl -fsSL --retry 2 -o "$2" "$MAVEN_ROOT/$1" \
+    || curl -fsSL --retry 2 -o "$2" "$MAVEN_MIRROR/$1"
+}
 
 # JVM flags every fixture-writing `java` passes. Lucene's scalar float kernels
 # (DefaultVectorUtilSupport: dotProduct, squareDistance, cosine) fuse
@@ -32,7 +42,7 @@ lucene_resolve_jar() {
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
   echo "lucene-jars: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" "$MAVEN_BASE/$module/$LUCENE_VERSION/$jar"
+  maven_get "org/apache/lucene/$module/$LUCENE_VERSION/$jar" "$JARS/$jar"
   echo "$JARS/$jar"
 }
 
@@ -91,8 +101,7 @@ thirdparty_resolve_jar() {
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
   echo "lucene-jars: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" \
-    "https://repo1.maven.org/maven2/${group//.//}/$artifact/$version/$jar"
+  maven_get "${group//.//}/$artifact/$version/$jar" "$JARS/$jar"
   echo "$JARS/$jar"
 }
 

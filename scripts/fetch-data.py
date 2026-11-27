@@ -39,6 +39,8 @@ import zlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CACHE = pathlib.Path(os.environ.get("LUCENE_RUST_DATA_CACHE", ROOT / "fixtures/.jars"))
 MAVEN = "https://repo1.maven.org/maven2"
+# Serves the same artifacts as Central; tried alternately when Central throttles.
+MAVEN_MIRROR = "https://maven-central.storage-download.googleapis.com/maven2"
 ML_COMMONS = "https://raw.githubusercontent.com/opensearch-project/ml-commons/3.9/ml-algorithms/src/main/resources/analysis"
 
 # name -> (url, sha256)
@@ -187,9 +189,12 @@ def download(url, sha, dest):
     # Maven Central answers 429 to a busy runner pool for a minute or more, so
     # the waits grow well past a few seconds and a Retry-After is honoured.
     waits = [5, 15, 30, 60, 90]
+    urls = [url]
+    if url.startswith(MAVEN + "/"):
+        urls.append(MAVEN_MIRROR + url[len(MAVEN) :])
     for attempt in range(len(waits) + 1):
         try:
-            with urllib.request.urlopen(url, timeout=120) as r:
+            with urllib.request.urlopen(urls[attempt % len(urls)], timeout=120) as r:
                 data = r.read()
             break
         except Exception as e:  # network error or throttling: retry with backoff
