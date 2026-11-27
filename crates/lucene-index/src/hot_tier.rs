@@ -12,8 +12,12 @@
 //! that is dropped without ever being inverted.
 //!
 //! - **Heat.** A row is hot once it is updated faster than
-//!   [`HotTierConfig::min_updates_per_second`] (by default, more than once a second). Heat lives in a fixed counting sketch
-//!   (two rows of bytes, the smaller count counts), not per row, so a row
+//!   [`HotTierConfig::min_updates_per_second`] (by default, more than once a second). Heat lives in a counting sketch
+//!   (two rows of bytes, the smaller count counts), not per row. The sketch
+//!   is cut into stripes that own no memory until an update reaches them,
+//!   grow fourfold while their cells fill (up to an eighth of the budget in
+//!   all) and give their cells back once every count has decayed to zero,
+//!   so an idle shard holds nothing. A row
 //!   updated once -- a bulk update of any size -- or a few times a second
 //!   costs two byte increments and goes straight to the writer as before.
 //! - **Memory.** [`HotTierConfig::max_bytes`] bounds the sketch plus every held
@@ -45,7 +49,7 @@
 //! one replaced within a cut do not exist in the segments.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -55,6 +59,14 @@ use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::{DocumentVector, ExplicitDocument};
 
 const SHARDS: usize = 64;
+/// The heat sketch is cut into this many independently locked stripes.
+const STRIPES: usize = 64;
+/// Slots per row of a stripe's sketch when it is first needed (two byte rows
+/// of this many cells: 512 bytes).
+const STRIPE_START_SLOTS: usize = 256;
+/// The most slots per row a stripe grows to (16 KiB a stripe, 1 MiB in all,
+/// as 1M slots a row were before the sketch grew with the load).
+const STRIPE_MAX_SLOTS: usize = 1 << 14;
 /// How many offers a failed search for a row to spill silences the next ones.
 const NO_SPILL_TICKS: u64 = 256;
 
@@ -303,6 +315,14 @@ pub struct HotTierStats {
     pub sketch_bytes: usize,
 }
 
+/// One stripe of the heat sketch: the cells, and how many of the first row's
+/// are in use.
+#[derive(Default)]
+struct Stripe {
+    cells: Vec<u8>,
+    used: usize,
+}
+
 struct Shard {
     rows: HashMap<Vec<u8>, HeldOp>,
 }
@@ -310,8 +330,12 @@ struct Shard {
 /// See the module documentation.
 pub struct HotTier {
     cfg: HotTierConfig,
-    sketch: Vec<AtomicU8>,
-    mask: usize,
+    /// The heat sketch, by stripe: two byte rows of a power of two of cells,
+    /// empty until a stripe sees an update, grown while its cells fill, and
+    /// freed once its counts have all decayed to zero.
+    sketch: Vec<Mutex<Stripe>>,
+    sketch_bytes: AtomicUsize,
+    max_slots: usize,
     shards: Vec<Mutex<Shard>>,
     bytes: AtomicUsize,
     peak: AtomicUsize,
@@ -358,13 +382,13 @@ impl HotTier {
     }
 
     fn build(cfg: HotTierConfig, admit: u8) -> HotTier {
-        let mut slots = 1usize << 20;
-        while slots > 64 && slots.saturating_mul(2) > cfg.max_bytes / 8 {
-            slots /= 2;
+        // At most an eighth of the budget, even when every stripe is full.
+        let mut max_slots = STRIPE_MAX_SLOTS;
+        while max_slots > 4
+            && max_slots.saturating_mul(2).saturating_mul(STRIPES) > cfg.max_bytes / 8
+        {
+            max_slots /= 2;
         }
-        let sketch = (0..slots.saturating_mul(2))
-            .map(|_| AtomicU8::new(0))
-            .collect();
         let shards = (0..SHARDS)
             .map(|_| {
                 Mutex::new(Shard {
@@ -372,15 +396,16 @@ impl HotTier {
                 })
             })
             .collect();
-        let sketch_bytes = slots.saturating_mul(2);
+        let sketch = (0..STRIPES).map(|_| Mutex::default()).collect();
         HotTier {
             admit,
             cfg,
             sketch,
-            mask: slots.saturating_sub(1),
+            sketch_bytes: AtomicUsize::new(0),
+            max_slots,
             shards,
-            bytes: AtomicUsize::new(sketch_bytes),
-            peak: AtomicUsize::new(sketch_bytes),
+            bytes: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
             rows: AtomicUsize::new(0),
             held_docs: AtomicUsize::new(0),
             ticks: AtomicU64::new(0),
@@ -398,37 +423,92 @@ impl HotTier {
         }
     }
 
-    /// Counts one update of the row hashed `h` and returns its heat.
+    /// Counts one update of the row hashed `h` and returns its heat. A
+    /// stripe's cells are allocated by its first update; when the budget has
+    /// no room for them the row counts as cold (0).
     fn bump(&self, h: u64) -> u8 {
-        let n = self.mask.saturating_add(1);
-        let a = (h as usize) & self.mask;
-        let b = n.saturating_add(((h >> 32) as usize) & self.mask);
-        let inc = |i: usize| -> u8 {
-            let cell = &self.sketch[i];
-            let v = cell.load(Ordering::Relaxed);
-            if v < u8::MAX {
-                cell.store(v.saturating_add(1), Ordering::Relaxed);
-                v.saturating_add(1)
-            } else {
-                v
+        let mut st = lock(&self.sketch[((h >> 48) as usize) % STRIPES]);
+        if st.cells.is_empty() {
+            let bytes = STRIPE_START_SLOTS.min(self.max_slots).saturating_mul(2);
+            if !self.reserve(bytes) {
+                return 0;
             }
+            self.sketch_bytes.fetch_add(bytes, Ordering::AcqRel);
+            st.cells = vec![0u8; bytes];
+            st.used = 0;
+        }
+        // Over a quarter of the first row in use: the stripe is shared by too
+        // many rows to tell them apart, so it grows fourfold (when the budget
+        // allows) and starts counting again.
+        let have = st.cells.len();
+        if st.used.saturating_mul(4) > have / 2 && have / 2 < self.max_slots {
+            let want = have.saturating_mul(4).min(self.max_slots.saturating_mul(2));
+            let extra = want.saturating_sub(have);
+            if self.reserve(extra) {
+                self.sketch_bytes.fetch_add(extra, Ordering::AcqRel);
+                st.cells = vec![0u8; want];
+                st.used = 0;
+            }
+        }
+        let n = st.cells.len() / 2;
+        let mask = n.saturating_sub(1);
+        let a = (h as usize) & mask;
+        let b = n.saturating_add(((h >> 32) as usize) & mask);
+        if st.cells[a] == 0 {
+            st.used = st.used.saturating_add(1);
+        }
+        let mut inc = |i: usize| -> u8 {
+            let v = st.cells[i];
+            if v < u8::MAX {
+                st.cells[i] = v.saturating_add(1);
+            }
+            st.cells[i]
         };
-        inc(a).min(inc(b))
+        let (x, y) = (inc(a), inc(b));
+        x.min(y)
     }
 
     fn maybe_age(&self) {
         if self.ticks.fetch_add(1, Ordering::Relaxed) & 1023 != 0 {
             return;
         }
+        self.age();
+    }
+
+    /// When a period has passed, halves every count (see [`Self::halve`]).
+    fn age(&self) {
         let mut at = lock(&self.aged_at);
-        if at.elapsed() >= self.cfg.age_every {
-            *at = Instant::now();
-            drop(at);
-            for c in &self.sketch {
-                let v = c.load(Ordering::Relaxed);
-                if v != 0 {
-                    c.store(v >> 1, Ordering::Relaxed);
+        if at.elapsed() < self.cfg.age_every {
+            return;
+        }
+        *at = Instant::now();
+        drop(at);
+        self.halve();
+    }
+
+    /// Halves every count; a stripe whose counts are all gone gives its cells
+    /// back.
+    fn halve(&self) {
+        for stripe in &self.sketch {
+            let mut st = lock(stripe);
+            if st.cells.is_empty() {
+                continue;
+            }
+            let half = st.cells.len() / 2;
+            let (mut used, mut first) = (0usize, 0usize);
+            for (i, c) in st.cells.iter_mut().enumerate() {
+                *c >>= 1;
+                if *c != 0 {
+                    used = used.saturating_add(1);
+                    first = first.saturating_add(usize::from(i < half));
                 }
+            }
+            st.used = first;
+            if used == 0 {
+                let have = st.cells.len();
+                self.release(have);
+                self.sketch_bytes.fetch_sub(have, Ordering::AcqRel);
+                st.cells = Vec::new();
             }
         }
     }
@@ -504,6 +584,9 @@ impl HotTier {
         let heat = self.bump(h);
         op.heat = heat;
         let shard = (h as usize) % SHARDS;
+        // The older held operation of this row, when a larger version of it
+        // found no room beside the others and must look for a place.
+        let mut carried: Option<HeldOp> = None;
         // An older held operation of this row is replaced.
         if self.rows.load(Ordering::Acquire) > 0 {
             let mut s = lock(&self.shards[shard]);
@@ -523,54 +606,66 @@ impl HotTier {
                         dropped: Some(dropped),
                     });
                 }
-                // No room for the larger version: the older one is dropped
-                // (this one replaces it) and this one goes through.
-                let dropped = s.rows.remove(op.term.bytes.as_slice());
-                if let Some(old) = &dropped {
+                // No room beside the others for the larger version: the older
+                // one is dropped (this one replaces it) and this one looks for
+                // a place as a row of its own, spilling a cooler row if it must.
+                carried = s.rows.remove(op.term.bytes.as_slice());
+                if let Some(old) = &carried {
                     self.release(old.bytes);
                     self.docs_down(old.docs.len());
                     self.rows_down();
                 }
-                self.refused.fetch_add(1, Ordering::Relaxed);
-                self.through.fetch_add(1, Ordering::Relaxed);
-                return Ok(Offer::Through { op, dropped });
             }
         }
-        if heat < self.admit {
+        if heat < self.admit && carried.is_none() {
             self.through.fetch_add(1, Ordering::Relaxed);
             return Ok(Offer::Through { op, dropped: None });
         }
         // A hot row with no held operation: find it a place.
         op.measure();
-        if op.bytes > self.cfg.max_bytes.saturating_sub(self.sketch.len()) {
+        if op.bytes
+            > self
+                .cfg
+                .max_bytes
+                .saturating_sub(self.sketch_bytes.load(Ordering::Relaxed))
+        {
             self.refused.fetch_add(1, Ordering::Relaxed);
             self.through.fetch_add(1, Ordering::Relaxed);
-            return Ok(Offer::Through { op, dropped: None });
+            return Ok(Offer::Through {
+                op,
+                dropped: carried,
+            });
         }
         // After a failed search for a row to spill, the next hot rows skip
         // the search for a while: a full tier of equally hot rows would
         // otherwise pay it on every update.
+        // A row far hotter than the threshold always searches: rows that only
+        // just made it in must not keep it out.
+        let urgent = heat >= self.admit.saturating_mul(4).max(16);
         let tick = self.ticks.load(Ordering::Relaxed);
         let mut tries = 0usize;
         while !self.reserve(op.bytes) {
             tries = tries.saturating_add(1);
             if tries > 4
-                || tick < self.no_spill_until.load(Ordering::Relaxed)
+                || (!urgent && tick < self.no_spill_until.load(Ordering::Relaxed))
                 || !self.spill_one(heat, apply)?
             {
-                if tries <= 4 {
+                if tries <= 4 && !urgent {
                     self.no_spill_until
                         .store(tick.saturating_add(NO_SPILL_TICKS), Ordering::Relaxed);
                 }
                 self.refused.fetch_add(1, Ordering::Relaxed);
                 self.through.fetch_add(1, Ordering::Relaxed);
-                return Ok(Offer::Through { op, dropped: None });
+                return Ok(Offer::Through {
+                    op,
+                    dropped: carried,
+                });
             }
         }
         let key = op.term.bytes.clone();
         self.docs_up(op.docs.len());
         let mut s = lock(&self.shards[shard]);
-        let dropped = s.rows.insert(key, op);
+        let mut dropped = s.rows.insert(key, op);
         drop(s);
         if let Some(old) = &dropped {
             self.docs_down(old.docs.len());
@@ -581,6 +676,13 @@ impl HotTier {
         } else {
             self.rows.fetch_add(1, Ordering::AcqRel);
             self.admitted.fetch_add(1, Ordering::Relaxed);
+        }
+        match (carried, dropped.is_some()) {
+            (Some(old), false) => dropped = Some(old),
+            // Two older versions (a race the engine's per-id lock rules
+            // out): the second is applied, so no sequence number is lost.
+            (Some(old), true) => apply(old)?,
+            (None, _) => {}
         }
         Ok(Offer::Held { dropped })
     }
@@ -632,6 +734,8 @@ impl HotTier {
     /// Applies every held operation.
     pub fn drain<E>(&self, apply: &mut dyn FnMut(HeldOp) -> Result<(), E>) -> Result<usize, E> {
         self.drains.fetch_add(1, Ordering::Relaxed);
+        // A cut is when an idle tier lets go of the sketch it no longer needs.
+        self.age();
         let mut n = 0usize;
         for shard in &self.shards {
             let mut s = lock(shard);
@@ -680,7 +784,7 @@ impl HotTier {
             bytes: self.bytes(),
             peak_bytes: self.peak.load(Ordering::Relaxed),
             held_rows: self.rows.load(Ordering::Relaxed),
-            sketch_bytes: self.sketch.len(),
+            sketch_bytes: self.sketch_bytes.load(Ordering::Relaxed),
         }
     }
 }
@@ -931,9 +1035,7 @@ mod tests {
                 }
             }
             drain(&tier, &mut applied);
-            for c in &tier.sketch {
-                c.store(c.load(Ordering::Relaxed) >> 1, Ordering::Relaxed);
-            }
+            tier.halve();
         }
         assert!(a_held >= 9, "{a_held}");
         assert_eq!(b_held, 0);
@@ -942,10 +1044,67 @@ mod tests {
     #[test]
     fn the_sketch_is_counted_and_shrinks_with_a_small_budget() {
         let big = HotTier::build(cfg(64 << 20), 3);
-        assert_eq!(big.stats().sketch_bytes, 2 << 20);
+        assert_eq!(big.stats().sketch_bytes, 0);
+        assert_eq!(big.max_slots * 2 * STRIPES, 2 << 20);
         let small = HotTier::build(cfg(64 << 10), 3);
-        assert!(small.stats().sketch_bytes <= (64 << 10) / 4);
+        assert!(small.max_slots * 2 * STRIPES <= (64 << 10) / 8);
+        // Every stripe the small tier uses stays within its budget.
+        let mut applied = Applied::new();
+        for id in 0..20_000u32 {
+            let _ = run(&small, &mut applied, id, 1, 8);
+            assert!(small.bytes() <= 64 << 10);
+        }
+        assert!(small.stats().sketch_bytes <= (64 << 10) / 8);
+        drain(&small, &mut applied);
         assert_eq!(small.bytes(), small.stats().sketch_bytes);
+    }
+
+    #[test]
+    fn an_idle_tier_holds_nothing_and_a_busy_one_grows_its_sketch() {
+        let tier = HotTier::build(cfg(8 << 20), 3);
+        assert_eq!((tier.bytes(), tier.stats().sketch_bytes), (0, 0));
+        let mut applied = Applied::new();
+        // A burst of distinct rows: the stripes start small and grow with it.
+        for id in 0..200_000u32 {
+            let _ = run(&tier, &mut applied, id, 1, 8);
+        }
+        let busy = tier.stats().sketch_bytes;
+        assert!(busy > STRIPES * STRIPE_START_SLOTS * 2, "{busy}");
+        assert!(busy <= (8 << 20) / 8, "{busy}");
+        drain(&tier, &mut applied);
+        assert_eq!(tier.bytes(), tier.stats().sketch_bytes);
+        // Counts of at most 255 halve to nothing in eight periods, and the
+        // sketch is freed with them.
+        for _ in 0..9 {
+            tier.halve();
+        }
+        assert_eq!((tier.bytes(), tier.stats().sketch_bytes), (0, 0));
+        // And it is reallocated by the next update.
+        let _ = run(&tier, &mut applied, 1, 1, 8);
+        assert!(tier.stats().sketch_bytes > 0);
+    }
+
+    #[test]
+    fn a_hot_row_whose_larger_version_does_not_fit_keeps_its_place() {
+        // Room for two 1 KiB rows beside the sketch; a third row is held,
+        // cooler than the first, which then grows.
+        let tier = HotTier::build(cfg(24 * 1024), 3);
+        let mut applied = Applied::new();
+        for round in 0..8u8 {
+            for id in 0..3u32 {
+                let _ = run(&tier, &mut applied, id, round, 1024);
+            }
+        }
+        for round in 8..20u8 {
+            let _ = run(&tier, &mut applied, 0, round, 1024);
+        }
+        let before = tier.stats().held_rows;
+        // A version of row 0 twice the size: it must still be held (a cooler
+        // row is spilled for it) and not written through.
+        let through = run(&tier, &mut applied, 0, 99, 2048);
+        assert!(through.is_none(), "a hot row's larger version was refused");
+        assert!(tier.stats().held_rows <= before);
+        assert!(tier.bytes() <= 24 * 1024);
     }
 
     #[test]
