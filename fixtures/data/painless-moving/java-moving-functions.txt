@@ -1,0 +1,899 @@
+max [] -> NaN
+min [] -> NaN
+sum [] -> 0.0
+unweightedAvg [] -> NaN
+linearWeightedAvg [] -> NaN
+stdDev [] 0.0 -> NaN
+stdDev [] 2.5 -> NaN
+stdDev [] NaN -> NaN
+stdDev [] 10.0 -> NaN
+ewma [] 0.0 -> NaN
+ewma [] 0.3 -> NaN
+ewma [] 0.5 -> NaN
+ewma [] 1.0 -> NaN
+holt [] 0.3 0.1 -> NaN
+holt [] 0.3 0.5 -> NaN
+holt [] 0.8 0.1 -> NaN
+holt [] 0.8 0.5 -> NaN
+holtWinters [] 0.3 0.1 0.2 1 false -> NaN
+holtWinters [] 0.8 0.5 0.9 1 false -> NaN
+holtWinters [] 0.3 0.1 0.2 1 true -> NaN
+holtWinters [] 0.8 0.5 0.9 1 true -> NaN
+holtWinters [] 0.3 0.1 0.2 2 false -> NaN
+holtWinters [] 0.8 0.5 0.9 2 false -> NaN
+holtWinters [] 0.3 0.1 0.2 2 true -> NaN
+holtWinters [] 0.8 0.5 0.9 2 true -> NaN
+holtWinters [] 0.3 0.1 0.2 4 false -> NaN
+holtWinters [] 0.8 0.5 0.9 4 false -> NaN
+holtWinters [] 0.3 0.1 0.2 4 true -> NaN
+holtWinters [] 0.8 0.5 0.9 4 true -> NaN
+max [NaN] -> NaN
+min [NaN] -> NaN
+sum [NaN] -> 0.0
+unweightedAvg [NaN] -> NaN
+linearWeightedAvg [NaN] -> NaN
+stdDev [NaN] 0.0 -> NaN
+stdDev [NaN] 2.5 -> NaN
+stdDev [NaN] NaN -> NaN
+stdDev [NaN] 10.0 -> NaN
+ewma [NaN] 0.0 -> NaN
+ewma [NaN] 0.3 -> NaN
+ewma [NaN] 0.5 -> NaN
+ewma [NaN] 1.0 -> NaN
+holt [NaN] 0.3 0.1 -> NaN
+holt [NaN] 0.3 0.5 -> NaN
+holt [NaN] 0.8 0.1 -> NaN
+holt [NaN] 0.8 0.5 -> NaN
+holtWinters [NaN] 0.3 0.1 0.2 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+max [1.0] -> 1.0
+min [1.0] -> 1.0
+sum [1.0] -> 1.0
+unweightedAvg [1.0] -> 1.0
+linearWeightedAvg [1.0] -> 0.5
+stdDev [1.0] 0.0 -> 1.0
+stdDev [1.0] 2.5 -> 1.5
+stdDev [1.0] NaN -> NaN
+stdDev [1.0] 10.0 -> 9.0
+ewma [1.0] 0.0 -> 1.0
+ewma [1.0] 0.3 -> 1.0
+ewma [1.0] 0.5 -> 1.0
+ewma [1.0] 1.0 -> 1.0
+holt [1.0] 0.3 0.1 -> 1.0
+holt [1.0] 0.3 0.5 -> 1.0
+holt [1.0] 0.8 0.1 -> 1.0
+holt [1.0] 0.8 0.5 -> 1.0
+holtWinters [1.0] 0.3 0.1 0.2 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.3 0.1 0.2 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [1.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+max [1.0, 2.0, 3.0] -> 3.0
+min [1.0, 2.0, 3.0] -> 1.0
+sum [1.0, 2.0, 3.0] -> 6.0
+unweightedAvg [1.0, 2.0, 3.0] -> 2.0
+linearWeightedAvg [1.0, 2.0, 3.0] -> 2.0
+stdDev [1.0, 2.0, 3.0] 0.0 -> 2.160246899469287
+stdDev [1.0, 2.0, 3.0] 2.5 -> 0.9574271077563381
+stdDev [1.0, 2.0, 3.0] NaN -> NaN
+stdDev [1.0, 2.0, 3.0] 10.0 -> 8.04155872120988
+ewma [1.0, 2.0, 3.0] 0.0 -> 1.0
+ewma [1.0, 2.0, 3.0] 0.3 -> 1.8099999999999996
+ewma [1.0, 2.0, 3.0] 0.5 -> 2.25
+ewma [1.0, 2.0, 3.0] 1.0 -> 3.0
+holt [1.0, 2.0, 3.0] 0.3 0.1 -> 1.8309999999999997
+holt [1.0, 2.0, 3.0] 0.3 0.5 -> 1.9149999999999996
+holt [1.0, 2.0, 3.0] 0.8 0.1 -> 2.7760000000000002
+holt [1.0, 2.0, 3.0] 0.8 0.5 -> 2.8400000000000003
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 1 false -> 2.5300000000000002
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 1 false -> 4.1
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 1 true -> 2.4639702858061336
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 1 true -> 2.6286679427278163
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, 2.0, 3.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [3.0, 1.0, 2.0] -> 3.0
+min [3.0, 1.0, 2.0] -> 1.0
+sum [3.0, 1.0, 2.0] -> 6.0
+unweightedAvg [3.0, 1.0, 2.0] -> 2.0
+linearWeightedAvg [3.0, 1.0, 2.0] -> 1.5714285714285714
+stdDev [3.0, 1.0, 2.0] 0.0 -> 2.160246899469287
+stdDev [3.0, 1.0, 2.0] 2.5 -> 0.9574271077563381
+stdDev [3.0, 1.0, 2.0] NaN -> NaN
+stdDev [3.0, 1.0, 2.0] 10.0 -> 8.04155872120988
+ewma [3.0, 1.0, 2.0] 0.0 -> 3.0
+ewma [3.0, 1.0, 2.0] 0.3 -> 2.2799999999999994
+ewma [3.0, 1.0, 2.0] 0.5 -> 2.0
+ewma [3.0, 1.0, 2.0] 1.0 -> 2.0
+holt [3.0, 1.0, 2.0] 0.3 0.1 -> 2.2379999999999995
+holt [3.0, 1.0, 2.0] 0.3 0.5 -> 2.0699999999999994
+holt [3.0, 1.0, 2.0] 0.8 0.1 -> 1.8479999999999999
+holt [3.0, 1.0, 2.0] 0.8 0.5 -> 1.72
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 1 false -> 2.0667
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 1 false -> 3.37
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 1 true -> 1.961329104634816
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 1 true -> 15.44319999817136
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [3.0, 1.0, 2.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [1.0, NaN, 3.0] -> NaN
+min [1.0, NaN, 3.0] -> NaN
+sum [1.0, NaN, 3.0] -> 4.0
+unweightedAvg [1.0, NaN, 3.0] -> 2.0
+linearWeightedAvg [1.0, NaN, 3.0] -> 1.75
+stdDev [1.0, NaN, 3.0] 0.0 -> 2.23606797749979
+stdDev [1.0, NaN, 3.0] 2.5 -> 1.118033988749895
+stdDev [1.0, NaN, 3.0] NaN -> NaN
+stdDev [1.0, NaN, 3.0] 10.0 -> 8.06225774829855
+ewma [1.0, NaN, 3.0] 0.0 -> 1.0
+ewma [1.0, NaN, 3.0] 0.3 -> 1.5999999999999999
+ewma [1.0, NaN, 3.0] 0.5 -> 2.0
+ewma [1.0, NaN, 3.0] 1.0 -> 3.0
+holt [1.0, NaN, 3.0] 0.3 0.1 -> 1.5999999999999999
+holt [1.0, NaN, 3.0] 0.3 0.5 -> 1.5999999999999999
+holt [1.0, NaN, 3.0] 0.8 0.1 -> 2.6000000000000005
+holt [1.0, NaN, 3.0] 0.8 0.5 -> 2.6000000000000005
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 1 false -> 1.2310999999999999
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 1 false -> -3.3900000000000006
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 1 true -> 1.3128640000375293
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 1 true -> 0.03359999999224
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [1.0, NaN, 3.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [NaN, NaN] -> NaN
+min [NaN, NaN] -> NaN
+sum [NaN, NaN] -> 0.0
+unweightedAvg [NaN, NaN] -> NaN
+linearWeightedAvg [NaN, NaN] -> NaN
+stdDev [NaN, NaN] 0.0 -> NaN
+stdDev [NaN, NaN] 2.5 -> NaN
+stdDev [NaN, NaN] NaN -> NaN
+stdDev [NaN, NaN] 10.0 -> NaN
+ewma [NaN, NaN] 0.0 -> NaN
+ewma [NaN, NaN] 0.3 -> NaN
+ewma [NaN, NaN] 0.5 -> NaN
+ewma [NaN, NaN] 1.0 -> NaN
+holt [NaN, NaN] 0.3 0.1 -> NaN
+holt [NaN, NaN] 0.3 0.5 -> NaN
+holt [NaN, NaN] 0.8 0.1 -> NaN
+holt [NaN, NaN] 0.8 0.5 -> NaN
+holtWinters [NaN, NaN] 0.3 0.1 0.2 1 false -> NaN
+holtWinters [NaN, NaN] 0.8 0.5 0.9 1 false -> NaN
+holtWinters [NaN, NaN] 0.3 0.1 0.2 1 true -> NaN
+holtWinters [NaN, NaN] 0.8 0.5 0.9 1 true -> NaN
+holtWinters [NaN, NaN] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [NaN, NaN] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [-0.0, 0.0] -> 0.0
+min [-0.0, 0.0] -> -0.0
+sum [-0.0, 0.0] -> 0.0
+unweightedAvg [-0.0, 0.0] -> 0.0
+linearWeightedAvg [-0.0, 0.0] -> 0.0
+stdDev [-0.0, 0.0] 0.0 -> 0.0
+stdDev [-0.0, 0.0] 2.5 -> 2.5
+stdDev [-0.0, 0.0] NaN -> NaN
+stdDev [-0.0, 0.0] 10.0 -> 10.0
+ewma [-0.0, 0.0] 0.0 -> 0.0
+ewma [-0.0, 0.0] 0.3 -> 0.0
+ewma [-0.0, 0.0] 0.5 -> 0.0
+ewma [-0.0, 0.0] 1.0 -> 0.0
+holt [-0.0, 0.0] 0.3 0.1 -> 0.0
+holt [-0.0, 0.0] 0.3 0.5 -> 0.0
+holt [-0.0, 0.0] 0.8 0.1 -> 0.0
+holt [-0.0, 0.0] 0.8 0.5 -> 0.0
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 1 false -> 0.0
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 1 false -> 0.0
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 1 true -> 1.0E-10
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 1 true -> 1.0E-10
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-0.0, 0.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [0.0, -0.0] -> 0.0
+min [0.0, -0.0] -> -0.0
+sum [0.0, -0.0] -> 0.0
+unweightedAvg [0.0, -0.0] -> 0.0
+linearWeightedAvg [0.0, -0.0] -> 0.0
+stdDev [0.0, -0.0] 0.0 -> 0.0
+stdDev [0.0, -0.0] 2.5 -> 2.5
+stdDev [0.0, -0.0] NaN -> NaN
+stdDev [0.0, -0.0] 10.0 -> 10.0
+ewma [0.0, -0.0] 0.0 -> 0.0
+ewma [0.0, -0.0] 0.3 -> 0.0
+ewma [0.0, -0.0] 0.5 -> 0.0
+ewma [0.0, -0.0] 1.0 -> 0.0
+holt [0.0, -0.0] 0.3 0.1 -> 0.0
+holt [0.0, -0.0] 0.3 0.5 -> 0.0
+holt [0.0, -0.0] 0.8 0.1 -> 0.0
+holt [0.0, -0.0] 0.8 0.5 -> 0.0
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 1 false -> 0.0
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 1 false -> 0.0
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 1 true -> 1.0E-10
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 1 true -> 1.0E-10
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [0.0, -0.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [Infinity, 1.0] -> Infinity
+min [Infinity, 1.0] -> 1.0
+sum [Infinity, 1.0] -> Infinity
+unweightedAvg [Infinity, 1.0] -> Infinity
+linearWeightedAvg [Infinity, 1.0] -> Infinity
+stdDev [Infinity, 1.0] 0.0 -> Infinity
+stdDev [Infinity, 1.0] 2.5 -> Infinity
+stdDev [Infinity, 1.0] NaN -> NaN
+stdDev [Infinity, 1.0] 10.0 -> Infinity
+ewma [Infinity, 1.0] 0.0 -> Infinity
+ewma [Infinity, 1.0] 0.3 -> Infinity
+ewma [Infinity, 1.0] 0.5 -> Infinity
+ewma [Infinity, 1.0] 1.0 -> NaN
+holt [Infinity, 1.0] 0.3 0.1 -> NaN
+holt [Infinity, 1.0] 0.3 0.5 -> NaN
+holt [Infinity, 1.0] 0.8 0.1 -> NaN
+holt [Infinity, 1.0] 0.8 0.5 -> NaN
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 1 false -> NaN
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 1 false -> NaN
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 1 true -> NaN
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 1 true -> NaN
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, 1.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [-Infinity, 1.0] -> 1.0
+min [-Infinity, 1.0] -> -Infinity
+sum [-Infinity, 1.0] -> -Infinity
+unweightedAvg [-Infinity, 1.0] -> -Infinity
+linearWeightedAvg [-Infinity, 1.0] -> -Infinity
+stdDev [-Infinity, 1.0] 0.0 -> Infinity
+stdDev [-Infinity, 1.0] 2.5 -> Infinity
+stdDev [-Infinity, 1.0] NaN -> NaN
+stdDev [-Infinity, 1.0] 10.0 -> Infinity
+ewma [-Infinity, 1.0] 0.0 -> -Infinity
+ewma [-Infinity, 1.0] 0.3 -> -Infinity
+ewma [-Infinity, 1.0] 0.5 -> -Infinity
+ewma [-Infinity, 1.0] 1.0 -> NaN
+holt [-Infinity, 1.0] 0.3 0.1 -> NaN
+holt [-Infinity, 1.0] 0.3 0.5 -> NaN
+holt [-Infinity, 1.0] 0.8 0.1 -> NaN
+holt [-Infinity, 1.0] 0.8 0.5 -> NaN
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 1 false -> NaN
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 1 false -> NaN
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 1 true -> NaN
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 1 true -> NaN
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [-Infinity, 1.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [Infinity, -Infinity] -> Infinity
+min [Infinity, -Infinity] -> -Infinity
+sum [Infinity, -Infinity] -> NaN
+unweightedAvg [Infinity, -Infinity] -> NaN
+linearWeightedAvg [Infinity, -Infinity] -> NaN
+stdDev [Infinity, -Infinity] 0.0 -> Infinity
+stdDev [Infinity, -Infinity] 2.5 -> Infinity
+stdDev [Infinity, -Infinity] NaN -> NaN
+stdDev [Infinity, -Infinity] 10.0 -> Infinity
+ewma [Infinity, -Infinity] 0.0 -> NaN
+ewma [Infinity, -Infinity] 0.3 -> NaN
+ewma [Infinity, -Infinity] 0.5 -> NaN
+ewma [Infinity, -Infinity] 1.0 -> NaN
+holt [Infinity, -Infinity] 0.3 0.1 -> NaN
+holt [Infinity, -Infinity] 0.3 0.5 -> NaN
+holt [Infinity, -Infinity] 0.8 0.1 -> NaN
+holt [Infinity, -Infinity] 0.8 0.5 -> NaN
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 1 false -> NaN
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 1 false -> NaN
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 1 true -> NaN
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 1 true -> NaN
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [Infinity, -Infinity] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [1.0E308, 1.0E308] -> 1.0E308
+min [1.0E308, 1.0E308] -> 1.0E308
+sum [1.0E308, 1.0E308] -> Infinity
+unweightedAvg [1.0E308, 1.0E308] -> Infinity
+linearWeightedAvg [1.0E308, 1.0E308] -> Infinity
+stdDev [1.0E308, 1.0E308] 0.0 -> Infinity
+stdDev [1.0E308, 1.0E308] 2.5 -> Infinity
+stdDev [1.0E308, 1.0E308] NaN -> NaN
+stdDev [1.0E308, 1.0E308] 10.0 -> Infinity
+ewma [1.0E308, 1.0E308] 0.0 -> 1.0E308
+ewma [1.0E308, 1.0E308] 0.3 -> 1.0E308
+ewma [1.0E308, 1.0E308] 0.5 -> 1.0E308
+ewma [1.0E308, 1.0E308] 1.0 -> 1.0E308
+holt [1.0E308, 1.0E308] 0.3 0.1 -> 1.0E308
+holt [1.0E308, 1.0E308] 0.3 0.5 -> 1.0E308
+holt [1.0E308, 1.0E308] 0.8 0.1 -> 1.0E308
+holt [1.0E308, 1.0E308] 0.8 0.5 -> 1.0E308
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 1 false -> 1.0E308
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 1 false -> 1.0E308
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 1 true -> 1.0E308
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 1 true -> 1.0E308
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [1.0E308, 1.0E308] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] -> 0.7
+min [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] -> 0.1
+sum [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] -> 2.8
+unweightedAvg [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] -> 0.39999999999999997
+linearWeightedAvg [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] -> 0.4827586206896552
+stdDev [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.0 -> 0.4472135954999579
+stdDev [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 2.5 -> 2.1095023109728985
+stdDev [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] NaN -> NaN
+stdDev [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 10.0 -> 9.602083107326242
+ewma [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.0 -> 0.1
+ewma [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 -> 0.4941181
+ewma [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.5 -> 0.6015625
+ewma [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 1.0 -> 0.7
+holt [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 -> 0.5317758487509999
+holt [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.5 -> 0.644121821875
+holt [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.1 -> 0.6845440143359999
+holt [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 -> 0.6997183999999999
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 1 false -> 0.5462075082761
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 1 false -> 0.8000562999999998
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 1 true -> 0.6644436117065324
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 1 true -> 0.6592093159690707
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 2 false -> 0.7964108635283333
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 2 false -> 0.699828
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 2 true -> 0.7207429666486272
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 2 true -> 1.2328817070889522
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [7] were provided.
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [7] were provided.
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [7] were provided.
+holtWinters [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [7] were provided.
+max [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] -> 12.0
+min [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] -> 1.0
+sum [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] -> 78.0
+unweightedAvg [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] -> 6.5
+linearWeightedAvg [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] -> 8.227848101265822
+stdDev [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.0 -> 7.359800721939872
+stdDev [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 2.5 -> 5.283622494715786
+stdDev [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] NaN -> NaN
+stdDev [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 10.0 -> 4.915960401250875
+ewma [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.0 -> 1.0
+ewma [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 -> 9.712804290669997
+ewma [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.5 -> 11.00048828125
+ewma [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 1.0 -> 12.0
+holt [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 -> 10.80621042406401
+holt [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.5 -> 12.279389958156571
+holt [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.1 -> 11.910200784476075
+holt [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 -> 12.000132485120002
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 1 false -> 12.036995070789445
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 1 false -> 12.9999999977
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 1 true -> 12.095828954072099
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 1 true -> 14.112571777474995
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 2 false -> 11.604042851158031
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 2 false -> 12.999402152000002
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 2 true -> 11.285521745030248
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 2 true -> 17.270311457086905
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 4 false -> 10.935298690342997
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 4 false -> 13.094290624
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.3 0.1 0.2 4 true -> 8.66937678535671
+holtWinters [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] 0.8 0.5 0.9 4 true -> 19.69217838640213
+max [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] -> 5.0
+min [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] -> 0.0
+sum [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] -> 20.0
+unweightedAvg [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] -> 2.5
+linearWeightedAvg [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] -> 2.1621621621621623
+stdDev [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.0 -> 3.5355339059327378
+stdDev [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 2.5 -> 2.5
+stdDev [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] NaN -> NaN
+stdDev [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 10.0 -> 7.905694150420948
+ewma [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.0 -> 5.0
+ewma [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 -> 2.228376499999999
+ewma [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.5 -> 1.6796875
+ewma [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 1.0 -> 0.0
+holt [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 -> 1.891653609891499
+holt [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.5 -> 1.4693569296874995
+holt [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.1 -> 0.8244634787839997
+holt [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 -> 0.9971839999999998
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 1 false -> 1.2380994138043793
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 1 false -> -5.869575199999999
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 1 true -> 1.9249931816837638
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 1 true -> -0.68227419585361
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 2 false -> 3.9715464387655
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 2 false -> 4.742588
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 2 true -> 5.0000000001
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 2 true -> 5.0000000001
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 4 false -> 3.499083895
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 4 false -> 2.2492
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.3 0.1 0.2 4 true -> 5.000000000100001
+holtWinters [5.0, 0.0, 5.0, 0.0, 5.0, 0.0, 5.0, 0.0] 0.8 0.5 0.9 4 true -> 5.0000000001
+max [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] -> NaN
+min [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] -> NaN
+sum [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] -> 29.0
+unweightedAvg [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] -> 4.833333333333333
+linearWeightedAvg [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] -> 5.704545454545454
+stdDev [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.0 -> 5.377421934967226
+stdDev [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 2.5 -> 3.3166247903554
+stdDev [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] NaN -> NaN
+stdDev [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 10.0 -> 5.678908345800274
+ewma [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.0 -> 1.5
+ewma [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 -> 5.618729999999999
+ewma [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.5 -> 6.96875
+ewma [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 1.0 -> 8.5
+holt [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 -> 5.9507146529999995
+holt [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.5 -> 7.052308124999999
+holt [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.1 -> 8.147318528
+holt [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 -> 8.33648
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 1 false -> 1.8599092756419993
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 1 false -> 0.7419360000000003
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 1 true -> 2.4701412551048256
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 1 true -> -0.027298106793753368
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 2 false -> 1.7808987679792496
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 2 false -> -11.404222
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 2 true -> 2.6140583733128606
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 2 true -> -0.2625106514365206
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 4 false -> 2.731544317142856
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 4 false -> -1.4012571428571423
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.3 0.1 0.2 4 true -> 3.3335452500110563
+holtWinters [1.5, 2.5, NaN, 4.5, 5.5, 6.5, NaN, 8.5] 0.8 0.5 0.9 4 true -> -6.204799999876768
+max [0.0, 0.0, 0.0, 0.0] -> 0.0
+min [0.0, 0.0, 0.0, 0.0] -> 0.0
+sum [0.0, 0.0, 0.0, 0.0] -> 0.0
+unweightedAvg [0.0, 0.0, 0.0, 0.0] -> 0.0
+linearWeightedAvg [0.0, 0.0, 0.0, 0.0] -> 0.0
+stdDev [0.0, 0.0, 0.0, 0.0] 0.0 -> 0.0
+stdDev [0.0, 0.0, 0.0, 0.0] 2.5 -> 2.5
+stdDev [0.0, 0.0, 0.0, 0.0] NaN -> NaN
+stdDev [0.0, 0.0, 0.0, 0.0] 10.0 -> 10.0
+ewma [0.0, 0.0, 0.0, 0.0] 0.0 -> 0.0
+ewma [0.0, 0.0, 0.0, 0.0] 0.3 -> 0.0
+ewma [0.0, 0.0, 0.0, 0.0] 0.5 -> 0.0
+ewma [0.0, 0.0, 0.0, 0.0] 1.0 -> 0.0
+holt [0.0, 0.0, 0.0, 0.0] 0.3 0.1 -> 0.0
+holt [0.0, 0.0, 0.0, 0.0] 0.3 0.5 -> 0.0
+holt [0.0, 0.0, 0.0, 0.0] 0.8 0.1 -> 0.0
+holt [0.0, 0.0, 0.0, 0.0] 0.8 0.5 -> 0.0
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 1 false -> 0.0
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 1 false -> 0.0
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 1 true -> 1.0E-10
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 1 true -> 1.0E-10
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 2 false -> 0.0
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 2 false -> 0.0
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 2 true -> 1.0E-10
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 2 true -> 1.0E-10
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [4] were provided.
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [4] were provided.
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [4] were provided.
+holtWinters [0.0, 0.0, 0.0, 0.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [4] were provided.
+max [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] -> 40.0
+min [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] -> 10.0
+sum [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] -> 200.0
+unweightedAvg [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] -> 25.0
+linearWeightedAvg [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] -> 27.027027027027028
+stdDev [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.0 -> 27.386127875258307
+stdDev [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 2.5 -> 25.124689052802225
+stdDev [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] NaN -> NaN
+stdDev [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 10.0 -> 18.708286933869708
+ewma [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.0 -> 10.0
+ewma [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 -> 28.192266999999998
+ewma [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.5 -> 32.578125
+ewma [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 1.0 -> 40.0
+holt [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 -> 30.177569470416998
+holt [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.5 -> 33.13948801562499
+holt [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.1 -> 37.833505349632
+holt [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 -> 38.019712
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 1 false -> 34.693459083035926
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 1 false -> 49.875990300000005
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 1 true -> 35.32762065880483
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 1 true -> 150.0043725745781
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 2 false -> 29.958825764544333
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 2 false -> 63.704162666666676
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 2 true -> 27.067214997143054
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 2 true -> 15.43755377912576
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 4 false -> 24.467032433999996
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 4 false -> 30.750239999999998
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.3 0.1 0.2 4 true -> 10.000000000100002
+holtWinters [10.0, 20.0, 30.0, 40.0, 10.0, 20.0, 30.0, 40.0] 0.8 0.5 0.9 4 true -> 10.0000000001
+max [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] -> NaN
+min [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] -> NaN
+sum [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] -> 635.9
+unweightedAvg [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] -> 63.589999999999996
+linearWeightedAvg [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] -> 57.43571428571429
+stdDev [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.0 -> 68.21614911441425
+stdDev [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 2.5 -> 65.89190390328694
+stdDev [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] NaN -> NaN
+stdDev [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 10.0 -> 59.00544890092779
+ewma [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.0 -> 74.9
+ewma [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 -> 53.71474259359999
+ewma [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.5 -> 47.50703125
+ewma [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 1.0 -> 38.3
+holt [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 -> 51.90897593668571
+holt [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.5 -> 45.97812828671327
+holt [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.1 -> 41.8297343871632
+holt [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 -> 42.0297514496
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 1 false -> 18.688114154284328
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 1 false -> -40.110416955859996
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 1 true -> 23.58758819803938
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 1 true -> -8.566926757343806
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 2 false -> 35.27375896519727
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 2 false -> -58.74584485228389
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 2 true -> 31.540975082093077
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 2 true -> 189.61690258429212
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 4 false -> 34.226233787336426
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 4 false -> 66.91602946586694
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.3 0.1 0.2 4 true -> 42.02301762611811
+holtWinters [74.9, 49.1, 70.8, 95.3, 85.0, NaN, 92.9, 11.6, 58.9, 59.1, 38.3] 0.8 0.5 0.9 4 true -> -74.85507196247146
+max [22.0, 84.2] -> 84.2
+min [22.0, 84.2] -> 22.0
+sum [22.0, 84.2] -> 106.2
+unweightedAvg [22.0, 84.2] -> 53.1
+linearWeightedAvg [22.0, 84.2] -> 47.6
+stdDev [22.0, 84.2] 0.0 -> 61.53714325511057
+stdDev [22.0, 84.2] 2.5 -> 59.393349796084074
+stdDev [22.0, 84.2] NaN -> NaN
+stdDev [22.0, 84.2] 10.0 -> 53.149035739136416
+ewma [22.0, 84.2] 0.0 -> 22.0
+ewma [22.0, 84.2] 0.3 -> 40.66
+ewma [22.0, 84.2] 0.5 -> 53.1
+ewma [22.0, 84.2] 1.0 -> 84.2
+holt [22.0, 84.2] 0.3 0.1 -> 40.66
+holt [22.0, 84.2] 0.3 0.5 -> 40.66
+holt [22.0, 84.2] 0.8 0.1 -> 71.75999999999999
+holt [22.0, 84.2] 0.8 0.5 -> 71.75999999999999
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 1 false -> 55.436
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 1 false -> 151.52
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 1 true -> 66.57252000004725
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 1 true -> 342.5448727265095
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+holtWinters [22.0, 84.2] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [2] were provided.
+max [NaN] -> NaN
+min [NaN] -> NaN
+sum [NaN] -> 0.0
+unweightedAvg [NaN] -> NaN
+linearWeightedAvg [NaN] -> NaN
+stdDev [NaN] 0.0 -> NaN
+stdDev [NaN] 2.5 -> NaN
+stdDev [NaN] NaN -> NaN
+stdDev [NaN] 10.0 -> NaN
+ewma [NaN] 0.0 -> NaN
+ewma [NaN] 0.3 -> NaN
+ewma [NaN] 0.5 -> NaN
+ewma [NaN] 1.0 -> NaN
+holt [NaN] 0.3 0.1 -> NaN
+holt [NaN] 0.3 0.5 -> NaN
+holt [NaN] 0.8 0.1 -> NaN
+holt [NaN] 0.8 0.5 -> NaN
+holtWinters [NaN] 0.3 0.1 0.2 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [NaN] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+max [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] -> NaN
+min [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] -> NaN
+sum [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] -> 384.4
+unweightedAvg [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] -> 38.440000000000005
+linearWeightedAvg [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] -> 40.96071428571428
+stdDev [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.0 -> 48.45214133554883
+stdDev [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 2.5 -> 46.4936554811514
+stdDev [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] NaN -> NaN
+stdDev [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 10.0 -> 40.97328397870984
+ewma [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.0 -> 27.9
+ewma [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 -> 38.65807551719999
+ewma [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.5 -> 32.55078125
+ewma [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 1.0 -> 4.6
+holt [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 -> 41.96489910385833
+holt [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.5 -> 50.771338487465606
+holt [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.1 -> 17.265449899872877
+holt [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 -> 18.614182963199994
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 1 false -> 0.6368286816307691
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 1 false -> -0.11770693247859754
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 1 true -> 4.736723410282593
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 1 true -> -0.010062873083423239
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 2 false -> 10.466488427761897
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 2 false -> 23.21097802849709
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 2 true -> 10.912481100940102
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 2 true -> -0.013353427962951848
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 4 false -> -2.333728491430101
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 4 false -> -74.21677211437816
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.3 0.1 0.2 4 true -> 4.620832834409539
+holtWinters [27.9, 10.3, 8.9, NaN, 77.5, 46.3, 45.0, 10.9, 92.2, 60.8, 4.6, NaN, NaN] 0.8 0.5 0.9 4 true -> -1.3109373973078562
+max [32.4] -> 32.4
+min [32.4] -> 32.4
+sum [32.4] -> 32.4
+unweightedAvg [32.4] -> 32.4
+linearWeightedAvg [32.4] -> 16.2
+stdDev [32.4] 0.0 -> 32.4
+stdDev [32.4] 2.5 -> 29.9
+stdDev [32.4] NaN -> NaN
+stdDev [32.4] 10.0 -> 22.4
+ewma [32.4] 0.0 -> 32.4
+ewma [32.4] 0.3 -> 32.4
+ewma [32.4] 0.5 -> 32.4
+ewma [32.4] 1.0 -> 32.4
+holt [32.4] 0.3 0.1 -> 32.4
+holt [32.4] 0.3 0.5 -> 32.4
+holt [32.4] 0.8 0.1 -> 32.4
+holt [32.4] 0.8 0.5 -> 32.4
+holtWinters [32.4] 0.3 0.1 0.2 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 1 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.3 0.1 0.2 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 1 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 1 == 2) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+holtWinters [32.4] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [1] were provided.
+max [36.1, 44.5, 19.1] -> 44.5
+min [36.1, 44.5, 19.1] -> 19.1
+sum [36.1, 44.5, 19.1] -> 99.7
+unweightedAvg [36.1, 44.5, 19.1] -> 33.23333333333333
+linearWeightedAvg [36.1, 44.5, 19.1] -> 26.057142857142857
+stdDev [36.1, 44.5, 19.1] 0.0 -> 34.872481987951474
+stdDev [36.1, 44.5, 19.1] 2.5 -> 32.498820491416815
+stdDev [36.1, 44.5, 19.1] NaN -> NaN
+stdDev [36.1, 44.5, 19.1] 10.0 -> 25.522996166855748
+ewma [36.1, 44.5, 19.1] 0.0 -> 36.1
+ewma [36.1, 44.5, 19.1] 0.3 -> 32.763999999999996
+ewma [36.1, 44.5, 19.1] 0.5 -> 29.7
+ewma [36.1, 44.5, 19.1] 1.0 -> 19.1
+holt [36.1, 44.5, 19.1] 0.3 0.1 -> 32.9404
+holt [36.1, 44.5, 19.1] 0.3 0.5 -> 33.646
+holt [36.1, 44.5, 19.1] 0.8 0.1 -> 23.9784
+holt [36.1, 44.5, 19.1] 0.8 0.5 -> 24.516
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 1 false -> 29.71414
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 1 false -> -9.506
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 1 true -> 30.23442324274178
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 1 true -> 6.4484682692201
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [36.1, 44.5, 19.1] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [52.1, 57.3, 99.0] -> 99.0
+min [52.1, 57.3, 99.0] -> 52.1
+sum [52.1, 57.3, 99.0] -> 208.4
+unweightedAvg [52.1, 57.3, 99.0] -> 69.46666666666667
+linearWeightedAvg [52.1, 57.3, 99.0] -> 66.24285714285715
+stdDev [52.1, 57.3, 99.0] 0.0 -> 72.56881791329754
+stdDev [52.1, 57.3, 99.0] 2.5 -> 70.1794129357036
+stdDev [52.1, 57.3, 99.0] NaN -> NaN
+stdDev [52.1, 57.3, 99.0] 10.0 -> 63.06266724457506
+ewma [52.1, 57.3, 99.0] 0.0 -> 52.1
+ewma [52.1, 57.3, 99.0] 0.3 -> 67.262
+ewma [52.1, 57.3, 99.0] 0.5 -> 76.85
+ewma [52.1, 57.3, 99.0] 1.0 -> 99.0
+holt [52.1, 57.3, 99.0] 0.3 0.1 -> 67.37119999999999
+holt [52.1, 57.3, 99.0] 0.3 0.5 -> 67.80799999999999
+holt [52.1, 57.3, 99.0] 0.8 0.1 -> 90.5352
+holt [52.1, 57.3, 99.0] 0.8 0.5 -> 90.868
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 1 false -> 78.64962
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 1 false -> 144.49200000000002
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 1 true -> 80.79257797015757
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 1 true -> 162.67482403352713
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [52.1, 57.3, 99.0] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] -> 99.2
+min [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] -> 11.0
+sum [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] -> 403.90000000000003
+unweightedAvg [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] -> 67.31666666666668
+linearWeightedAvg [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] -> 66.05
+stdDev [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.0 -> 75.74407567592333
+stdDev [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 2.5 -> 73.53116119487484
+stdDev [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] NaN -> NaN
+stdDev [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 10.0 -> 67.01366776014179
+ewma [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.0 -> 99.2
+ewma [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 -> 74.31310399999998
+ewma [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.5 -> 74.98750000000001
+ewma [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 1.0 -> 75.7
+holt [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 -> 69.8222024954
+holt [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.5 -> 58.803514624999984
+holt [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.1 -> 77.4509640704
+holt [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 -> 80.031424
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 1 false -> 71.06453605464
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 1 false -> 46.73602999999997
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 1 true -> 74.55821929758295
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 1 true -> 5.834331614605571
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 2 false -> 87.89892874724862
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 2 false -> 164.182981923775
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 2 true -> 242.1659962209393
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 2 true -> 105.19652817841614
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [6] were provided.
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [6] were provided.
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [6] were provided.
+holtWinters [99.2, 11.0, 91.7, 28.9, 97.4, 75.7] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [6] were provided.
+max [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] -> NaN
+min [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] -> NaN
+sum [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] -> 384.2
+unweightedAvg [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] -> 54.885714285714286
+linearWeightedAvg [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] -> 56.279310344827586
+stdDev [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.0 -> 60.329760483529185
+stdDev [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 2.5 -> 58.064631477099965
+stdDev [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] NaN -> NaN
+stdDev [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 10.0 -> 51.40005558640685
+ewma [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.0 -> 2.9
+ewma [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 -> 52.363794799999994
+ewma [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.5 -> 54.993750000000006
+ewma [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 1.0 -> 44.9
+holt [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 -> 60.079869341167985
+holt [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.5 -> 76.72241194999997
+holt [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.1 -> 51.535187560448
+holt [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 -> 51.7753152
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 1 false -> 32.307779250091755
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 1 false -> -46.86697233999999
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 1 true -> 38.91391088840025
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 1 true -> -1.781186677257844
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 2 false -> 35.447632572152486
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 2 false -> -55.169873782082334
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 2 true -> 42.94812418255313
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 2 true -> -11.722060062828767
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 4 false -> 34.77460715630619
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 4 false -> -22.355982415234568
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.3 0.1 0.2 4 true -> 30.307367858952418
+holtWinters [NaN, 2.9, 79.7, 73.3, 59.4, 46.0, 78.0, 44.9] 0.8 0.5 0.9 4 true -> -86.1661611276405
+max [75.2, NaN, 29.8] -> NaN
+min [75.2, NaN, 29.8] -> NaN
+sum [75.2, NaN, 29.8] -> 105.0
+unweightedAvg [75.2, NaN, 29.8] -> 52.5
+linearWeightedAvg [75.2, NaN, 29.8] -> 33.7
+stdDev [75.2, NaN, 29.8] 0.0 -> 57.19737756226242
+stdDev [75.2, NaN, 29.8] 2.5 -> 54.911656321768334
+stdDev [75.2, NaN, 29.8] NaN -> NaN
+stdDev [75.2, NaN, 29.8] 10.0 -> 48.18236191802971
+ewma [75.2, NaN, 29.8] 0.0 -> 75.2
+ewma [75.2, NaN, 29.8] 0.3 -> 61.58
+ewma [75.2, NaN, 29.8] 0.5 -> 52.5
+ewma [75.2, NaN, 29.8] 1.0 -> 29.8
+holt [75.2, NaN, 29.8] 0.3 0.1 -> 61.58
+holt [75.2, NaN, 29.8] 0.3 0.5 -> 61.58
+holt [75.2, NaN, 29.8] 0.8 0.1 -> 38.88
+holt [75.2, NaN, 29.8] 0.8 0.5 -> 38.88
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 1 false -> 22.306959999999993
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 1 false -> -28.604
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 1 true -> 27.42155369366916
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 1 true -> -1.0185097872365674
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 2 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 2 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 2 == 4) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+holtWinters [75.2, NaN, 29.8] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [3] were provided.
+max [NaN, 43.3, 83.2, NaN, 28.7] -> NaN
+min [NaN, 43.3, 83.2, NaN, 28.7] -> NaN
+sum [NaN, 43.3, 83.2, NaN, 28.7] -> 155.2
+unweightedAvg [NaN, 43.3, 83.2, NaN, 28.7] -> 51.73333333333333
+linearWeightedAvg [NaN, 43.3, 83.2, NaN, 28.7] -> 42.25714285714285
+stdDev [NaN, 43.3, 83.2, NaN, 28.7] 0.0 -> 56.629850785606
+stdDev [NaN, 43.3, 83.2, NaN, 28.7] 2.5 -> 54.355527164524254
+stdDev [NaN, 43.3, 83.2, NaN, 28.7] NaN -> NaN
+stdDev [NaN, 43.3, 83.2, NaN, 28.7] 10.0 -> 47.66836826799648
+ewma [NaN, 43.3, 83.2, NaN, 28.7] 0.0 -> 43.3
+ewma [NaN, 43.3, 83.2, NaN, 28.7] 0.3 -> 47.29899999999999
+ewma [NaN, 43.3, 83.2, NaN, 28.7] 0.5 -> 45.975
+ewma [NaN, 43.3, 83.2, NaN, 28.7] 1.0 -> 28.7
+holt [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 -> 48.1369
+holt [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.5 -> 51.488499999999995
+holt [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.1 -> 38.642399999999995
+holt [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 -> 41.196
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 1 false -> 8.637599250999996
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 1 false -> 3.4120899999999956
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 1 true -> 13.484559589608262
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 1 true -> -0.08087677982321757
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 2 false -> 11.933717427075095
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 2 false -> -25.911350988142292
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 2 true -> 23.655162371585533
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 2 true -> -2.680999907625195
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [5] were provided.
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 4 false -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [5] were provided.
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.3 0.1 0.2 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [5] were provided.
+holtWinters [NaN, 43.3, 83.2, NaN, 28.7] 0.8 0.5 0.9 4 true -> !java.lang.IllegalArgumentException: Holt-Winters aggregation requires at least (2 * period == 2 * 4 == 8) data-points to function.  Only [5] were provided.
+max [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] -> NaN
+min [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] -> NaN
+sum [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] -> 480.9
+unweightedAvg [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] -> 68.7
+linearWeightedAvg [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] -> 65.5206896551724
+stdDev [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.0 -> 73.96907655036857
+stdDev [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 2.5 -> 71.65315265718799
+stdDev [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] NaN -> NaN
+stdDev [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 10.0 -> 64.78753186929015
+ewma [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.0 -> 66.5
+ewma [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 -> 67.4643746
+ewma [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.5 -> 68.246875
+ewma [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 1.0 -> 90.3
+holt [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 -> 67.685599632056
+holt [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.5 -> 67.24539552499998
+holt [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.1 -> 76.17501545881599
+holt [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 -> 71.5241664
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 1 false -> 31.768198681611736
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 1 false -> -105.67177528000002
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 1 true -> 39.043816379630684
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 1 true -> -103.61240921666517
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 2 false -> 58.53191134556684
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 2 false -> 110.41466943825817
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 2 true -> 51.50610531065552
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 2 true -> 79.84987666326795
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 4 false -> 47.74103756851588
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 4 false -> 11.159112298136638
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.3 0.1 0.2 4 true -> 43.03490204453936
+holtWinters [66.5, 62.1, 78.4, 82.8, 93.9, 6.9, 90.3, NaN] 0.8 0.5 0.9 4 true -> -11.510006298435897

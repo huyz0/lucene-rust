@@ -16,6 +16,7 @@ pub mod list;
 pub mod locale;
 pub mod map;
 pub mod math;
+pub mod moving;
 pub mod number;
 pub mod objects;
 pub mod optional;
@@ -27,6 +28,8 @@ pub mod time;
 
 #[cfg(test)]
 mod java_diff_tests;
+#[cfg(test)]
+mod moving_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -77,6 +80,7 @@ pub fn static_method(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         }
         "java.lang.System" => objects::system_lookup(name, arity),
         score::UTILS => score::static_lookup(name, arity),
+        moving::CLASS => moving::static_lookup(name, arity),
         c if c.starts_with("java.time.") => time::static_lookup(c, name, arity),
         _ => None,
     }
