@@ -404,6 +404,21 @@ mod tests {
         let dir = lucene_util::test_support::TempDir::new("ffi-data-pack");
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../lucene-analysis-kuromoji/src/resources");
+        // The dictionary files are not tracked and only the `embedded-data`
+        // build fetches them, so fetch them here when this build did not.
+        if pack::RESOURCES.iter().any(|r| !src.join(r.file).exists()) {
+            let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/fetch-data.py");
+            let status = std::process::Command::new("python3")
+                .arg(script)
+                .args(["--pack", "kuromoji"])
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "scripts/fetch-data.py --pack kuromoji failed"
+            );
+        }
         std::fs::create_dir_all(dir.path().join(pack::NAME)).unwrap();
         for r in &pack::RESOURCES {
             std::fs::copy(src.join(r.file), dir.path().join(pack::NAME).join(r.file)).unwrap();
