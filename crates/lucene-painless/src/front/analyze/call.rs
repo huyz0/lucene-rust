@@ -4,7 +4,7 @@
 //! its static members.
 
 use super::expr::Typed;
-use super::ty::{from_table, is_primitive, unboxed, STRING};
+use super::ty::{from_table, is_primitive, STRING};
 use super::{compile_error, unsupported, Cx, Res};
 use crate::front::allowlist::{Allowlist, MethodSig};
 use crate::front::ast::{self, ExprKind};
@@ -33,6 +33,18 @@ fn chain(ty: &str, left: Node, right: Node) -> Node {
         left: Box::new(left),
         right: Box::new(right),
     }
+}
+
+const MAP: &str = "java.util.Map";
+
+/// The getter a field name stands for: `getX` or `isX`.
+fn getter_of<'a>(class: &str, name: &str) -> Option<(String, &'a MethodSig)> {
+    let mut c = name.chars();
+    let cap: String = c.next()?.to_uppercase().chain(c).collect();
+    ["get", "is"].into_iter().find_map(|p| {
+        let n = format!("{p}{cap}");
+        find_method(class, &n, 0, false).map(|m| (n, m))
+    })
 }
 
 /// The name a chain of plain member reads spells (`Map.Entry`,
@@ -233,41 +245,40 @@ impl Cx<'_> {
             Prefix::Value(t) if t.ty == "void" || t.ty == "null" => {
                 return compile_error(pos, format!("cannot read a field of [{}]", t.ty));
             }
+            Prefix::Value(t) if t.ty.starts_with('[') => {
+                if name != "length" || null_safe {
+                    return unsupported("field of an array");
+                }
+                let read = Node::LoadDotArrayLength { ty: "int".into() };
+                return Ok(typed(chain("int", t.node, read), "int"));
+            }
             Prefix::Value(t) => {
                 let class = lookup_class(&t.ty);
-                if is_primitive(&t.ty) || null_safe {
-                    return unsupported("field of a primitive, or a null-safe field");
+                if is_primitive(&t.ty) {
+                    return unsupported("field of a primitive");
                 }
                 (t.node, class, false)
             }
         };
-        if let Some(f) = al.field(&class, name).filter(|f| f.is_static == is_static) {
-            let ty = from_table(&f.ty);
-            let read = Node::LoadDot {
-                ty: ty.clone(),
-                field: ir::Field {
-                    class: class.clone(),
-                    name: name.into(),
-                    is_static,
+        let (read, ty) =
+            if let Some(f) = al.field(&class, name).filter(|f| f.is_static == is_static) {
+                let ty = from_table(&f.ty);
+                let read = Node::LoadDot {
                     ty: ty.clone(),
-                },
-            };
-            return Ok(typed(chain(&ty, left, read), &ty));
-        }
-        if !is_static {
-            let cap = {
-                let mut c = name.chars();
-                c.next()
-                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
-                    .unwrap_or_default()
-            };
-            let getter = find_method(&class, &format!("get{cap}"), 0, false)
-                .map(|m| (format!("get{cap}"), m))
-                .or_else(|| {
-                    find_method(&class, &format!("is{cap}"), 0, false)
-                        .map(|m| (format!("is{cap}"), m))
-                });
-            if let Some((getter_name, sig)) = getter {
+                    field: ir::Field {
+                        class: class.clone(),
+                        name: name.into(),
+                        is_static,
+                        ty: ty.clone(),
+                    },
+                };
+                (read, ty)
+            } else if is_static {
+                return compile_error(
+                    pos,
+                    format!("Unknown field [{name}] for type [{}].", canonical(&class)),
+                );
+            } else if let Some((getter_name, sig)) = getter_of(&class, name) {
                 let ty = from_table(&sig.ret);
                 let method = ir::Method {
                     target: class.clone(),
@@ -281,15 +292,52 @@ impl Cx<'_> {
                     ty: ty.clone(),
                     getter: Some(method),
                 };
-                return Ok(typed(chain(&ty, left, read), &ty));
+                (read, ty)
+            } else if al.is_assignable(&class, MAP) {
+                let get = find_method(&class, "get", 1, false)
+                    .ok_or_else(|| super::Refusal::Unsupported("map without get".into()))?;
+                let method = ir::Method {
+                    target: class.clone(),
+                    name: "get".into(),
+                    declaring: get.augment.clone().unwrap_or_else(|| class.clone()),
+                    is_static: false,
+                    params: get.params.iter().map(|p| from_table(p)).collect(),
+                    ret: DEF.into(),
+                };
+                let key = Node::Constant {
+                    ty: STRING.into(),
+                    value: ir::Constant::Str(name.into()),
+                };
+                let read = chain(
+                    DEF,
+                    key,
+                    Node::LoadMapShortcut {
+                        ty: DEF.into(),
+                        getter: Some(method),
+                    },
+                );
+                (read, DEF.to_string())
+            } else if al.is_assignable(&class, "java.util.List") {
+                return unsupported("list shortcut");
+            } else {
+                return compile_error(
+                    pos,
+                    format!("Unknown field [{name}] for type [{}].", canonical(&class)),
+                );
+            };
+        let result = if null_safe && is_primitive(&ty) {
+            super::ty::boxed(&ty).to_string()
+        } else {
+            ty
+        };
+        let read = if null_safe {
+            Node::NullSafeSub {
+                ty: result.clone(),
+                child: Box::new(read),
             }
-            if class != STRING && unboxed(&class).is_none() {
-                return unsupported("list or map shortcut");
-            }
-        }
-        compile_error(
-            pos,
-            format!("Unknown field [{name}] for type [{}].", canonical(&class)),
-        )
+        } else {
+            read
+        };
+        Ok(typed(chain(&result, left, read), &result))
     }
 }

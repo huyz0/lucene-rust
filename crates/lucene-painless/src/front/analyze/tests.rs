@@ -101,14 +101,7 @@ fn a_call_checks_its_arity_and_functions_are_unique() {
 
 #[test]
 fn what_is_not_lowered_yet_is_named() {
-    for (src, what) in [
-        ("[1, 2]", "list"),
-        ("for (def x : [1]) { }", "for-each"),
-        ("try { } catch (Exception e) { }", "try"),
-        ("int[] a = new int[1];", "array"),
-        ("return params", "variable"),
-        ("params.x", "variable"),
-    ] {
+    for (src, what) in [("return doc", "variable")] {
         match refusal(src) {
             Refusal::Unsupported(w) => assert!(w.contains(what), "{src}: {w}"),
             other => panic!("{src}: {other}"),
@@ -120,7 +113,7 @@ fn what_is_not_lowered_yet_is_named() {
 fn a_refusal_names_its_cause() {
     let r = refusal("break;");
     assert!(r.to_string().contains(" at "), "{r}");
-    assert!(refusal("return params")
+    assert!(refusal("return doc")
         .to_string()
         .starts_with("unsupported:"));
 }
@@ -262,4 +255,173 @@ fn a_postfix_increment_yields_the_old_value() {
         Value::Int(11)
     ));
     assert!(matches!(eval("int i = 5; ++i + i++"), Value::Int(12)));
+}
+
+#[test]
+fn objects_lists_and_maps_are_built() {
+    assert!(matches!(eval("new ArrayList().size()"), Value::Int(0)));
+    assert!(matches!(
+        eval("new StringBuilder('ab').length()"),
+        Value::Int(2)
+    ));
+    assert!(matches!(eval("[1, 'a', 2.5].size()"), Value::Int(3)));
+    assert!(matches!(eval("[1, 2, 3].get(1)"), Value::Int(2)));
+    assert!(matches!(eval("[:].size()"), Value::Int(0)));
+    assert!(matches!(eval("['a': 1, 'b': 2].get('b')"), Value::Int(2)));
+    assert!(matches!(eval("new ArrayList(); 7"), Value::Int(7)));
+    assert!(message("new ArrayList(1, 2, 3)").contains("Unknown new call"));
+    assert!(message("new List()").contains("Unknown new call"));
+}
+
+#[test]
+fn reference_equality_compares_as_painless_does() {
+    assert!(matches!(
+        eval("def a = 1; def b = 1; a === b"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("def x = (byte)7; def y = (int)7; x === y"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m === null"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m !== null"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("boolean x = true; boolean y = true; x === y"),
+        Value::Bool(true)
+    ));
+}
+
+#[test]
+fn params_map_keys_and_elvis_read_as_painless_does() {
+    assert!(matches!(eval("params.a"), Value::Null));
+    assert!(matches!(eval("params.a ?: 5"), Value::Int(5)));
+    assert!(matches!(eval("Map m = ['k': 3]; m.k"), Value::Int(3)));
+    assert!(matches!(eval("Map m = ['k': 3]; m.nope?.x"), Value::Null));
+    assert!(matches!(
+        eval("def m = ['k': ['j': 4]]; m.k.j"),
+        Value::Int(4)
+    ));
+    assert!(matches!(eval("String s = null; s ?: 'z'"), Value::Str(z) if &*z == "z"));
+    assert!(message("int i = 1; i ?: 2").contains("elvis"));
+    assert!(message("'a'.nope").contains("Unknown field [nope]"));
+}
+
+#[test]
+fn arrays_are_made_indexed_and_assigned() {
+    assert!(matches!(
+        eval("int[] a = new int[3]; a.length"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[] {4, 5, 6}; a[1] + a[-1]"),
+        Value::Int(11)
+    ));
+    assert!(matches!(
+        eval("int[][] a = new int[2][3]; a[1][2] = 7; a[1][2]"),
+        Value::Int(7)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; a[0] += 5; a[0] *= 3; a[0]"),
+        Value::Int(15)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; a[1] = 4; int b = a[1]++; b * 10 + a[1]"),
+        Value::Int(45)
+    ));
+    assert!(matches!(
+        eval("int[] a = new int[2]; int b = ++a[0] + a[0]--; b * 10 + a[0]"),
+        Value::Int(20)
+    ));
+    assert!(
+        matches!(eval("String[] s = new String[] {'a', 'b'}; s[1]"), Value::Str(x) if &*x == "b")
+    );
+    assert!(matches!(
+        eval("def a = new int[] {1, 2}; a[1]"),
+        Value::Int(2)
+    ));
+    assert!(message("int[] a = new int[1]; a['x']").contains("cannot cast"));
+    assert!(message("int a = 1; a[0]").contains("Cannot apply []"));
+    assert!(matches!(
+        refusal("int[] a = new int[1]; long[] b = a;"),
+        Refusal::Unsupported(_)
+    ));
+}
+
+#[test]
+fn elements_and_members_of_lists_maps_and_defs_are_assigned() {
+    assert!(matches!(
+        eval("List l = [1, 2]; l[0] = 9; l[0] + l[-1]"),
+        Value::Int(11)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m['k'] = 3; m['k'] += 4; m.k"),
+        Value::Int(7)
+    ));
+    assert!(matches!(
+        eval("Map m = new HashMap(); m.k = 3; m['k']"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("def m = new HashMap(); m.k = 5; m.k++; m.k"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("def a = [1, 2]; a[0] = 8; a[0]"),
+        Value::Int(8)
+    ));
+    assert!(matches!(
+        eval("List l = [1]; int x = (l[0] = 6); x"),
+        Value::Int(6)
+    ));
+    assert!(message("String s = 'a'; s?.x = 1").contains("null-safe"));
+}
+
+#[test]
+fn instanceof_and_for_each_follow_the_value_and_the_collection() {
+    assert!(matches!(
+        eval("def x = 'a'; x instanceof String"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("int x = 1; x instanceof Integer"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("def x = []; x instanceof Map"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("int s = 0; for (int i : [1, 2, 3]) { s += i } s"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("int s = 0; for (x in new int[] {4, 5}) { s += x } s"),
+        Value::Int(9)
+    ));
+    assert!(matches!(
+        eval("long s = 0; for (long i : new int[] {4, 5}) { s += i } s"),
+        Value::Long(9)
+    ));
+    assert!(message("for (int i : 5) { }").contains("Illegal for each"));
+    assert!(message("for (int i : 'ab') { }").contains("Illegal for each"));
+}
+
+#[test]
+fn try_catch_and_throw_follow_the_exception_type() {
+    assert!(matches!(
+        eval("int x = 1; try { x = 2 } catch (Exception e) { x = 3 } x"),
+        Value::Int(2)
+    ));
+    assert!(matches!(
+        eval("int x = 1; try { throw new RuntimeException('a') } catch (Exception e) { x = 3 } x"),
+        Value::Int(3)
+    ));
+    assert!(message("throw 'a'").contains("cannot cast"));
+    assert!(message("try { } catch (String e) { }").contains("not an exception type"));
 }

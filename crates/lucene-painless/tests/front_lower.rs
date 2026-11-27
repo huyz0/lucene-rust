@@ -19,7 +19,7 @@ use common::{matches, read_value, show, Expected, Rd};
 
 /// The scripts that lowered and matched when this floor was last raised;
 /// it only goes up.
-const MIN_LOWERED: usize = 4300;
+const MIN_LOWERED: usize = 4800;
 
 type Outcome = Result<Expected, String>;
 

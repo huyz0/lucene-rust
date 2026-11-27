@@ -10,9 +10,52 @@ pub const STRING: &str = "java.lang.String";
 
 /// The IR name of a written type.
 pub fn resolve(t: &ast::Type) -> Res<String> {
-    if t.dims > 0 {
-        return unsupported("array types");
+    let base = resolve_base(t)?;
+    if t.dims == 0 {
+        return Ok(base);
     }
+    if base == "void" {
+        return unsupported("array of void");
+    }
+    Ok(array_of(&base, t.dims))
+}
+
+/// The JVM name of `dims` dimensions of arrays of `component`.
+pub fn array_of(component: &str, dims: usize) -> String {
+    let leaf = match component {
+        "boolean" => "Z".to_string(),
+        "byte" => "B".into(),
+        "short" => "S".into(),
+        "char" => "C".into(),
+        "int" => "I".into(),
+        "long" => "J".into(),
+        "float" => "F".into(),
+        "double" => "D".into(),
+        c if c.starts_with('[') => return format!("{}{c}", "[".repeat(dims)),
+        c => format!("L{c};"),
+    };
+    format!("{}{leaf}", "[".repeat(dims))
+}
+
+/// The type an array's elements have, or `None` for a type that is not an
+/// array.
+pub fn component(array: &str) -> Option<String> {
+    let inner = array.strip_prefix('[')?;
+    Some(match inner {
+        "Z" => "boolean".to_string(),
+        "B" => "byte".into(),
+        "S" => "short".into(),
+        "C" => "char".into(),
+        "I" => "int".into(),
+        "J" => "long".into(),
+        "F" => "float".into(),
+        "D" => "double".into(),
+        i if i.starts_with('[') => i.to_string(),
+        i => i.trim_start_matches('L').trim_end_matches(';').to_string(),
+    })
+}
+
+fn resolve_base(t: &ast::Type) -> Res<String> {
     Ok(match t.name.as_str() {
         "def" => DEF.to_string(),
         "boolean" | "byte" | "short" | "char" | "int" | "long" | "float" | "double" | "void" => {
