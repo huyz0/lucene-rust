@@ -5,10 +5,12 @@
 //! [`crate::ir`]) consume the tree; nothing here resolves a type or a name.
 
 pub mod allowlist;
+pub mod analyze;
 pub mod ast;
 mod lex;
 mod parse;
 
+pub use analyze::{analyze, Refusal};
 pub use parse::{parse, Limits};
 
 /// Why source does not parse: where, and what was found.
