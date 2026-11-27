@@ -2076,6 +2076,45 @@ pub fn static_field(class: &str, name: &str) -> Option<Value> {
     })
 }
 
+/// Whether `ZoneId.of` serves `id`: it names a fixed offset.
+pub fn is_fixed_offset_id(id: &str) -> bool {
+    zone_id_of(id).is_ok()
+}
+
+/// `ZoneId.of` for the ids that name a fixed offset: `Z`, `+hh`, `+hh:mm`,
+/// `+hhmm`, `+hh:mm:ss`, `+hhmmss`. A region (`America/Los_Angeles`), a prefixed
+/// id (`UTC+1`) or a malformed one is left to Java.
+fn zone_id_of(id: &str) -> Result<Value, Throw> {
+    let left = || crate::compile::missing("ZoneId.of");
+    if id == "Z" {
+        return offset_of(0, 0, 0);
+    }
+    let (sign, rest) = match id.as_bytes().first() {
+        Some(b'+') => (1, &id[1..]),
+        Some(b'-') => (-1, &id[1..]),
+        _ => return Err(left()),
+    };
+    let digits: String = if rest.contains(':') {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if !(1..=3).contains(&parts.len()) || parts.iter().any(|p| p.len() != 2) {
+            return Err(left());
+        }
+        parts.concat()
+    } else {
+        rest.to_string()
+    };
+    if !matches!(digits.len(), 2 | 4 | 6) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(left());
+    }
+    let part = |i: usize| {
+        digits
+            .get(i * 2..i * 2 + 2)
+            .map_or(0, |d| d.parse::<i64>().unwrap_or(0))
+            * sign
+    };
+    offset_of(part(0), part(1), part(2))
+}
+
 fn offset_of(hours: i64, minutes: i64, seconds: i64) -> Result<Value, Throw> {
     let range = |what: &str, v: i64, lo: i64, hi: i64| {
         if (lo..=hi).contains(&v) {
@@ -2248,6 +2287,7 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
                 (0..30).map(|i| field_value(Field(i))).collect(),
             ))
         },
+        ("java.time.ZoneId", "of", 1) => |_vm, a| zone_id_of(&crate::api::str_arg(&a[0])?),
         (ZONE_OFFSET, "ofHours", 1) => |_vm, a| offset_of(i64::from(int_arg(&a[0])?), 0, 0),
         (ZONE_OFFSET, "ofHoursMinutes", 2) => {
             |_vm, a| offset_of(i64::from(int_arg(&a[0])?), i64::from(int_arg(&a[1])?), 0)

@@ -1140,6 +1140,19 @@ impl Fx<'_> {
                         e.words = 1;
                     }
                 }
+                if m.is_static && m.target == "java.time.ZoneId" && m.name == "of" {
+                    // A region id needs the tz database, which the runtime
+                    // lacks: refuse it where it is known, at compile time.
+                    if let [Node::Constant {
+                        value: Constant::Str(id),
+                        ..
+                    }] = args.as_slice()
+                    {
+                        if !api::time::is_fixed_offset_id(id) {
+                            return Err(unsupported(format!("ZoneId.of({id})")));
+                        }
+                    }
+                }
                 let mut a = self.exprs(args)?;
                 if m.is_static && !api::is_augmentation(&m.declaring) {
                     let f = api::static_method(&m.target, &m.name, args.len())
