@@ -6,7 +6,7 @@
 //! cargo build -p lucene-index --release --example hot_tier_bench
 //! hot_tier_bench --docs 1000000 --tier off|BYTES --workload stream|bulk|trickle \
 //!     [--rate R] [--seconds S] [--hot-set N] [--hot-share 0.8] [--share 0.1] \
-//!     [--threads 4] [--refresh-ms 1000] [--live]
+//!     [--threads 4] [--refresh-ms 1000] [--live] [--history]
 //! ```
 //!
 //! The documents are what the engine writes: an `_id` term, a body of about 70
@@ -217,6 +217,8 @@ fn main() {
     );
     let live = args.iter().any(|a| a == "--live");
     let tier_on_load = args.iter().any(|a| a == "--tier-on-load");
+    // Each dropped update leaves a no-op carrying its sequence number.
+    let history = args.iter().any(|a| a == "--history");
     let view_ms: u64 = arg(&args, "--view-ms", 0);
     let views = AtomicU64::new(0);
     let view_us_sum = AtomicU64::new(0);
@@ -266,6 +268,9 @@ fn main() {
     };
     iw.register_field(num_dv("__soft_deletes").with_soft_deletes_field(true))
         .unwrap();
+    if history {
+        iw.register_field(num_dv("_tombstone")).unwrap();
+    }
     let w = ConcurrentIndexWriter::new(iw, threads as usize).unwrap();
     if live {
         w.enable_live_search().unwrap();
@@ -306,9 +311,16 @@ fn main() {
         let enable_tier = || {
             if tier != "off" {
                 let bytes: usize = tier.parse().expect("--tier off|BYTES");
-                let cfg = HotTierConfig::with_budget(bytes)
+                let mut cfg = HotTierConfig::with_budget(bytes)
                     .with_min_updates_per_second(min_rate)
                     .unwrap();
+                if history {
+                    cfg = cfg.with_history(lucene_index::hot_tier::HistoryStub {
+                        copy: vec!["_seq_no".to_string()],
+                        constants: vec![("_version".to_string(), 1), ("_tombstone".to_string(), 1)],
+                        source: Some(("_source".to_string(), b"superseded".to_vec())),
+                    });
+                }
                 w.enable_hot_tier(cfg);
             }
         };

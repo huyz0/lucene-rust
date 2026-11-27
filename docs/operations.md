@@ -86,15 +86,25 @@ writer panic.
 ### Hot rows (update coalescing)
 
 `index.hot_tier.max_memory` (index setting, final, default `0` = off) holds the latest version of rows that are
-updated often in a small, bounded buffer, so the versions in between are never indexed. Rows updated once or
+updated often in a small, bounded buffer, so the versions in between are never inverted. Rows updated once or
 rarely, trickle updates and bulk updates never enter it: a row is held only after it is updated faster than
-`index.hot_tier.min_update_rate` (updates per second per row, default `1.0`, range 0.5 to 100). Heat is tracked in a fixed
-sketch of at most 2 MiB; held operations are counted against `max_memory` until applied, and an operation that does
-not fit is written through at once, so the budget (an estimate of the held operations' size) is not exceeded and the cost degrades to today's speed.
+`index.hot_tier.min_update_rate` (updates per second per row, default `1.0`, range 0.5 to 100). Heat is tracked in a
+fixed sketch of at most 2 MiB; held operations are counted against `max_memory` until applied, and an operation that
+does not fit is written through at once, so the cost degrades to today's speed. The byte count is walked from each
+held operation and checked against a counting allocator (0 to 10% above what the allocator holds).
 
-Downsides, which is why it is off: a held update is not searchable until the next refresh, flush, commit or
-realtime view; the sequence numbers of dropped intermediate versions leave holes in the history that replicas and
-cross-cluster replication replay; intermediate versions are not kept. Segments are stock Lucene.
+What it changes, and what it does not:
+
+- **Visibility.** A held update is applied at the next refresh, flush, commit or realtime view, and a refresh is
+  when any update becomes searchable, so search results are the same as without the tier. `GET` by id reads the
+  version map as before.
+- **History.** Every update the tier drops leaves a small no-op tombstone with its sequence number and primary term
+  (as `Engine.NoOp` writes), hidden by the soft-deletes field, so replicas and cross-cluster replication read a
+  history with no gap. When the no-op cannot be built the dropped update is written whole.
+- **Failures.** The documents a held update will add count against the document limit when it is acknowledged, so
+  applying it later cannot be refused for that. If applying a held update fails anyway (an I/O error), the writer
+  reports it on every later write and cut, and the shard fails as it does for any writer error.
+- **Intermediate versions.** The versions a newer update replaced within one refresh are not in the segments.
 
 ### Language data packs
 

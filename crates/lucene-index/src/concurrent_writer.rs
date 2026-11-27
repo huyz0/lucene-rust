@@ -112,6 +112,7 @@ use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
 use lucene_codecs::field_infos::FieldInfo;
 
+mod hot;
 mod live;
 pub(crate) use live::DocValuesRun;
 pub use live::{
@@ -425,6 +426,9 @@ pub struct ConcurrentIndexWriter<'d> {
     next_buffer_id: AtomicU64,
     /// [`Self::enable_hot_tier`]: held updates of rows that keep changing.
     hot: std::sync::OnceLock<Arc<crate::hot_tier::HotTier>>,
+    /// Set when applying a held operation failed: the update was acknowledged
+    /// and is lost, so every later write and cut reports it.
+    hot_failed: Mutex<Option<String>>,
 }
 
 /// The scheduler this writer hands its pending merges to, and the writer
@@ -652,6 +656,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             live: AtomicBool::new(false),
             next_buffer_id: AtomicU64::new(1),
             hot: std::sync::OnceLock::new(),
+            hot_failed: Mutex::new(None),
         })
     }
 
@@ -1486,13 +1491,34 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
         if let Some(hot) = self.hot.get() {
+            self.hot_check()?;
+            // The documents it holds count against the limit as they are
+            // acknowledged, so applying them later cannot be refused.
+            let total = self
+                .segment_docs
+                .load(Ordering::Acquire)
+                .saturating_add(self.buffered_docs.load(Ordering::Acquire))
+                .saturating_add(hot.held_docs())
+                .saturating_add(docs.len());
+            if total > self.max_docs {
+                return Err(crate::index_writer::Error::TooManyDocs(self.max_docs));
+            }
             let op = crate::hot_tier::HeldOp::new(partition, term, docs, vectors, updates);
             let mut apply = |op: crate::hot_tier::HeldOp| self.apply_held(op).map(|_| ());
-            return match hot.offer(op, &mut apply)? {
-                // The sequence number of the latest assigned operation: a held update is
-                // numbered when it is applied, so this is not its own.
-                crate::hot_tier::Offer::Held => Ok(lock(&self.log).next_seq.saturating_sub(1)),
-                crate::hot_tier::Offer::Through(op) => self.apply_held(op),
+            let offered = hot
+                .offer(op, &mut apply)
+                .inspect_err(|e| self.hot_fail(e))?;
+            return match offered {
+                crate::hot_tier::Offer::Held { dropped } => {
+                    self.keep_history(hot, dropped)?;
+                    // The sequence number of the latest assigned operation: a held update is
+                    // numbered when it is applied, so this is not its own.
+                    Ok(lock(&self.log).next_seq.saturating_sub(1))
+                }
+                crate::hot_tier::Offer::Through { op, dropped } => {
+                    self.keep_history(hot, dropped)?;
+                    self.apply_held(op)
+                }
             };
         }
         self.add_explicit(
@@ -1500,36 +1526,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
             Some(DeleteNode::DocValuesUpdates(updates)),
             docs,
             vectors,
-        )
-    }
-
-    /// Turns the hot tier on, once: see [`crate::hot_tier`].
-    pub fn enable_hot_tier(&self, cfg: crate::hot_tier::HotTierConfig) -> bool {
-        self.hot
-            .set(Arc::new(crate::hot_tier::HotTier::new(cfg)))
-            .is_ok()
-    }
-
-    /// The hot tier's counters, when it is on.
-    pub fn hot_tier_stats(&self) -> Option<crate::hot_tier::HotTierStats> {
-        self.hot.get().map(|h| h.stats())
-    }
-
-    /// Applies every held operation: what a flush, a commit, a snapshot and
-    /// a live view do first. Returns how many.
-    pub fn drain_hot_tier(&self) -> Result<usize> {
-        match self.hot.get() {
-            Some(hot) => hot.drain(&mut |op| self.apply_held(op).map(|_| ())),
-            None => Ok(0),
-        }
-    }
-
-    fn apply_held(&self, op: crate::hot_tier::HeldOp) -> Result<SeqNo> {
-        self.add_explicit(
-            op.partition,
-            Some(DeleteNode::DocValuesUpdates(op.soft_deletes)),
-            op.docs,
-            op.vectors,
         )
     }
 

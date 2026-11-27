@@ -31,20 +31,25 @@
 //!   retried. Callers treat a writer error as fatal, as the engine does.
 //! - **Lock order.** `apply` runs under a shard lock, so it may take the writer's
 //!   own locks; nothing holding a writer lock may take a shard lock.
-//! - **Memory is an estimate.** Held bytes are the operation's stored values
-//!   and field buffers as measured, without allocator or map overhead.
+//! - **Memory.** Held bytes are walked from the operation (values, field
+//!   buffers, the map's slot and key copies) and checked against a counting
+//!   allocator in `tests/hot_tier_memory.rs`: the estimate is 0 to 10% above
+//!   what the allocator holds.
+//! - **History.** An operation a newer one replaces leaves a [`HistoryStub`]
+//!   (a no-op tombstone with its sequence number) when the caller configures
+//!   one, so the index's history has no gap; without a stub the replaced
+//!   operation is applied whole.
 //!
-//! The tier changes when an update becomes searchable (at the next cut, not
-//! at its acknowledgement) and which intermediate versions exist in the
-//! segments; callers whose history must hold every sequence number (soft
-//! deletes retention) keep the tier off for rows that history covers.
+//! An update is searchable at the next cut (refresh, flush, commit, live
+//! view), as a refresh makes any update searchable; the versions that a newer
+//! one replaced within a cut do not exist in the segments.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
 use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::{DocumentVector, ExplicitDocument};
@@ -66,6 +71,24 @@ pub struct HotTierConfig {
     pub age_every: Duration,
     /// How many held rows an admission samples for the one to spill.
     pub evict_sample: usize,
+    /// What the caller writes in place of an operation the tier drops, so the
+    /// sequence numbers it carried are not missing from the index's history.
+    pub history: Option<HistoryStub>,
+}
+
+/// A small no-op document, built from a dropped operation, that keeps its
+/// sequence number in the index (as a no-op tombstone does, hidden by the
+/// soft-deletes field) so that history readers see no gap.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryStub {
+    /// Fields whose values are copied from the dropped operation's document
+    /// (doc values and points): its sequence number and primary term.
+    pub copy: Vec<String>,
+    /// Doc-values fields every stub carries, with their value (the version,
+    /// the tombstone marker).
+    pub constants: Vec<(String, i64)>,
+    /// A stored field every stub carries, as a no-op's reason.
+    pub source: Option<(String, Vec<u8>)>,
 }
 
 impl HotTierConfig {
@@ -84,7 +107,14 @@ impl HotTierConfig {
             min_updates_per_second: Self::DEFAULT_MIN_UPDATES_PER_SECOND,
             age_every: Duration::from_secs(1),
             evict_sample: 8,
+            history: None,
         }
+    }
+
+    /// Keeps the history of dropped operations: see [`HistoryStub`].
+    pub fn with_history(mut self, stub: HistoryStub) -> HotTierConfig {
+        self.history = Some(stub);
+        self
     }
 
     /// Sets the threshold; an error names a rate outside
@@ -172,23 +202,51 @@ fn op_bytes(
     vectors: Option<&[Vec<DocumentVector>]>,
     soft: &[DocValuesUpdate],
 ) -> usize {
-    // A map slot, the key, the op's own fields.
-    let mut n = 160usize
-        .saturating_add(term.bytes.capacity())
-        .saturating_add(term.field.capacity())
-        .saturating_add(soft.len().saturating_mul(96));
+    use std::mem::size_of;
+    // The map's slot (the shard map grows by doubling, so about half again as
+    // many slots as rows), the key (a copy of the term's bytes) and the
+    // operation's own fields.
+    let slot = size_of::<Vec<u8>>()
+        .saturating_add(size_of::<HeldOp>())
+        .saturating_add(1);
+    let mut n = slot
+        .saturating_mul(3)
+        .saturating_div(2)
+        .saturating_add(term.bytes.capacity().saturating_mul(2))
+        .saturating_add(term.field.capacity());
+    // The soft-deletes updates, each with its own copy of the term.
+    for u in soft {
+        n = n
+            .saturating_add(size_of::<DocValuesUpdate>())
+            .saturating_add(term.bytes.capacity())
+            .saturating_add(term.field.capacity())
+            .saturating_add(update_field_bytes(u));
+    }
+    n = n.saturating_add(docs.len().saturating_mul(size_of::<ExplicitDocument>()));
     for d in docs {
         n = n
-            .saturating_add(std::mem::size_of::<ExplicitDocument>())
-            .saturating_add(d.fields.ram_bytes());
+            .saturating_add(d.fields.ram_bytes())
+            .saturating_add(
+                d.fields
+                    .inverted
+                    .len()
+                    .saturating_mul(size_of::<crate::index_writer::InvertedField>()),
+            )
+            .saturating_add(
+                d.fields
+                    .doc_values
+                    .len()
+                    .saturating_add(d.fields.points.len())
+                    .saturating_mul(size_of::<StoredField>()),
+            )
+            .saturating_add(d.stored.capacity().saturating_mul(size_of::<StoredField>()));
         for f in &d.stored {
-            let value = match &f.value {
+            n = n.saturating_add(match &f.value {
                 FieldValue::String(s) => s.capacity(),
                 FieldValue::Shared(s) => s.len(),
                 FieldValue::Binary(b) => b.capacity(),
                 _ => 0,
-            };
-            n = n.saturating_add(48).saturating_add(value);
+            });
         }
     }
     if let Some(v) = vectors {
@@ -197,18 +255,29 @@ fn op_bytes(
                 crate::index_writer::VectorValue::Float32(v) => v.len().saturating_mul(4),
                 crate::index_writer::VectorValue::Byte(v) => v.len(),
             };
-            n = n.saturating_add(64).saturating_add(bytes);
+            n = n
+                .saturating_add(size_of::<DocumentVector>())
+                .saturating_add(bytes);
         }
     }
-    n
+    // Allocator rounding and what the walk does not see.
+    n.saturating_add(n / 32)
+}
+
+fn update_field_bytes(u: &DocValuesUpdate) -> usize {
+    match u {
+        DocValuesUpdate::Numeric { field, .. } => field.capacity(),
+        _ => 0,
+    }
 }
 
 /// What [`HotTier::offer`] decided.
 pub enum Offer {
-    /// The tier holds the operation (any older one for the row is dropped).
-    Held,
-    /// Not held: apply it now, as without the tier.
-    Through(HeldOp),
+    /// The tier holds the operation. `dropped` is the older held operation of
+    /// the row it replaced: never applied, so the caller owes its history.
+    Held { dropped: Option<HeldOp> },
+    /// Not held: apply it now, as without the tier. `dropped` is as above.
+    Through { op: HeldOp, dropped: Option<HeldOp> },
 }
 
 /// Counters, read with [`HotTier::stats`].
@@ -247,6 +316,7 @@ pub struct HotTier {
     bytes: AtomicUsize,
     peak: AtomicUsize,
     rows: AtomicUsize,
+    held_docs: AtomicUsize,
     ticks: AtomicU64,
     aged_at: Mutex<Instant>,
     offered: AtomicU64,
@@ -312,6 +382,7 @@ impl HotTier {
             bytes: AtomicUsize::new(sketch_bytes),
             peak: AtomicUsize::new(sketch_bytes),
             rows: AtomicUsize::new(0),
+            held_docs: AtomicUsize::new(0),
             ticks: AtomicU64::new(0),
             aged_at: Mutex::new(Instant::now()),
             offered: AtomicU64::new(0),
@@ -360,6 +431,23 @@ impl HotTier {
                 }
             }
         }
+    }
+
+    fn docs_up(&self, n: usize) {
+        self.held_docs.fetch_add(n, Ordering::AcqRel);
+    }
+
+    fn docs_down(&self, n: usize) {
+        let _ = self
+            .held_docs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| {
+                Some(d.saturating_sub(n))
+            });
+    }
+
+    /// How many documents the held operations will add when applied.
+    pub fn held_docs(&self) -> usize {
+        self.held_docs.load(Ordering::Acquire)
     }
 
     fn rows_down(&self) {
@@ -427,31 +515,37 @@ impl HotTier {
                     if shrink > 0 {
                         self.release(shrink);
                     }
-                    *old = op;
+                    self.docs_up(op.docs.len());
+                    let dropped = std::mem::replace(old, op);
+                    self.docs_down(dropped.docs.len());
                     self.coalesced.fetch_add(1, Ordering::Relaxed);
-                    return Ok(Offer::Held);
+                    return Ok(Offer::Held {
+                        dropped: Some(dropped),
+                    });
                 }
                 // No room for the larger version: the older one is dropped
                 // (this one replaces it) and this one goes through.
-                if let Some(old) = s.rows.remove(op.term.bytes.as_slice()) {
+                let dropped = s.rows.remove(op.term.bytes.as_slice());
+                if let Some(old) = &dropped {
                     self.release(old.bytes);
+                    self.docs_down(old.docs.len());
                     self.rows_down();
                 }
                 self.refused.fetch_add(1, Ordering::Relaxed);
                 self.through.fetch_add(1, Ordering::Relaxed);
-                return Ok(Offer::Through(op));
+                return Ok(Offer::Through { op, dropped });
             }
         }
         if heat < self.admit {
             self.through.fetch_add(1, Ordering::Relaxed);
-            return Ok(Offer::Through(op));
+            return Ok(Offer::Through { op, dropped: None });
         }
         // A hot row with no held operation: find it a place.
         op.measure();
         if op.bytes > self.cfg.max_bytes.saturating_sub(self.sketch.len()) {
             self.refused.fetch_add(1, Ordering::Relaxed);
             self.through.fetch_add(1, Ordering::Relaxed);
-            return Ok(Offer::Through(op));
+            return Ok(Offer::Through { op, dropped: None });
         }
         // After a failed search for a row to spill, the next hot rows skip
         // the search for a while: a full tier of equally hot rows would
@@ -470,22 +564,25 @@ impl HotTier {
                 }
                 self.refused.fetch_add(1, Ordering::Relaxed);
                 self.through.fetch_add(1, Ordering::Relaxed);
-                return Ok(Offer::Through(op));
+                return Ok(Offer::Through { op, dropped: None });
             }
         }
         let key = op.term.bytes.clone();
+        self.docs_up(op.docs.len());
         let mut s = lock(&self.shards[shard]);
-        if let Some(old) = s.rows.insert(key, op) {
+        let dropped = s.rows.insert(key, op);
+        drop(s);
+        if let Some(old) = &dropped {
+            self.docs_down(old.docs.len());
             // Raced with another thread's insert of this row: the older one
             // was replaced, and its bytes are given back.
-            drop(s);
             self.release(old.bytes);
             self.coalesced.fetch_add(1, Ordering::Relaxed);
         } else {
             self.rows.fetch_add(1, Ordering::AcqRel);
             self.admitted.fetch_add(1, Ordering::Relaxed);
         }
-        Ok(Offer::Held)
+        Ok(Offer::Held { dropped })
     }
 
     /// Applies the least heated of a few sampled held rows, if it is cooler
@@ -522,10 +619,11 @@ impl HotTier {
             return Ok(true);
         };
         self.rows_down();
-        let bytes = op.bytes;
+        let (bytes, docs) = (op.bytes, op.docs.len());
         // Applied with the shard held, counted until it is applied.
         let r = apply(op);
         self.release(bytes);
+        self.docs_down(docs);
         r?;
         self.spilled.fetch_add(1, Ordering::Relaxed);
         Ok(true)
@@ -541,9 +639,10 @@ impl HotTier {
             for k in keys {
                 if let Some(op) = s.rows.remove(&k) {
                     self.rows_down();
-                    let bytes = op.bytes;
+                    let (bytes, docs) = (op.bytes, op.docs.len());
                     let r = apply(op);
                     self.release(bytes);
+                    self.docs_down(docs);
                     r?;
                     n = n.saturating_add(1);
                 }
@@ -551,6 +650,11 @@ impl HotTier {
         }
         self.drained.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
+    }
+
+    /// What to write in place of a dropped operation, when configured.
+    pub fn history(&self) -> Option<&HistoryStub> {
+        self.cfg.history.as_ref()
     }
 
     /// Whether any operation is held.
@@ -630,8 +734,8 @@ mod tests {
             Ok(())
         };
         match tier.offer(op(id, version, size), &mut apply) {
-            Ok(Offer::Held) => None,
-            Ok(Offer::Through(op)) => Some(op),
+            Ok(Offer::Held { .. }) => None,
+            Ok(Offer::Through { op, .. }) => Some(op),
             Err(never) => match never {},
         }
     }
@@ -656,6 +760,7 @@ mod tests {
             min_updates_per_second: 1.0,
             age_every: Duration::from_secs(3600),
             evict_sample: 8,
+            history: None,
         }
     }
 

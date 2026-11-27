@@ -42,6 +42,13 @@ final class FieldSchema {
         this.name = name;
     }
 
+    /** The schema of a plain {@code NumericDocValuesField}, as a no-op tombstone's marker has. */
+    static FieldSchema numericDocValues(String name) {
+        FieldSchema schema = new FieldSchema(name);
+        schema.docValuesType = DocValuesType.NUMERIC;
+        return schema;
+    }
+
     /** Back to a new schema for {@code name}, so a thread can reuse it for the next document. */
     void reset(String name) {
         this.name = name;

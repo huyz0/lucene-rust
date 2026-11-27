@@ -568,6 +568,14 @@ pub fn set_hot_tier(
             set_last_error(e);
             Status::InvalidArgument
         })?;
+    // A dropped update leaves a no-op tombstone with its sequence number, as
+    // `Engine.NoOp` does, so replicas and cross-cluster replication read a
+    // gapless history.
+    let cfg = cfg.with_history(lucene_index::hot_tier::HistoryStub {
+        copy: vec![SEQ_NO_FIELD.to_string(), PRIMARY_TERM_FIELD.to_string()],
+        constants: vec![("_version".to_string(), 1), ("_tombstone".to_string(), 1)],
+        source: Some(("_source".to_string(), b"superseded".to_vec())),
+    });
     if bytes > 0 {
         w.writer().enable_hot_tier(cfg);
     }
