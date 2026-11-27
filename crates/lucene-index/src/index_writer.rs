@@ -3278,6 +3278,8 @@ impl IndexingConfig {
                 None
             } else {
                 IndexWriter::build_vectors_output(
+                    dir,
+                    segment_name,
                     partitions,
                     buf.vectors,
                     &self.vector_fields,
@@ -4526,11 +4528,17 @@ struct VectorsOutput {
     written: Vec<WrittenVectorField>,
 }
 
+/// A flushed vector group's files, and the extensions of those already written.
+type GroupBuilt = (Vec<(&'static str, Vec<u8>)>, Vec<&'static str>);
+
 /// One KNN format instance's files for a flushed segment.
 struct VectorGroupFiles {
     /// `<formatName>_<n>`.
     suffix: String,
     files: Vec<(&'static str, Vec<u8>)>,
+    /// Extensions in `files` that were streamed to the directory while the
+    /// group was built: they keep their place and name with no bytes.
+    early: Vec<&'static str>,
 }
 
 /// A field a flush wrote vectors for, and the `PerFieldKnnVectorsFormat`
@@ -10120,6 +10128,8 @@ impl IndexWriter<'_> {
     /// both readers search exhaustively with exact scores.
     #[allow(clippy::too_many_arguments)]
     fn build_vectors_output(
+        dir: &dyn Directory,
+        segment_name: &str,
         partitions: Option<crate::ivf_vectors::Partitions<'_>>,
         pending_vectors: &[Vec<DocumentVector>],
         configs: &[VectorFieldConfig],
@@ -10165,6 +10175,19 @@ impl IndexWriter<'_> {
             let mut docs: Vec<i32> = Vec::new();
             let mut floats: Vec<f32> = Vec::new();
             let mut bytes: Vec<u8> = Vec::new();
+            // Sized once: growing by doubling would keep up to twice the
+            // field's bytes allocated for the rest of the flush.
+            let (mut float_len, mut byte_len) = (0usize, 0usize);
+            for doc_vectors in pending_vectors {
+                if let Some(entry) = doc_vectors.iter().find(|v| v.field_name == config.name) {
+                    match &entry.value {
+                        VectorValue::Float32(v) => float_len = float_len.saturating_add(v.len()),
+                        VectorValue::Byte(v) => byte_len = byte_len.saturating_add(v.len()),
+                    }
+                }
+            }
+            floats.reserve_exact(float_len);
+            bytes.reserve_exact(byte_len);
             for (doc_id, doc_vectors) in pending_vectors.iter().enumerate() {
                 let Some(entry) = doc_vectors.iter().find(|v| v.field_name == config.name) else {
                     continue;
@@ -10222,7 +10245,7 @@ impl IndexWriter<'_> {
             flat_fields.into_iter().map(Some).collect();
         for group in &groups {
             let suffix = group.codec_suffix();
-            let fields: Vec<FlatVectorsField> = group
+            let mut fields: Vec<FlatVectorsField> = group
                 .field_numbers
                 .iter()
                 .filter_map(|n| {
@@ -10232,8 +10255,10 @@ impl IndexWriter<'_> {
                         .and_then(Option::take)
                 })
                 .collect();
-            let files = Self::build_vector_group(
-                &fields,
+            let (files, early) = Self::build_vector_group(
+                dir,
+                segment_name,
+                &mut fields,
                 group.format,
                 max_doc,
                 indexes,
@@ -10254,7 +10279,11 @@ impl IndexWriter<'_> {
                     });
                 }
             }
-            output.groups.push(VectorGroupFiles { suffix, files });
+            output.groups.push(VectorGroupFiles {
+                suffix,
+                files,
+                early,
+            });
         }
         Ok(Some(output))
     }
@@ -10333,7 +10362,9 @@ impl IndexWriter<'_> {
     /// hands the graph at flush too.
     #[allow(clippy::too_many_arguments)]
     fn build_vector_group(
-        flat_fields: &[FlatVectorsField],
+        dir: &dyn Directory,
+        segment_name: &str,
+        flat_fields: &mut [FlatVectorsField],
         format: per_field_knn_vectors::KnnVectorsFormat,
         max_doc: i32,
         indexes: bool,
@@ -10343,9 +10374,24 @@ impl IndexWriter<'_> {
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
         partitions: Option<crate::ivf_vectors::Partitions<'_>>,
-    ) -> Result<Vec<(&'static str, Vec<u8>)>> {
-        let (vec_bytes, vemf_bytes) =
-            vectors::write_flat_vectors(flat_fields, max_doc, segment_id, suffix)?;
+    ) -> Result<GroupBuilt> {
+        // `.vec` is written as it is encoded: the graph below reads it back
+        // mapped, so the flush never holds the file besides the vectors.
+        let mut early: Vec<&'static str> = vec!["vec"];
+        let vec_name = segment_file_name(segment_name, suffix, "vec");
+        let vemf_bytes = {
+            let mut writer = vectors::FlatVectorsWriter::new(max_doc, segment_id, suffix);
+            writer.stream_to(dir.create_output(&vec_name)?);
+            for field in flat_fields.iter() {
+                writer.write_field(field)?;
+            }
+            let (out, meta) = writer.finish_streamed();
+            if let Some(out) = out {
+                out.close()?;
+            }
+            meta
+        };
+        let vec_bytes: Vec<u8> = Vec::new();
         let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
 
         if let Some(encoding) = format.quantization() {
@@ -10353,7 +10399,7 @@ impl IndexWriter<'_> {
                 lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
                     encoding, max_doc, segment_id, suffix,
                 );
-            for field in flat_fields {
+            for field in flat_fields.iter() {
                 if let FieldVectorData::Float32(values) = &field.values {
                     writer.write_field(
                         &lucene_codecs::scalar_quantized_vectors::QuantizedVectorsField {
@@ -10377,23 +10423,50 @@ impl IndexWriter<'_> {
             None
         };
         if let Some(mut ivf) = ivf {
-            for field in flat_fields {
-                if let FieldVectorData::Float32(values) = &field.values {
-                    ivf.add(
-                        &crate::ivf_vectors::IvfField {
-                            number: field.field_number,
-                            similarity: field.similarity,
-                            dimension: usize::try_from(field.dimension).unwrap_or(0),
-                            docs: &field.docs,
-                            vectors: values,
-                            partitions,
-                        },
-                        &[],
-                    )?;
+            // Once `.vec` and the codes are written, nothing reads the raw
+            // vectors again unless a graph or hnsw codes follow: a cosine
+            // field can be normalized where it is instead of copied.
+            let in_place = format.graph().is_none() && format.hnsw_quantizer().is_none();
+            ivf.stream_vectors_to(dir.create_output(&segment_file_name(
+                segment_name,
+                suffix,
+                "ivv",
+            ))?);
+            for field in flat_fields.iter_mut() {
+                let (number, similarity) = (field.field_number, field.similarity);
+                let dimension = usize::try_from(field.dimension).unwrap_or(0);
+                if let FieldVectorData::Float32(values) = &mut field.values {
+                    let cosine =
+                        similarity == lucene_codecs::field_infos::VectorSimilarityFunction::Cosine;
+                    let ivf_field = |vectors| crate::ivf_vectors::IvfField {
+                        number,
+                        similarity,
+                        dimension,
+                        docs: &field.docs,
+                        vectors,
+                        partitions,
+                    };
+                    if in_place && cosine {
+                        let fits_half = ivf.fits_half(values);
+                        lucene_ivf::prepare_vectors(
+                            lucene_ivf::Similarity::Cosine,
+                            dimension,
+                            values,
+                        );
+                        ivf.add_prepared(&ivf_field(values), &[], fits_half)?;
+                    } else {
+                        ivf.add(&ivf_field(values), &[])?;
+                    }
                 }
             }
             clusters.record(ivf.clusters());
-            files.extend(ivf.finish().into_iter().flatten());
+            if let Some((ivf_files, out)) = ivf.finish_streamed() {
+                if let Some(out) = out {
+                    out.close()?;
+                }
+                early.push("ivv");
+                files.extend(ivf_files);
+            }
         }
 
         if indexes && format.hnsw_quantizer().is_some() {
@@ -10425,6 +10498,20 @@ impl IndexWriter<'_> {
             // One graph per field, built in parallel: each depends only on
             // its own vectors and the fixed `DEFAULT_RAND_SEED`, so the bytes
             // do not change. The first error in field order is returned.
+            let vec_input = dir.open(&vec_name)?;
+            // With nothing else reading the raw vectors, the graph reads
+            // them from the file alone.
+            if format.hnsw_quantizer().is_none()
+                && format.hnsw_disk_quantizer().is_none()
+                && !vectors::stores_half_floats(suffix)
+            {
+                for field in flat_fields.iter_mut() {
+                    field.values = match field.values.encoding() {
+                        VectorEncoding::Float32 => FieldVectorData::Float32(Vec::new()),
+                        VectorEncoding::Byte => FieldVectorData::Byte(Vec::new()),
+                    };
+                }
+            }
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
                 use rayon::prelude::*;
                 // A half-float instance's flush graph is built over the
@@ -10436,7 +10523,7 @@ impl IndexWriter<'_> {
                     full = vectors::write_flat_vectors(flat_fields, max_doc, segment_id, "")?;
                     vectors::FlatVectorsReader::open(&full.1, &full.0, segment_id, "")?
                 } else {
-                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?
+                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_input, segment_id, suffix)?
                 };
                 let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
@@ -10527,7 +10614,7 @@ impl IndexWriter<'_> {
         }
         files.insert(0, ("vemf", vemf_bytes));
         files.insert(0, ("vec", vec_bytes));
-        Ok(files)
+        Ok((files, early))
     }
 
     /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
@@ -10730,7 +10817,9 @@ impl IndexWriter<'_> {
         for group in &output.groups {
             for (ext, data) in &group.files {
                 let name = segment_file_name(segment_name, &group.suffix, ext);
-                write_file(dir, &name, data)?;
+                if !group.early.contains(ext) {
+                    write_file(dir, &name, data)?;
+                }
                 names.push(name);
             }
         }

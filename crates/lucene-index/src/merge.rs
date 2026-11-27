@@ -4046,8 +4046,8 @@ fn merge_vectors(
                 (!group.direct).then_some((group.format.name(), group.suffix)),
             ));
         }
-        let (files, vec_name) = files;
-        out.written_early.push(vec_name);
+        let (files, early) = files;
+        out.written_early.extend(early);
         out.groups.push((suffix, files));
     }
     Ok(Some(out))
@@ -4079,6 +4079,33 @@ struct FieldSource {
     ord_to_doc: Vec<i32>,
 }
 
+/// Writes `vectors` (`dimension` floats each) to `name`, each vector
+/// unit-normalized as [`lucene_ivf::prepare_vectors`] does for a cosine
+/// field, a few thousand at a time.
+fn write_normalized_vectors(
+    dir: &dyn Directory,
+    name: &str,
+    dimension: usize,
+    vectors: &[f32],
+) -> Result<()> {
+    const ROWS: usize = 4096;
+    let mut out = dir.create_output(name)?;
+    let mut rows: Vec<f32> = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    for chunk in vectors.chunks(dimension.max(1).saturating_mul(ROWS)) {
+        rows.clear();
+        rows.extend_from_slice(chunk);
+        lucene_ivf::prepare_vectors(lucene_ivf::Similarity::Cosine, dimension, &mut rows);
+        bytes.clear();
+        for x in &rows {
+            bytes.extend_from_slice(&x.to_le_bytes());
+        }
+        out.write_bytes(&bytes);
+    }
+    out.close()?;
+    Ok(())
+}
+
 /// One `PerFieldKnnVectorsFormat` instance's merge
 /// (`Lucene99HnswVectorsWriter.mergeOneField` or a flat format's
 /// `mergeOneFlatVectorField`): the raw vectors, the quantized codes when the
@@ -4100,9 +4127,13 @@ fn merge_vector_group(
     merged_segment_id: &[u8; ID_LENGTH],
     suffix: &str,
     partitions: Option<crate::ivf_vectors::Partitions<'_>>,
-) -> Result<(GroupFiles, String)> {
+) -> Result<(GroupFiles, Vec<String>)> {
     let mut flat_writer =
         vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
+    // The merged vectors go to their file as they are copied: the merge
+    // never holds the file whole.
+    let vec_name = crate::index_writer::segment_file_name(merged_segment_name, suffix, "vec");
+    flat_writer.stream_to(dir.create_output(&vec_name)?);
     for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
         let encoding = merged_field.vector_encoding;
         let mut flat_sources: Vec<vectors::FlatVectorMergeSource<'_>> =
@@ -4133,12 +4164,12 @@ fn merge_vector_group(
             sources: &flat_sources,
         })?;
     }
-    let (vec_bytes, vemf_bytes) = flat_writer.finish();
-    // The merged vectors go to their file now and everything built over them
-    // reads that file: the merge holds no in-memory copy of every vector.
-    let vec_name = crate::index_writer::segment_file_name(merged_segment_name, suffix, "vec");
-    write_file(dir, &vec_name, &vec_bytes)?;
-    drop(vec_bytes);
+    let (vec_out, vemf_bytes) = flat_writer.finish_streamed();
+    // Everything built over the vectors reads their file: the merge holds
+    // no in-memory copy of every vector.
+    if let Some(out) = vec_out {
+        out.close()?;
+    }
     let vec_input = dir.open(&vec_name)?;
     let vec_bytes: &[u8] = &vec_input;
 
@@ -4153,6 +4184,7 @@ fn merge_vector_group(
             .map(|p| p.0.vector_similarity_function)
     })?;
     let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    let mut ivv_name: Option<String> = None;
 
     if let Some(encoding) = format.quantization() {
         let mut writer = scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
@@ -4233,6 +4265,20 @@ fn merge_vector_group(
     if let Some(mut ivf) =
         crate::ivf_vectors::IvfGroupWriter::new(format, merged_segment_id, suffix)?
     {
+        // The `.ivv` goes to its file as it is built rather than being held
+        // whole beside the vectors it is built from.
+        if plan
+            .iter()
+            .any(|p| p.0.vector_encoding == VectorEncoding::Float32)
+        {
+            let name = crate::index_writer::segment_file_name(
+                merged_segment_name,
+                suffix,
+                crate::ivf_vectors::EXTENSIONS[2],
+            );
+            ivf.stream_vectors_to(dir.create_output(&name)?);
+            ivv_name = Some(name);
+        }
         // Each source group's IVF index, opened once for every field it
         // serves.
         let mut readers: Vec<(*const crate::ivf_vectors::IvfInputs, lucene_ivf::IvfReader)> =
@@ -4276,19 +4322,70 @@ fn merge_vector_group(
                 docs.push(values.ord_to_doc(ord)?);
             }
             let merged = values.all_vectors()?;
-            ivf.add(
-                &crate::ivf_vectors::IvfField {
-                    number: merged_field.number,
-                    similarity: merged_field.vector_similarity_function,
-                    dimension: usize::try_from(merged_field.vector_dimension).unwrap_or(0),
-                    docs: &docs,
-                    vectors: &merged,
-                    partitions,
-                },
-                &ivf_sources,
-            )?;
+            let dimension = usize::try_from(merged_field.vector_dimension).unwrap_or(0);
+            let similarity = merged_field.vector_similarity_function;
+            if similarity != field_infos::VectorSimilarityFunction::Cosine {
+                ivf.add(
+                    &crate::ivf_vectors::IvfField {
+                        number: merged_field.number,
+                        similarity,
+                        dimension,
+                        docs: &docs,
+                        vectors: &merged,
+                        partitions,
+                    },
+                    &ivf_sources,
+                )?;
+            } else {
+                // A cosine field is written unit-normalized: the normalized
+                // vectors go to a scratch file the writer reads mapped, so the
+                // merge holds neither them nor the source's vectors on the heap.
+                let fits_half = ivf.fits_half(&merged);
+                let scratch =
+                    crate::index_writer::segment_file_name(merged_segment_name, suffix, "ivn");
+                write_normalized_vectors(dir, &scratch, dimension, &merged)?;
+                drop(merged);
+                let input = dir.open(&scratch)?;
+                match lucene_util::vector_util::le_f32s(&input) {
+                    Some(normalized) => ivf.add_prepared(
+                        &crate::ivf_vectors::IvfField {
+                            number: merged_field.number,
+                            similarity,
+                            dimension,
+                            docs: &docs,
+                            vectors: normalized,
+                            partitions,
+                        },
+                        &ivf_sources,
+                        fits_half,
+                    )?,
+                    None => {
+                        return Err(lucene_store::Error::Io(std::io::Error::other(
+                            "the normalized vectors are not aligned floats",
+                        ))
+                        .into())
+                    }
+                }
+                drop(input);
+                dir.delete_file(&scratch)?;
+            }
         }
-        files.extend(ivf.finish().into_iter().flatten());
+        match ivf.finish_streamed() {
+            Some((written, out)) => {
+                files.extend(written);
+                match out {
+                    Some(out) => {
+                        out.close()?;
+                    }
+                    None => ivv_name = None,
+                }
+            }
+            None => {
+                if let Some(name) = ivv_name.take() {
+                    dir.delete_file(&name)?;
+                }
+            }
+        }
     }
 
     if format.hnsw_quantizer().is_some() {
@@ -4501,7 +4598,9 @@ fn merge_vector_group(
         }
     }
     files.insert(0, ("vemf", vemf_bytes));
-    Ok((files, vec_name))
+    let mut early = vec![vec_name];
+    early.extend(ivv_name);
+    Ok((files, early))
 }
 
 /// One source field's ordinal -> its own doc id, materialised from the flat
