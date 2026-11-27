@@ -307,6 +307,7 @@ impl IvfGroupWriter {
     }
 
     /// The three files, `None` when no float field was written.
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Option<Files> {
         self.any.then(|| {
             let files = self.writer.finish();

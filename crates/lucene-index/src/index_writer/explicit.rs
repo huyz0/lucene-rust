@@ -1215,6 +1215,8 @@ impl IndexingConfig {
                 } else {
                     let partition_starts = self.ivf_partition_starts(buf)?;
                     IndexWriter::build_vectors_output(
+                        dir,
+                        segment_name,
                         self.ivf_partitions(partition_starts.as_deref()),
                         buf.vectors,
                         &vector_configs,

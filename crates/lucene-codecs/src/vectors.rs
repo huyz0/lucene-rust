@@ -1734,38 +1734,65 @@ impl FlatVectorsWriter {
         (Some(out), self.meta)
     }
 
+    /// One field's vectors to the streamed output, encoded a bounded piece at
+    /// a time.
+    fn stream_field(&mut self, values: &FieldVectorData) {
+        const PIECE: usize = 1 << 16;
+        let mut piece: Vec<u8> = Vec::with_capacity(PIECE);
+        match values {
+            FieldVectorData::Byte(v) => self.append(v),
+            FieldVectorData::Float32(v) => {
+                for chunk in v.chunks(PIECE / 4) {
+                    piece.clear();
+                    for &component in chunk {
+                        if self.half {
+                            piece.extend_from_slice(&f32_to_f16(component).to_le_bytes());
+                        } else {
+                            piece.extend_from_slice(&component.to_le_bytes());
+                        }
+                    }
+                    self.append(&piece);
+                }
+            }
+        }
+    }
+
     /// `Lucene99FlatVectorsWriter.writeField`: one field, from an in-memory
     /// batch of vectors.
     pub fn write_field(&mut self, field: &FlatVectorsField) -> Result<()> {
         validate_field(field, self.max_doc)?;
         let encoding = field.values.encoding();
         let vector_data_offset = self.align_output(encoding);
-        match &field.values {
-            FieldVectorData::Float32(v) if self.half => {
-                for &component in v {
-                    self.data
-                        .extend_from_slice(&f32_to_f16(component).to_le_bytes());
+        if self.out.is_some() {
+            self.stream_field(&field.values);
+        } else {
+            match &field.values {
+                FieldVectorData::Float32(v) if self.half => {
+                    for &component in v {
+                        self.data
+                            .extend_from_slice(&f32_to_f16(component).to_le_bytes());
+                    }
                 }
-            }
-            FieldVectorData::Float32(v) => {
-                // Sized once and filled in place: the loop compiles to a
-                // straight copy on little-endian targets, where pushing
-                // component by component checked capacity every 4 bytes.
-                let start = self.data.len();
-                // ARITH: the components are already in memory, so their
-                // byte count (and the buffer grown by it) fits a usize.
-                #[allow(clippy::arithmetic_side_effects)]
-                self.data.resize(start + v.len() * 4, 0);
-                for (out, component) in self.data[start..].chunks_exact_mut(4).zip(v) {
-                    out.copy_from_slice(&component.to_le_bytes());
+                FieldVectorData::Float32(v) => {
+                    // Sized once and filled in place: the loop compiles to a
+                    // straight copy on little-endian targets, where pushing
+                    // component by component checked capacity every 4 bytes.
+                    let start = self.data.len();
+                    // ARITH: the components are already in memory, so their
+                    // byte count (and the buffer grown by it) fits a usize.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    self.data.resize(start + v.len() * 4, 0);
+                    for (out, component) in self.data[start..].chunks_exact_mut(4).zip(v) {
+                        out.copy_from_slice(&component.to_le_bytes());
+                    }
                 }
+                FieldVectorData::Byte(v) => self.data.extend_from_slice(v),
             }
-            FieldVectorData::Byte(v) => self.data.extend_from_slice(v),
         }
-        // ARITH: `align_output` returned `self.data.len()` and `self.data`
-        // only grows, so this is the byte count just appended.
+        // ARITH: `align_output` returned the length so far and the file only
+        // grows, so this is the byte count just appended.
         #[allow(clippy::arithmetic_side_effects)]
-        let vector_data_length = self.data.len() as i64 - vector_data_offset;
+        let vector_data_length = self.data_len() as i64 - vector_data_offset;
         self.write_meta(
             field.field_number,
             encoding,
@@ -2003,6 +2030,9 @@ impl FlatVectorsWriter {
     pub fn finish(mut self) -> (Vec<u8>, Vec<u8>) {
         self.meta.write_i32(-1);
         codec_util::write_footer(&mut self.meta);
+        // The footer must not make the buffer grow by doubling: the file can
+        // be most of a segment's memory.
+        self.data.reserve_exact(codec_util::FOOTER_LENGTH);
         codec_util::write_footer(&mut self.data);
         (self.data, self.meta)
     }
