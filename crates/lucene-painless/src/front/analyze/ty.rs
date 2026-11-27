@@ -71,10 +71,13 @@ fn resolve_base(t: &ast::Type) -> Res<String> {
 /// The IR name of a type as the allowlist table writes it (`def` is the
 /// only name that differs).
 pub fn from_table(name: &str) -> String {
-    if name == "def" {
-        DEF.to_string()
+    let base = name.trim_end_matches("[]");
+    let dims = (name.len() - base.len()) / 2;
+    let base = if base == "def" { DEF } else { base };
+    if dims == 0 {
+        base.to_string()
     } else {
-        name.to_string()
+        array_of(base, dims)
     }
 }
 

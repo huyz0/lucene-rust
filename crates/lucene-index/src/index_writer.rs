@@ -170,6 +170,8 @@ use lucene_store::directory::{Directory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 mod add_indexes;
+mod delete_resolve;
+use delete_resolve::*;
 #[cfg(test)]
 mod block_tests;
 mod dv_columns;
@@ -186,6 +188,7 @@ pub(crate) use segment_partitions::set_attribute;
 pub use segment_partitions::SegmentPartitioning;
 mod try_modify;
 mod upgrade;
+mod vector_flush;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm, LeanParts};
 pub use inverted_terms::{InvertedTerms, InvertedTermsIter, Payloads, TermBuilder, TermRef};
@@ -3278,6 +3281,8 @@ impl IndexingConfig {
                 None
             } else {
                 IndexWriter::build_vectors_output(
+                    dir,
+                    segment_name,
                     partitions,
                     buf.vectors,
                     &self.vector_fields,
@@ -3291,6 +3296,32 @@ impl IndexingConfig {
                     &segment_id,
                 )?
             })
+        };
+        // A flush's `.fdt` goes to its file as it compresses, unless a
+        // compound file will pack it from memory.
+        let build_stored = || -> Result<Option<segment_writer::StoredFieldsBytes>> {
+            if self.use_compound_file {
+                return Ok(segment_writer::build_native_stored_fields(
+                    buf.docs,
+                    &segment_id,
+                    self.codec.as_deref(),
+                ));
+            }
+            let mode = self
+                .codec
+                .as_deref()
+                .map_or(lucene_codecs::stored_fields::Mode::BestSpeed, |codec| {
+                    codec.stored_fields_mode()
+                });
+            let fdt_name = segment_file_name(segment_name, mode.segment_suffix(), "fdt");
+            segment_writer::build_native_stored_fields_to(
+                dir,
+                &fdt_name,
+                buf.docs,
+                &segment_id,
+                self.codec.as_deref(),
+            )
+            .map_err(Into::into)
         };
         let (points_output, vectors_output);
         let (norms_output, term_vectors_output, postings_output);
@@ -3316,18 +3347,12 @@ impl IndexingConfig {
                                 &self.analyzer(),
                             )
                         },
-                        || {
-                            segment_writer::build_native_stored_fields(
-                                buf.docs,
-                                &segment_id,
-                                self.codec.as_deref(),
-                            )
-                        },
+                        build_stored,
                     )
                 },
                 build_vectors,
             );
-            stored_fields_bytes = stored;
+            stored_fields_bytes = stored?;
             norms_output = if norms_configs.is_empty() {
                 None
             } else {
@@ -3374,18 +3399,12 @@ impl IndexingConfig {
                                 &self.analyzer(),
                             )
                         },
-                        || {
-                            segment_writer::build_native_stored_fields(
-                                buf.docs,
-                                &segment_id,
-                                self.codec.as_deref(),
-                            )
-                        },
+                        build_stored,
                     )
                 },
                 build_vectors,
             );
-            stored_fields_bytes = stored;
+            stored_fields_bytes = stored?;
             // Norms and term vectors only *read* the shared invert pass;
             // postings **consumes** it. Ordering them this way means the whole
             // inverted index -- by far the largest transient structure in a
@@ -4526,11 +4545,17 @@ struct VectorsOutput {
     written: Vec<WrittenVectorField>,
 }
 
+/// A flushed vector group's files, and the extensions of those already written.
+type GroupBuilt = (Vec<(&'static str, Vec<u8>)>, Vec<&'static str>);
+
 /// One KNN format instance's files for a flushed segment.
 struct VectorGroupFiles {
     /// `<formatName>_<n>`.
     suffix: String,
     files: Vec<(&'static str, Vec<u8>)>,
+    /// Extensions in `files` that were streamed to the directory while the
+    /// group was built: they keep their place and name with no bytes.
+    early: Vec<&'static str>,
 }
 
 /// A field a flush wrote vectors for, and the `PerFieldKnnVectorsFormat`
@@ -10088,448 +10113,6 @@ impl IndexWriter<'_> {
         Ok(output)
     }
 
-    /// Builds this flush's `.vec`/`.vemf`/`.vem`/`.vex` bytes for every field
-    /// opted in through [`IndexWriter::set_vector_field`] --
-    /// `Lucene99HnswVectorsWriter.flush`, whose two halves are
-    /// `Lucene99FlatVectorsWriter.flush` (the flat store) and
-    /// `writeField`/`writeGraph` (the graph) on top of it.
-    ///
-    /// The order is Java's and is load-bearing: the flat store is written and
-    /// **reopened** first, and the graph is then built over the reopened
-    /// values. Java does the same (`Lucene99FlatVectorsWriter.flush` returns a
-    /// `FlatCloseableRandomVectorScorerSupplier` over the bytes it just
-    /// wrote), because the graph's neighbour ordinals must address the same
-    /// ordinal space the `.vec` file defines. Building the graph over the
-    /// in-memory `Vec<f32>` instead would be equivalent only as long as the
-    /// two agree -- and an `alignOutput` or ordinal-assignment mistake is
-    /// exactly the kind of thing that makes them not.
-    ///
-    /// A field no pending document carried a vector for is **skipped
-    /// entirely**, and [`IndexingConfig::fields_with_per_field_attributes`] then zeroes
-    /// its `.fnm` `vector_dimension`. Java reaches the same state from the
-    /// other side: `IndexingChain` only creates a field's
-    /// `KnnFieldVectorsWriter` (and only sets `FieldInfo.vectorDimension`)
-    /// when a document actually carries the field, so a segment's `.fnm`
-    /// never claims vectors its files do not hold.
-    ///
-    /// Returns `None` when no field has any vector, so no files are written.
-    ///
-    /// Without `indexes` (a realtime chunk of a buffer, read by searches
-    /// until the buffer flushes) no graph or IVF clusters are built: every
-    /// `.vem` records `numLevels = 0`, Lucene's tiny-segment case, which
-    /// both readers search exhaustively with exact scores.
-    #[allow(clippy::too_many_arguments)]
-    fn build_vectors_output(
-        partitions: Option<crate::ivf_vectors::Partitions<'_>>,
-        pending_vectors: &[Vec<DocumentVector>],
-        configs: &[VectorFieldConfig],
-        max_doc: i32,
-        format_for: &dyn Fn(&str) -> per_field_knn_vectors::KnnVectorsFormat,
-        direct: bool,
-        indexes: bool,
-        graphs: &[BufferGraphField],
-        old_to_new: Option<&[usize]>,
-        clusters: &crate::ivf_vectors::ClusterSink,
-        segment_id: &[u8; ID_LENGTH],
-    ) -> Result<Option<VectorsOutput>> {
-        // Empty when no buffered document carries a vector (a buffer of
-        // explicit documents); otherwise one entry per document.
-        debug_assert!(
-            pending_vectors.is_empty() || pending_vectors.len() as i32 == max_doc,
-            "pending_vectors must stay aligned 1:1 with pending_docs"
-        );
-        // `IndexingChain` calls `KnnVectorsWriter.addField` the first time a
-        // document of the flush carries a field, and
-        // `PerFieldKnnVectorsFormat.FieldsWriter.getInstance` numbers the
-        // format instances -- and every writer lists its fields -- in that
-        // order.
-        let mut first_seen: Vec<&str> = Vec::new();
-        for doc_vectors in pending_vectors {
-            for v in doc_vectors {
-                if !first_seen.contains(&v.field_name.as_str()) {
-                    first_seen.push(v.field_name.as_str());
-                }
-            }
-        }
-        let mut ordered: Vec<&VectorFieldConfig> = configs.iter().collect();
-        ordered.sort_by_key(|c| {
-            first_seen
-                .iter()
-                .position(|n| *n == c.name)
-                .unwrap_or(usize::MAX)
-        });
-
-        let mut flat_fields: Vec<FlatVectorsField> = Vec::new();
-        let mut names: Vec<(i32, String)> = Vec::new();
-        for config in ordered {
-            let mut docs: Vec<i32> = Vec::new();
-            let mut floats: Vec<f32> = Vec::new();
-            let mut bytes: Vec<u8> = Vec::new();
-            for (doc_id, doc_vectors) in pending_vectors.iter().enumerate() {
-                let Some(entry) = doc_vectors.iter().find(|v| v.field_name == config.name) else {
-                    continue;
-                };
-                docs.push(doc_id as i32);
-                match &entry.value {
-                    VectorValue::Float32(v) => floats.extend_from_slice(v),
-                    VectorValue::Byte(v) => bytes.extend_from_slice(v),
-                }
-            }
-            if docs.is_empty() {
-                continue;
-            }
-            // Only one of the two accumulators can be non-empty:
-            // `add_document_with_vectors` rejects a value whose variant
-            // disagrees with the field's declared encoding, so the other is
-            // always empty. Asserted rather than assumed, because picking the
-            // wrong one here would silently drop every vector of the field.
-            debug_assert!(
-                floats.is_empty() || bytes.is_empty(),
-                "field {:?} accumulated both float and byte components",
-                config.name
-            );
-            let values = match config.encoding {
-                VectorEncoding::Float32 => FieldVectorData::Float32(floats),
-                VectorEncoding::Byte => FieldVectorData::Byte(bytes),
-            };
-            names.push((config.field_number, config.name.clone()));
-            flat_fields.push(FlatVectorsField {
-                field_number: config.field_number,
-                similarity: config.similarity,
-                dimension: config.dimension,
-                docs,
-                values,
-            });
-        }
-        if flat_fields.is_empty() {
-            return Ok(None);
-        }
-        let name_refs: Vec<(i32, &str)> = names.iter().map(|(n, s)| (*n, s.as_str())).collect();
-        let groups = match name_refs.first() {
-            Some(&(_, first)) if direct => {
-                per_field_knn_vectors::direct_group(&name_refs, format_for(first))
-            }
-            _ => per_field_knn_vectors::group_fields(&name_refs, format_for),
-        };
-
-        let mut output = VectorsOutput {
-            groups: Vec::with_capacity(groups.len()),
-            written: Vec::with_capacity(names.len()),
-        };
-        // Each field is in exactly one group, so the groups take their
-        // fields by move: a clone copied every vector a second time.
-        let mut flat_fields: Vec<Option<FlatVectorsField>> =
-            flat_fields.into_iter().map(Some).collect();
-        for group in &groups {
-            let suffix = group.codec_suffix();
-            let fields: Vec<FlatVectorsField> = group
-                .field_numbers
-                .iter()
-                .filter_map(|n| {
-                    flat_fields
-                        .iter_mut()
-                        .find(|f| f.as_ref().is_some_and(|f| f.field_number == *n))
-                        .and_then(Option::take)
-                })
-                .collect();
-            let files = Self::build_vector_group(
-                &fields,
-                group.format,
-                max_doc,
-                indexes,
-                graphs,
-                old_to_new,
-                clusters,
-                segment_id,
-                &suffix,
-                partitions,
-            )?;
-            for (number, name) in &names {
-                if group.field_numbers.contains(number) {
-                    output.written.push(WrittenVectorField {
-                        name: name.clone(),
-                        format: group.format.name(),
-                        suffix: group.suffix,
-                        direct: group.direct,
-                    });
-                }
-            }
-            output.groups.push(VectorGroupFiles { suffix, files });
-        }
-        Ok(Some(output))
-    }
-
-    /// The graph the buffer kept over `field`'s vectors as they arrived,
-    /// when it is the one this flush writes: the same vectors under the
-    /// same ordinals, built with the same parameters and seed by one
-    /// inserter in ordinal order, which is what
-    /// `HnswGraphBuilder::new(..).build(count)` does. Under an index sort
-    /// (`old_to_new`) it is renumbered to the sorted ordinals, as Lucene
-    /// writes the graph its `FieldWriter` built in arrival order. A
-    /// half-float format's flush graph is built over the vectors as
-    /// indexed, as the kept one is.
-    fn kept_graph(
-        graphs: &[BufferGraphField],
-        old_to_new: Option<&[usize]>,
-        field: &FlatVectorsField,
-        params: (i32, i32),
-        #[cfg_attr(not(test), allow(unused_variables))] segment_id: &[u8; ID_LENGTH],
-    ) -> Option<hnsw::OnHeapHnswGraph> {
-        let kept = graphs
-            .iter()
-            .find(|g| g.field_number == field.field_number)?;
-        let graph = &kept.graph;
-        let count = i32::try_from(field.docs.len()).ok()?;
-        let (encoding, similarity, dimension) = graph.shape();
-        if graph.params() != params
-            || graph.len() != count
-            || encoding != field.values.encoding()
-            || similarity != field.similarity
-            || i32::try_from(dimension).ok() != Some(field.dimension)
-        {
-            return None;
-        }
-        let docs = graph.docs()?;
-        let renumber = match old_to_new {
-            // The ordinals name the same documents.
-            None => {
-                if docs != field.docs {
-                    return None;
-                }
-                None
-            }
-            // `Lucene99HnswVectorsWriter.writeSortingField`: the graph was
-            // built in arrival order, and each ordinal takes the place of
-            // its document in the sorted segment's ordinals.
-            Some(old_to_new) => {
-                let mut ords = Vec::with_capacity(field.docs.len());
-                for &old in &docs {
-                    let old = usize::try_from(old).ok()?;
-                    let new = i32::try_from(*old_to_new.get(old)?).ok()?;
-                    ords.push(i32::try_from(field.docs.binary_search(&new).ok()?).ok()?);
-                }
-                Some(ords)
-            }
-        };
-        let graph = graph.graph(count).ok()?;
-        let graph = match renumber {
-            None => graph,
-            Some(ords) => graph.renumbered(&ords).ok()?,
-        };
-        #[cfg(test)]
-        KEPT_GRAPHS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(*segment_id);
-        Some(graph)
-    }
-
-    /// One `PerFieldKnnVectorsFormat` instance's flush: the raw vectors
-    /// (`Lucene99FlatVectorsWriter`, `.vec`/`.vemf`), the scalar-quantized
-    /// codes of its `FLOAT32` fields when the format quantizes
-    /// (`Lucene104ScalarQuantizedVectorsWriter.flush`, `.veq`/`.vemq`), and
-    /// the graph when it has one (`Lucene99HnswVectorsWriter`, `.vem`/`.vex`)
-    /// -- built on the raw vectors, which is what Java's quantized format
-    /// hands the graph at flush too.
-    #[allow(clippy::too_many_arguments)]
-    fn build_vector_group(
-        flat_fields: &[FlatVectorsField],
-        format: per_field_knn_vectors::KnnVectorsFormat,
-        max_doc: i32,
-        indexes: bool,
-        graphs: &[BufferGraphField],
-        old_to_new: Option<&[usize]>,
-        clusters: &crate::ivf_vectors::ClusterSink,
-        segment_id: &[u8; ID_LENGTH],
-        suffix: &str,
-        partitions: Option<crate::ivf_vectors::Partitions<'_>>,
-    ) -> Result<Vec<(&'static str, Vec<u8>)>> {
-        let (vec_bytes, vemf_bytes) =
-            vectors::write_flat_vectors(flat_fields, max_doc, segment_id, suffix)?;
-        let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
-
-        if let Some(encoding) = format.quantization() {
-            let mut writer =
-                lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
-                    encoding, max_doc, segment_id, suffix,
-                );
-            for field in flat_fields {
-                if let FieldVectorData::Float32(values) = &field.values {
-                    writer.write_field(
-                        &lucene_codecs::scalar_quantized_vectors::QuantizedVectorsField {
-                            field_number: field.field_number,
-                            similarity: field.similarity,
-                            dimension: field.dimension,
-                            docs: &field.docs,
-                            vectors: values,
-                        },
-                    )?;
-                }
-            }
-            let (veq, vemq) = writer.finish();
-            files.push(("veq", veq));
-            files.push(("vemq", vemq));
-        }
-
-        let ivf = if indexes {
-            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
-        } else {
-            None
-        };
-        if let Some(mut ivf) = ivf {
-            for field in flat_fields {
-                if let FieldVectorData::Float32(values) = &field.values {
-                    ivf.add(
-                        &crate::ivf_vectors::IvfField {
-                            number: field.field_number,
-                            similarity: field.similarity,
-                            dimension: usize::try_from(field.dimension).unwrap_or(0),
-                            docs: &field.docs,
-                            vectors: values,
-                            partitions,
-                        },
-                        &[],
-                    )?;
-                }
-            }
-            clusters.record(ivf.clusters());
-            files.extend(ivf.finish().into_iter().flatten());
-        }
-
-        if indexes && format.hnsw_quantizer().is_some() {
-            let fields: Vec<crate::hnsw_quant_vectors::CodesField<'_>> = flat_fields
-                .iter()
-                .filter_map(|field| match &field.values {
-                    FieldVectorData::Float32(values) => {
-                        Some(crate::hnsw_quant_vectors::CodesField {
-                            number: field.field_number,
-                            similarity: field.similarity,
-                            dimension: usize::try_from(field.dimension).unwrap_or(0),
-                            vectors: values,
-                        })
-                    }
-                    _ => None,
-                })
-                .collect();
-            if let Some(codes) =
-                crate::hnsw_quant_vectors::write(format, &fields, segment_id, suffix)?
-            {
-                files.extend(codes);
-            }
-        }
-
-        if let Some((m, beam_width)) = format.graph() {
-            // Reopen exactly the bytes just written, and build every graph
-            // over *those* -- see this method's doc comment.
-            //
-            // One graph per field, built in parallel: each depends only on
-            // its own vectors and the fixed `DEFAULT_RAND_SEED`, so the bytes
-            // do not change. The first error in field order is returned.
-            let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
-                use rayon::prelude::*;
-                // A half-float instance's flush graph is built over the
-                // vectors as indexed, as `Lucene99HnswVectorsWriter` builds
-                // k-NN's from the field writer's `float[]`s: an in-memory
-                // full-precision copy, ordinal for ordinal.
-                let full;
-                let flat = if vectors::stores_half_floats(suffix) {
-                    full = vectors::write_flat_vectors(flat_fields, max_doc, segment_id, "")?;
-                    vectors::FlatVectorsReader::open(&full.1, &full.0, segment_id, "")?
-                } else {
-                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?
-                };
-                let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
-                    let count = field.docs.len() as i32;
-                    // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
-                    // too small for a graph to beat an exhaustive scan gets
-                    // none, and its `.vem` records `numLevels = 0`.
-                    if !indexes || !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
-                        return Ok(None);
-                    }
-                    // A Hamming format scores bytes its own way: never kept.
-                    let kept = if vectors::scores_hamming(suffix) {
-                        None
-                    } else {
-                        Self::kept_graph(graphs, old_to_new, field, (m, beam_width), segment_id)
-                    };
-                    if let Some(graph) = kept {
-                        return Ok(Some(graph));
-                    }
-                    let graph = match field.values.encoding() {
-                        VectorEncoding::Float32 => {
-                            let values = flat.float_vector_values(field.field_number)?;
-                            hnsw::HnswGraphBuilder::new(
-                                values.ord_scorer(),
-                                m,
-                                beam_width,
-                                hnsw::DEFAULT_RAND_SEED,
-                            )?
-                            .build(count)?
-                        }
-                        VectorEncoding::Byte => {
-                            let values = flat.byte_vector_values(field.field_number)?;
-                            hnsw::HnswGraphBuilder::new(
-                                values.ord_scorer(),
-                                m,
-                                beam_width,
-                                hnsw::DEFAULT_RAND_SEED,
-                            )?
-                            .build(count)?
-                        }
-                    };
-                    Ok(Some(graph))
-                };
-                let built: Vec<Result<Option<hnsw::OnHeapHnswGraph>>> =
-                    flat_fields.par_iter().map(build).collect();
-                built.into_iter().collect::<Result<_>>()?
-            };
-            let hnsw_fields: Vec<HnswVectorsField<'_>> = flat_fields
-                .iter()
-                .zip(&graphs)
-                .map(|(field, graph)| HnswVectorsField {
-                    field_number: field.field_number,
-                    encoding: field.values.encoding(),
-                    similarity: field.similarity,
-                    dimension: field.dimension,
-                    count: field.docs.len() as i32,
-                    graph: graph.as_ref(),
-                    m,
-                })
-                .collect();
-            let (vex_bytes, vem_bytes) =
-                hnsw_vectors::write_hnsw_vectors(&hnsw_fields, segment_id, suffix)?;
-            files.push(("vex", vex_bytes));
-            files.push(("vem", vem_bytes));
-            if indexes && format.hnsw_disk_quantizer().is_some() {
-                let disk: Vec<crate::disk_hnsw_vectors::DiskField<'_>> = flat_fields
-                    .iter()
-                    .zip(&graphs)
-                    .filter_map(|(field, graph)| match (&field.values, graph) {
-                        (FieldVectorData::Float32(values), Some(graph)) => {
-                            Some(crate::disk_hnsw_vectors::DiskField {
-                                number: field.field_number,
-                                similarity: field.similarity,
-                                dimension: usize::try_from(field.dimension).unwrap_or(0),
-                                docs: &field.docs,
-                                vectors: values,
-                                graph,
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                if let Some(written) =
-                    crate::disk_hnsw_vectors::write(format, &disk, segment_id, suffix)?
-                {
-                    files.extend(written);
-                }
-            }
-        }
-        files.insert(0, ("vemf", vemf_bytes));
-        files.insert(0, ("vec", vec_bytes));
-        Ok(files)
-    }
-
     /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
     /// pending document has a value for -- `PointValuesWriter.flush` into
     /// `Lucene90PointsWriter.writeField`. An opted-in field retained by another
@@ -10730,7 +10313,9 @@ impl IndexWriter<'_> {
         for group in &output.groups {
             for (ext, data) in &group.files {
                 let name = segment_file_name(segment_name, &group.suffix, ext);
-                write_file(dir, &name, data)?;
+                if !group.early.contains(ext) {
+                    write_file(dir, &name, data)?;
+                }
                 names.push(name);
             }
         }
@@ -12357,545 +11942,6 @@ impl IndexWriter<'_> {
 /// commit -- generation/version/counter all start at `0`, no segments, a
 /// freshly generated commit id (see [`generate_segment_id`]'s doc comment on
 /// why this facade doesn't use a real CSPRNG here).
-/// Everything resolving a buffered delete against one segment needs, owned:
-/// this port's slice of Java's `ReadersAndUpdates`. [`OpenedDeleteSegment::view`]
-/// turns it into the borrowed form the resolvers take, which is the only way to
-/// express "a `DocInput` borrowing the `.doc` bytes next to it" without a
-/// self-referential struct.
-struct OpenedDeleteSegment {
-    max_doc: usize,
-    live_docs: Option<FixedBitSet>,
-    /// The term dictionary and the `.doc` file's bytes -- the latter held as
-    /// the `Input` the directory handed over rather than copied into a `Vec`
-    /// (on an `MmapDirectory` that `Input` *is* the mapping, so a `to_vec()`
-    /// would heap-copy the whole postings file on every buffered-delete
-    /// round). Pooled across rounds ([`crate::reader_pool`]).
-    postings: std::sync::Arc<crate::reader_pool::PooledPostings>,
-    segment_id: [u8; ID_LENGTH],
-    suffix: String,
-}
-
-impl IndexingConfig {
-    /// `FrozenBufferedUpdates.apply(SegmentState[])` for one segment: resolve
-    /// every applicable packet's term deletes, query deletes and doc-values
-    /// updates against it, then write the results out as one `.liv` generation
-    /// and one doc-values-update generation.
-    ///
-    /// Java resolves and writes per packet through a pooled
-    /// `ReadersAndUpdates`; this port has no reader pool, so it opens the
-    /// segment once, resolves *all* applicable packets against that one open,
-    /// and writes once. Same outcome (deletes are a set union; doc-values
-    /// updates are applied in ascending generation order so the newest still
-    /// wins), one open and one generation bump instead of N.
-    /// Returns whether this apply left the segment 100% hard-deleted, which is
-    /// `closeSegmentStates`' `rld.isFullyDeleted()` -- see
-    /// [`IndexWriter::drop_fully_deleted_segments`].
-    pub(crate) fn apply_packets_to_segment(
-        &self,
-        dir: &dyn Directory,
-        packets: &[FrozenBufferedUpdates],
-        sci: &mut SegmentCommitInfo,
-        pending_sort_map: Option<&(String, Vec<usize>)>,
-    ) -> Result<bool> {
-        let seg_gen = sci.buffered_deletes_gen;
-        self.apply_packets_at_gen(dir, packets, sci, seg_gen, pending_sort_map)
-    }
-
-    /// `DocumentsWriterPerThread.flush`'s `applyDeletes` half: a segment just
-    /// built, not yet published, has its own buffer's deletes resolved against
-    /// it -- each limited to the documents added before it (in `sort_map`'s
-    /// pre-sort order, when the flush sorted) -- by the thread that built it,
-    /// with no writer lock held. Java does this during the flush too, from the
-    /// in-RAM postings. The segment is then published with no private packet.
-    /// Returns whether it left every document deleted.
-    pub(crate) fn apply_flush_private_updates(
-        &self,
-        dir: &dyn Directory,
-        private: &crate::buffered_updates::BufferedUpdates,
-        sci: &mut SegmentCommitInfo,
-        sort_map: Option<&(String, Vec<usize>)>,
-    ) -> Result<bool> {
-        // The packet and the segment share generation 0 for this one apply:
-        // equal generations are what makes the per-entry limits apply.
-        let packet = FrozenBufferedUpdates::new(private, Some(sci.segment_name.clone()))
-            .with_flush_generation();
-        self.apply_packets_at_gen(dir, std::slice::from_ref(&packet), sci, 0, sort_map)
-    }
-
-    fn apply_packets_at_gen(
-        &self,
-        dir: &dyn Directory,
-        packets: &[FrozenBufferedUpdates],
-        sci: &mut SegmentCommitInfo,
-        seg_gen: i64,
-        pending_sort_map: Option<&(String, Vec<usize>)>,
-    ) -> Result<bool> {
-        let applicable: Vec<&FrozenBufferedUpdates> = packets
-            .iter()
-            .filter(|p| p.applies_to(seg_gen))
-            .filter(|p| {
-                // A segment-private packet belongs to exactly one segment;
-                // `applies_to` alone would also let it reach an older segment
-                // that happens to share the generation boundary.
-                p.private_segment
-                    .as_deref()
-                    .is_none_or(|name| name == sci.segment_name)
-            })
-            .collect();
-        if applicable.is_empty() {
-            // Not a candidate for the fully-deleted drop: Java's
-            // `openSegmentStates` never opened a state for it.
-            return Ok(false);
-        }
-
-        // `ReadersAndUpdates.sortMap` for this segment, if this writer's
-        // flush just sorted it. Every `docIDUpto` limit below is a position
-        // in the **pre-sort** buffer, so a doc id from the sorted segment has
-        // to be mapped back through `newToOld` before it is compared -- Java
-        // does the same in `FrozenBufferedUpdates`' two `sortMap.newToOld(doc)
-        // < limit` branches.
-        let sort_map: Option<&Vec<usize>> = pending_sort_map
-            .filter(|(name, _)| name == &sci.segment_name)
-            .map(|(_, map)| map);
-        // "Is this doc id below the packet's pre-sort limit?" -- the one
-        // predicate every filter below uses, so the mapping cannot be applied
-        // in one place and forgotten in another.
-        let owned = self.open_segment_for_deletes(dir, sci)?;
-        let opened = owned.view()?;
-        let max_doc = opened.max_doc;
-        // A doc id the postings decoder produced out of range is the
-        // `DocOutOfRange` corruption `deletes::mark_deleted` reports; checking
-        // it here, before `below_limit` indexes the sort map or `deleted` sets
-        // a bit, keeps it an error rather than an index panic.
-        let in_range = |doc_id: i32| -> std::result::Result<usize, deletes::Error> {
-            usize::try_from(doc_id)
-                .ok()
-                .filter(|idx| *idx < max_doc)
-                .ok_or(deletes::Error::DocOutOfRange { doc_id, max_doc })
-        };
-        let below_limit = |doc: usize, limit: i32| -> bool {
-            match &sort_map {
-                None => i64::try_from(doc).is_ok_and(|d| d < i64::from(limit)),
-                Some(map) => map
-                    .get(doc)
-                    .is_some_and(|&old| i64::try_from(old).is_ok_and(|o| o < i64::from(limit))),
-            }
-        };
-        // `below_limit` indexes the map by doc id. The invariant is
-        // maintained by construction (the map is the permutation of the
-        // buffer that became this segment, and the name filter above picks
-        // the segment it names), but it is maintained by three separate
-        // assignments rather than by a type, so pin it here.
-        debug_assert!(
-            sort_map.as_ref().is_none_or(|m| m.len() == opened.max_doc),
-            "the sort map must have one entry per document of the segment it names"
-        );
-        // A set, not a list: `applyDocValuesUpdates` has to ask whether a doc
-        // is already dead, and the same doc can be named by several packets.
-        // A bitset over the segment's docs: one bit test per lookup, and it
-        // comes out in doc id order for `apply_deletes`.
-        let mut deleted = FixedBitSet::new(max_doc);
-        let mut any_deleted = false;
-        // field number -> updates in ascending packet-generation order, so the
-        // last write for a doc wins (`DocValuesFieldUpdates.mergedIterator`).
-        let mut numeric_updates: Vec<PerFieldNumericUpdates> = Vec::new();
-        let mut binary_updates: Vec<PerFieldBinaryUpdates> = Vec::new();
-
-        for packet in &applicable {
-            for (term, entry_limit) in &packet.delete_terms {
-                let limit = packet.limit_for(seg_gen, *entry_limit);
-                let docs = term_delete::resolve_term_doc_ids(
-                    opened.fields,
-                    opened.doc_in.as_ref(),
-                    opened.live_docs,
-                    &term.field,
-                    &term.bytes,
-                )?;
-                for d in docs {
-                    let d = in_range(d)?;
-                    if below_limit(d, limit) {
-                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and
-                        // `in_range` returned `d < max_doc`.
-                        deleted.set(d);
-                        any_deleted = true;
-                    }
-                }
-            }
-            for (query, entry_limit) in &packet.delete_queries {
-                let limit = packet.limit_for(seg_gen, *entry_limit);
-                // A sorted segment scatters the documents below the limit
-                // across the whole doc id range, so the scan cannot stop
-                // early -- Java's own sorted branch likewise drops the
-                // `docID < limit` loop bound and filters instead.
-                let bound = if sort_map.is_some() {
-                    opened.max_doc
-                } else {
-                    query_bound(limit)
-                };
-                let docs = IndexWriter::resolve_delete_query(query, &opened, bound)?;
-                for d in docs {
-                    let d = in_range(d)?;
-                    if below_limit(d, limit) {
-                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and
-                        // `in_range` returned `d < max_doc`.
-                        deleted.set(d);
-                        any_deleted = true;
-                    }
-                }
-            }
-            for (field, buffer) in &packet.field_updates {
-                let Some(info) = self.field_by_name(field) else {
-                    // Java's `verifyOrCreateDvOnlyField` already rejected an
-                    // unknown field at buffer time; reaching here means the
-                    // update was buffered before this writer's field list was
-                    // in play, and there is nothing to write it against.
-                    continue;
-                };
-                for update in &buffer.updates {
-                    let limit = packet.limit_for(seg_gen, update.doc_id_upto);
-                    let docs = term_delete::resolve_term_doc_ids(
-                        opened.fields,
-                        opened.doc_in.as_ref(),
-                        opened.live_docs,
-                        &update.term.field,
-                        &update.term.bytes,
-                    )?;
-                    // `applyDocValuesUpdates` reads
-                    // `segState.rld.getLiveDocs()`, which by then already
-                    // reflects *this packet's* term and query deletes (Java
-                    // runs the three in that order inside one
-                    // `FrozenBufferedUpdates.apply`). So a document this packet
-                    // just killed takes no update. `resolve_term_doc_ids` has
-                    // already filtered by the segment's pre-pass live docs;
-                    // `deleted` is the rest of the answer.
-                    let mut matched: Vec<i32> = Vec::with_capacity(docs.len());
-                    for d in docs {
-                        let idx = in_range(d)?;
-                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and
-                        // `in_range` returned `idx < max_doc`.
-                        if below_limit(idx, limit) && !deleted.get(idx) {
-                            matched.push(d);
-                        }
-                    }
-                    if matched.is_empty() {
-                        continue;
-                    }
-                    if buffer.is_numeric {
-                        let value = match &update.value {
-                            UpdateValue::Numeric(v) => Some(*v),
-                            // `hasValue == false` -> `reset(doc)`.
-                            _ => None,
-                        };
-                        let slot = entry_for(&mut numeric_updates, info.number);
-                        slot.extend(matched.into_iter().map(|d| (d, value)));
-                    } else {
-                        let value = match &update.value {
-                            UpdateValue::Binary(v) => Some(v.clone()),
-                            _ => None,
-                        };
-                        let slot = entry_for(&mut binary_updates, info.number);
-                        slot.extend(matched.into_iter().map(|d| (d, value.clone())));
-                    }
-                }
-            }
-        }
-
-        if any_deleted {
-            // Ascending doc id order, straight off the bitset; every set bit
-            // is below `max_doc`, which fits an `i32` (it is a `.si` count).
-            let deleted_ids = std::iter::successors(deleted.next_set_bit(0), |&d| {
-                d.checked_add(1).and_then(|n| deleted.next_set_bit(n))
-            })
-            .filter_map(|d| i32::try_from(d).ok());
-            let updated = deletes::apply_deletes_with_codec(
-                dir,
-                sci,
-                opened.live_docs,
-                opened.max_doc,
-                deleted_ids,
-                self.codec.as_deref(),
-            );
-            if updated.is_err() {
-                // `PendingDeletes.writeLiveDocs`' failure path:
-                // `info.advanceNextWriteDelGen()`, so a retry never asks for
-                // the name a failed attempt may have left behind.
-                let next = sci.next_write_del_gen();
-                sci.set_next_write_del_gen(next.saturating_add(1));
-            }
-            *sci = updated?;
-        }
-
-        if !numeric_updates.is_empty() || !binary_updates.is_empty() {
-            Self::write_doc_values_update_generation(
-                dir,
-                sci,
-                &numeric_updates,
-                &binary_updates,
-                &self.fields,
-                self.codec.as_deref(),
-            )?;
-        }
-        // `PendingDeletes.isFullyDeleted`: `getDelCount() == info.info.maxDoc()`.
-        Ok(i64::from(sci.del_count) == opened.max_doc as i64)
-    }
-
-    /// Writes one doc-values-update generation for `sci` --
-    /// `ReadersAndUpdates.writeFieldUpdates`, delegated to
-    /// [`crate::field_updates`], which owns the file naming, the
-    /// `FieldInfos` generation and the `SegmentCommitInfo` bookkeeping.
-    ///
-    /// The bytes are **real Lucene's**: each updated field's whole column is
-    /// rewritten through the `Lucene90DocValuesFormat` writer into a
-    /// generation-suffixed `.dvm`/`.dvd`/`.dvs` triple, and a new `.fnm`
-    /// generation records the field's `FieldInfo.docValuesGen`.
-    fn write_doc_values_update_generation(
-        dir: &dyn Directory,
-        sci: &mut SegmentCommitInfo,
-        numeric: &[PerFieldNumericUpdates],
-        binary: &[PerFieldBinaryUpdates],
-        schema: &[FieldInfo],
-        codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
-    ) -> Result<()> {
-        crate::field_updates::write_field_updates_with_codec(
-            dir,
-            sci,
-            numeric,
-            binary,
-            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
-            schema,
-            codec,
-        )?;
-        Ok(())
-    }
-
-    /// Opens exactly what resolving a buffered delete against one segment
-    /// needs: its `max_doc` (from the `.si`, not from a stored-fields open --
-    /// the doc count is already recorded there), its current live docs, and
-    /// its term dictionary + `.doc` postings when it has any.
-    ///
-    /// This is the slice of Java's `ReaderPool`/`ReadersAndUpdates` that
-    /// buffered deletes actually use. A segment with no postings files opens
-    /// with an empty [`lucene_codecs::blocktree::BlockTreeFields`], which
-    /// resolves every term to zero documents -- the same outcome as Java's
-    /// `TermDocsIterator.nextTerm` returning null, and the reason a delete
-    /// against a stored-fields-only segment is a legitimate no-op rather than
-    /// an error.
-    fn open_segment_for_deletes(
-        &self,
-        dir: &dyn Directory,
-        sci: &SegmentCommitInfo,
-    ) -> Result<OpenedDeleteSegment> {
-        let si = self.reader_pool.segment_info(dir, sci)?;
-        let max_doc = si.doc_count as usize;
-
-        let live_docs = if sci.del_gen >= 0 {
-            let liv = dir.open(&deletes::liv_file_name(&sci.segment_name, sci.del_gen))?;
-            Some(lucene_codecs::live_docs::parse(
-                &liv,
-                &sci.segment_id,
-                sci.del_gen,
-                max_doc,
-                sci.del_count as usize,
-            )?)
-        } else {
-            None
-        };
-
-        let postings = self.reader_pool.get_or_open(sci, || {
-            Self::open_postings_for_deletes(dir, sci, &si, max_doc)
-        })?;
-        let suffix = postings.suffix.clone();
-        Ok(OpenedDeleteSegment {
-            max_doc,
-            live_docs,
-            postings,
-            segment_id: sci.segment_id,
-            suffix,
-        })
-    }
-
-    /// The part of [`Self::open_segment_for_deletes`] that does not change
-    /// between delete rounds, and so is pooled: the segment's term dictionary
-    /// and `.doc` input, from `.cfs` for a compound segment.
-    fn open_postings_for_deletes(
-        dir: &dyn Directory,
-        sci: &SegmentCommitInfo,
-        si: &segment_info::SegmentInfo,
-        max_doc: usize,
-    ) -> Result<crate::reader_pool::PooledPostings> {
-        // A compound segment -- one real Lucene flushed -- keeps its term
-        // dictionary inside `.cfs`, and its `.si` lists no `.tim` at all:
-        // testing `si.files` alone would report "no postings" and every
-        // delete against it would silently match nothing.
-        let compound = if si.is_compound_file {
-            Some(CompoundReader::open(
-                dir,
-                &sci.segment_name,
-                &sci.segment_id,
-            )?)
-        } else {
-            None
-        };
-        let seg_dir: &dyn Directory = match &compound {
-            Some(c) => c,
-            None => dir,
-        };
-        let seg_files: Vec<String> = match &compound {
-            Some(c) => c.member_files(),
-            None => si.files.clone(),
-        };
-
-        // The segment's own postings format: an older Lucene's segment names
-        // its files (and frames their headers) after it, not after this
-        // writer's.
-        let (seg, suffix) = postings_file_base(&seg_files, &sci.segment_name);
-        if !per_field_postings::has_postings_files(&seg_files) {
-            return Ok(crate::reader_pool::PooledPostings {
-                fields: lucene_codecs::blocktree::BlockTreeFields::empty(),
-                doc_input: None,
-                suffix,
-                combined: false,
-            });
-        }
-
-        // The segment's **own** field infos, every indexed field of them:
-        // `blocktree::open` resolves the `.tmd`'s field numbers through this
-        // list, and those numbers are the segment's -- a segment another
-        // writer (real Lucene) produced numbers its fields its own way, which
-        // this writer's schema need not match. Java's `SegmentReader` reads
-        // the same `.fnm` for the same reason.
-        let own = crate::field_updates::read_current_field_infos(seg_dir, sci, &seg_files)?;
-        let field_infos = lucene_codecs::field_infos::FieldInfos {
-            fields: own
-                .fields
-                .into_iter()
-                .filter(|f| f.index_options != IndexOptions::None)
-                .collect(),
-        };
-        // `PerFieldPostingsFormat` with more than one format: every group,
-        // combined into one dictionary over one concatenated `.doc`.
-        let suffixes = per_field_postings::group_suffixes(&seg_files, &sci.segment_name);
-        if suffixes.len() > 1 || suffixes.iter().any(|s| is_foreign_postings_group(s)) {
-            let mut opened = Vec::with_capacity(suffixes.len());
-            for suffix in &suffixes {
-                let seg = format!("{}_{suffix}", sci.segment_name);
-                let open = |ext: &str| seg_dir.open(&format!("{seg}.{ext}"));
-                let format = per_field_postings::format_of_suffix(suffix);
-                let dictionary = per_field_postings::dictionary_extensions(format)
-                    .iter()
-                    .map(|ext| {
-                        if !seg_files.contains(&format!("{seg}.{ext}"))
-                            && !per_field_postings::dictionary_file_required(format, ext)
-                        {
-                            return Ok(lucene_store::directory::Input::Owned(Vec::new()));
-                        }
-                        open(ext)
-                    })
-                    .collect::<lucene_store::Result<Vec<_>>>()?;
-                let doc = if seg_files.contains(&format!("{seg}.doc")) {
-                    Some(open("doc")?)
-                } else {
-                    None
-                };
-                opened.push((suffix, dictionary, doc));
-            }
-            let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
-                .iter()
-                .map(|(suffix, dictionary, doc)| per_field_postings::GroupFiles {
-                    suffix,
-                    dictionary: dictionary.iter().map(|d| &**d).collect(),
-                    doc: doc.as_deref(),
-                    pos: None,
-                    pay: None,
-                })
-                .collect();
-            let combined = per_field_postings::open_groups(
-                &groups,
-                &field_infos,
-                &sci.segment_id,
-                max_doc as i32,
-            )?;
-            return Ok(crate::reader_pool::PooledPostings {
-                fields: combined.fields,
-                doc_input: Some(lucene_store::directory::Input::Owned(combined.doc)),
-                suffix,
-                combined: true,
-            });
-        }
-        // Borrowed from the directory's `Input` (a mapping, under
-        // `MmapDirectory`), not copied: `blocktree::open` builds its own
-        // structures from these and does not retain the slices, and the `.doc`
-        // `Input` is kept alive in the returned struct for `DocInput` to
-        // borrow.
-        let tim = seg_dir.open(&format!("{seg}.tim"))?;
-        let tip = seg_dir.open(&format!("{seg}.tip"))?;
-        let tmd = seg_dir.open(&format!("{seg}.tmd"))?;
-        let doc_input = seg_dir.open(&format!("{seg}.doc"))?;
-        let fields = lucene_codecs::blocktree::open(
-            &tim,
-            &tip,
-            &tmd,
-            &field_infos,
-            &sci.segment_id,
-            &suffix,
-            max_doc as i32,
-        )?;
-        Ok(crate::reader_pool::PooledPostings {
-            fields,
-            doc_input: Some(doc_input),
-            suffix,
-            combined: false,
-        })
-    }
-}
-
-impl OpenedDeleteSegment {
-    fn view(&self) -> Result<DeleteSegmentView<'_>> {
-        let doc_in = match &self.postings.doc_input {
-            Some(bytes) if self.postings.combined => {
-                Some(lucene_codecs::postings::DocInput::validated(bytes))
-            }
-            Some(bytes) => Some(lucene_codecs::postings::DocInput::open(
-                bytes,
-                &self.segment_id,
-                &self.suffix,
-            )?),
-            None => None,
-        };
-        Ok(DeleteSegmentView {
-            max_doc: self.max_doc,
-            live_docs: self.live_docs.as_ref(),
-            fields: &self.postings.fields,
-            doc_in,
-        })
-    }
-}
-
-/// The borrowed view of an [`OpenedDeleteSegment`] the delete resolvers take.
-struct DeleteSegmentView<'a> {
-    max_doc: usize,
-    live_docs: Option<&'a FixedBitSet>,
-    fields: &'a lucene_codecs::blocktree::BlockTreeFields,
-    doc_in: Option<lucene_codecs::postings::DocInput<'a>>,
-}
-
-/// One field's resolved NUMERIC doc-values updates for one generation:
-/// `(field number, (doc id, value-or-reset) pairs)`.
-type PerFieldNumericUpdates = (i32, Vec<(i32, Option<i64>)>);
-
-/// One field's resolved BINARY doc-values updates for one generation.
-type PerFieldBinaryUpdates = (i32, Vec<(i32, Option<Vec<u8>>)>);
-
-/// What [`IndexWriter::resolve_term_span`]'s classifier decides for one term.
-enum TermSpan {
-    /// The term is in the query's span: take its documents.
-    Take,
-    /// Below the span; keep walking.
-    Skip,
-    /// Past the span; the dictionary is sorted, so nothing after it can match.
-    Stop,
-}
-
 /// The `docIDUpto` limit as a doc-space bound.
 /// [`crate::buffered_updates::MAX_DOC_ID_UPTO`] means "no limit", which is
 /// `usize::MAX` here and is then clamped to the segment's own `max_doc` by

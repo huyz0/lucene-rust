@@ -1117,6 +1117,75 @@ impl<'a> Reader<'a> {
 ///
 /// # Errors
 /// [`Error::Ir`] on a malformed blob.
+/// The bytes [`decode_constant`] reads back: a constant's tag, then its
+/// value, numbers little-endian and strings and lists length-prefixed.
+pub fn encode_constant(c: &Constant) -> Vec<u8> {
+    fn len(out: &mut Vec<u8>, n: usize) {
+        out.extend_from_slice(&i32::try_from(n).unwrap_or(i32::MAX).to_le_bytes());
+    }
+    fn put(out: &mut Vec<u8>, c: &Constant) {
+        match c {
+            Constant::Null => out.push(0),
+            Constant::Bool(b) => out.extend([1, u8::from(*b)]),
+            Constant::Byte(v) => {
+                out.push(2);
+                out.extend_from_slice(&i32::from(*v).to_le_bytes());
+            }
+            Constant::Short(v) => {
+                out.push(3);
+                out.extend_from_slice(&i32::from(*v).to_le_bytes());
+            }
+            Constant::Char(v) => {
+                out.push(4);
+                out.extend_from_slice(&i32::from(*v).to_le_bytes());
+            }
+            Constant::Int(v) => {
+                out.push(5);
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            Constant::Long(v) => {
+                out.push(6);
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            Constant::Float(v) => {
+                out.push(7);
+                out.extend_from_slice(&v.to_bits().to_le_bytes());
+            }
+            Constant::Double(v) => {
+                out.push(8);
+                out.extend_from_slice(&v.to_bits().to_le_bytes());
+            }
+            Constant::Str(v) => {
+                out.push(9);
+                len(out, v.len());
+                out.extend_from_slice(v.as_bytes());
+            }
+            Constant::Pattern(v, flags) => {
+                out.push(10);
+                len(out, v.len());
+                out.extend_from_slice(v.as_bytes());
+                out.extend_from_slice(&flags.to_le_bytes());
+            }
+            Constant::List(items) => {
+                out.push(11);
+                len(out, items.len());
+                items.iter().for_each(|i| put(out, i));
+            }
+            Constant::Map(entries) => {
+                out.push(12);
+                len(out, entries.len());
+                for (k, v) in entries {
+                    put(out, k);
+                    put(out, v);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    put(&mut out, c);
+    out
+}
+
 pub fn decode_constant(blob: &[u8]) -> Result<Constant> {
     let mut r = Reader::new(blob);
     let c = r.constant()?;
@@ -1204,4 +1273,36 @@ pub fn decode(blob: &[u8]) -> Result<Script> {
         classes,
         sites,
     })
+}
+
+#[cfg(test)]
+mod constant_tests {
+    use super::*;
+
+    #[test]
+    fn a_constant_reads_back_as_written() {
+        let c = Constant::Map(vec![
+            (Constant::Str("n".into()), Constant::Double(1.5)),
+            (
+                Constant::Str("xs".into()),
+                Constant::List(vec![
+                    Constant::Int(-3),
+                    Constant::Long(1 << 40),
+                    Constant::Bool(true),
+                    Constant::Null,
+                    Constant::Str("é".into()),
+                ]),
+            ),
+        ]);
+        assert_eq!(decode_constant(&encode_constant(&c)).unwrap(), c);
+        for c in [
+            Constant::Byte(-1),
+            Constant::Short(7),
+            Constant::Char(65),
+            Constant::Float(2.5),
+            Constant::Pattern("a+".into(), 2),
+        ] {
+            assert_eq!(decode_constant(&encode_constant(&c)).unwrap(), c);
+        }
+    }
 }

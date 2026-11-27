@@ -70,6 +70,11 @@ pub struct CachedBlobDirectory<S: BlobStore + 'static> {
     /// Bumped by every [`Self::forget`]: a listing that started before one
     /// does not put back the lengths it read.
     forgets: AtomicU64,
+    /// Whether a listing that shows a commit not yet seen primes the cache from
+    /// the open bundle ([`crate::open_bundle`]).
+    open_bundle: bool,
+    /// The commit generation the cache was last primed for.
+    primed_generation: Mutex<Option<u64>>,
 }
 
 /// A codec and the stored length it was built for.
@@ -121,7 +126,20 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             versions: Mutex::new(HashMap::new()),
             codecs: Mutex::new(HashMap::new()),
             forgets: AtomicU64::new(0),
+            open_bundle: true,
+            primed_generation: Mutex::new(None),
         }
+    }
+
+    /// Switches the open bundle on or off (on by default). On, the directory
+    /// writes it with every published commit and merge, and fills the cache
+    /// from it the first time a listing shows a commit, so a shard opens with
+    /// one request for its small files instead of several per segment. A
+    /// missing, stale or damaged bundle only means the ordinary ranged reads.
+    pub fn with_open_bundle(mut self, enabled: bool) -> Self {
+        self.open_bundle = enabled;
+        self.blob.set_open_bundle(enabled);
+        self
     }
 
     /// The store underneath.
@@ -132,6 +150,87 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
     /// The page cache.
     pub fn cache(&self) -> &Arc<PageCache> {
         &self.cache
+    }
+
+    /// Fills the cache from the store's open bundle
+    /// ([`crate::open_bundle`]): one request instead of the reads opening
+    /// each segment's small files would send. Entries the listing does not
+    /// confirm (same name and length) are skipped, and a missing or damaged
+    /// bundle leaves everything to the ordinary ranged reads.
+    pub fn prime_from_open_bundle(&self) -> Result<crate::open_bundle::BundlePrimed> {
+        if !self.cache.has_disk() {
+            return Ok(Default::default());
+        }
+        match self.store.list_with_sizes()? {
+            Some(listing) => self.prime_with_listing(&listing),
+            None => Ok(Default::default()),
+        }
+    }
+
+    fn prime_with_listing(
+        &self,
+        listing: &[(String, u64)],
+    ) -> Result<crate::open_bundle::BundlePrimed> {
+        use crate::open_bundle::{parse_open_bundle, BundlePrimed, OPEN_BUNDLE_NAME};
+        let mut stats = BundlePrimed::default();
+        if !self.cache.has_disk() {
+            return Ok(stats);
+        }
+        let bundle = match self.store.get(OPEN_BUNDLE_NAME) {
+            Ok(b) => b,
+            Err(e) if e.is_no_such_file() => return Ok(stats),
+            Err(e) => return Err(e),
+        };
+        let Some(entries) = parse_open_bundle(&bundle) else {
+            return Ok(stats);
+        };
+        stats.found = true;
+        let sizes: HashMap<&str, u64> = listing.iter().map(|(n, l)| (n.as_str(), *l)).collect();
+        let page_size = self.cache.config().page_size;
+        for (name, bytes) in entries {
+            if sizes.get(name.as_str()).copied() != Some(bytes.len() as u64) {
+                stats.stale = stats.stale.saturating_add(1);
+                continue;
+            }
+            let version = self.current_version(&name)?;
+            let prefix = self.key_prefix(&name);
+            let key = match version.as_deref() {
+                None => format!("{prefix}{}\u{0}p", bytes.len()),
+                Some(v) => format!("{prefix}{}\u{0}p\u{0}v{}:{v}", bytes.len(), v.len()),
+            };
+            if self.cache.is_pinned_name(&name) {
+                self.cache.pin(&key);
+            }
+            for (i, page) in bytes.chunks(page_size).enumerate() {
+                self.cache.insert_page(&key, i as u64, page);
+            }
+            lock_ignoring_poison(&self.sizes).insert(name, bytes.len() as u64);
+            stats.primed = stats.primed.saturating_add(1);
+            stats.bytes = stats.bytes.saturating_add(bytes.len() as u64);
+        }
+        Ok(stats)
+    }
+
+    /// Primes the cache from the open bundle when `listed` shows a commit the
+    /// cache was not primed for: the first listing of a shard, and each commit
+    /// a reopen sees. Best-effort: any failure leaves the ranged reads.
+    fn prime_for_new_commit(&self, listed: &[(String, u64)]) {
+        if !self.open_bundle {
+            return;
+        }
+        let newest = listed
+            .iter()
+            .filter_map(|(n, _)| u64::from_str_radix(n.strip_prefix("segments_")?, 36).ok())
+            .max();
+        let Some(newest) = newest else { return };
+        {
+            let mut primed = lock_ignoring_poison(&self.primed_generation);
+            if *primed == Some(newest) {
+                return;
+            }
+            *primed = Some(newest);
+        }
+        let _ = self.prime_with_listing(listed);
     }
 
     fn key_prefix(&self, name: &str) -> String {
@@ -382,7 +481,17 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         match pager {
             Some(pager) => {
                 let name = file.name.clone();
+                let file_pages = file.geom.pages;
+                let head_tail = Arc::clone(&file);
                 let filler: Arc<dyn PageFiller> = file;
+                // The header and footer pages first, without the window's
+                // read-ahead: the open checks only those bytes, and a window
+                // of megabytes around each, for every file of every segment,
+                // is what a cold open of a many-segment shard waits for.
+                // A failure is only a missed hint: the fault retries.
+                if file_pages > 2 && self.cache.has_disk() {
+                    let _ = head_tail.pages_with(&[0, file_pages.saturating_sub(1)], false);
+                }
                 let paged = pager.open(len, page, filler, &name)?;
                 self.cache.note_demand_paged_open();
                 // Lucene's readers check a file's header and footer as they
@@ -418,6 +527,11 @@ struct CachedFile<S: BlobStore + 'static> {
 impl<S: BlobStore + 'static> CachedFile<S> {
     /// The decoded bytes of `pages`.
     fn pages(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
+        self.pages_with(pages, true)
+    }
+
+    /// [`Self::pages`], with the read-ahead of the download window on or off.
+    fn pages_with(&self, pages: &[u64], read_ahead: bool) -> Result<Vec<Arc<[u8]>>> {
         // The buffer is allocated inside the request's in-flight permit
         // ([`PageCacheConfig::max_inflight_bytes`]) and the store reads
         // into it, so fetching holds no heap the bound does not count.
@@ -427,7 +541,9 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             buf.truncate(n);
             Ok(buf)
         };
-        let stored = self.cache.stored_pages(&self.geom, pages, &fetch)?;
+        let stored = self
+            .cache
+            .stored_pages_with(&self.geom, pages, &fetch, read_ahead)?;
         pages
             .iter()
             .zip(stored)
@@ -611,6 +727,7 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
         let forgets = self.forgets.load(Ordering::Acquire);
         let mut names = match self.store.list_with_sizes()? {
             Some(listed) => {
+                self.prime_for_new_commit(&listed);
                 let mut sizes = lock_ignoring_poison(&self.sizes);
                 let current = self.forgets.load(Ordering::Acquire) == forgets;
                 let mut names = Vec::with_capacity(listed.len());
@@ -690,7 +807,10 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
         self.delete_pending()?;
         self.forget(dest);
         self.blob.store().copy(source, dest)?;
-        self.delete_file(source)
+        self.blob.bundle_move(source, dest);
+        self.delete_file(source)?;
+        self.blob.bundle_publish(dest);
+        Ok(())
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {

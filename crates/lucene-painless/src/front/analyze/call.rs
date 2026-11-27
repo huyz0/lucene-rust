@@ -3,7 +3,7 @@
 //! as Painless resolves them), and against a class named in the script for
 //! its static members.
 
-use super::expr::Typed;
+use super::expr::{Typed, REGEX_LIMIT_FACTOR};
 use super::ty::{from_table, is_primitive, STRING};
 use super::{compile_error, unsupported, Cx, Res};
 use crate::front::allowlist::{Allowlist, MethodSig};
@@ -72,16 +72,16 @@ fn lookup_class(ty: &str) -> String {
 
 /// The method of `class` Painless resolves: by name and arity, the class's
 /// own first, then those it inherits.
-fn find_method<'a>(
+pub(super) fn find_method<'a>(
     class: &str,
     name: &str,
     arity: usize,
     is_static: bool,
 ) -> Option<&'a MethodSig> {
-    Allowlist::get()
-        .methods(class, name)
-        .into_iter()
-        .find(|m| m.params.len() == arity && (m.is_static == is_static || m.augment.is_some()))
+    Allowlist::get().methods(class, name).into_iter().find(|m| {
+        m.params.len() - m.inject.len() == arity
+            && (m.is_static == is_static || m.augment.is_some())
+    })
 }
 
 impl Cx<'_> {
@@ -108,13 +108,6 @@ impl Cx<'_> {
         null_safe: bool,
     ) -> Res<Typed> {
         let prefix = self.prefix(recv)?;
-        let mut exprs = Vec::new();
-        for arg in args {
-            match arg {
-                ast::Arg::Expr(e) => exprs.push(e),
-                _ => return unsupported("lambda or method reference argument"),
-            }
-        }
         let unknown = |class: &str| {
             compile_error(
                 pos,
@@ -128,7 +121,7 @@ impl Cx<'_> {
         let (left, receiver, class, is_static) = match prefix {
             Prefix::Class(c) => (Node::Static { ty: c.clone() }, c.clone(), c, true),
             Prefix::Value(t) if t.ty == DEF => {
-                return self.call_def(pos, *t, name, &exprs, null_safe);
+                return self.call_def(pos, *t, name, args, null_safe);
             }
             Prefix::Value(t) if t.ty == "void" || t.ty == "null" => {
                 return compile_error(pos, format!("cannot call a method on [{}]", t.ty));
@@ -141,13 +134,20 @@ impl Cx<'_> {
         if null_safe && (is_static || is_primitive(&receiver)) {
             return unsupported("null-safe call on a class or a primitive");
         }
-        let Some(sig) = find_method(&class, name, exprs.len(), is_static) else {
+        let Some(sig) = find_method(&class, name, args.len(), is_static) else {
             return unknown(&class);
         };
         let mut lowered = Vec::new();
-        for (e, param) in exprs.iter().zip(&sig.params) {
-            let t = self.expr(e)?;
-            lowered.push(self.coerce(e.pos, t, &from_table(param), false)?.node);
+        let mut given = args.iter();
+        for (i, param) in sig.params.iter().enumerate() {
+            if sig.inject.contains(&i) {
+                lowered.push(Node::Constant {
+                    ty: "int".into(),
+                    value: ir::Constant::Int(REGEX_LIMIT_FACTOR),
+                });
+            } else if let Some(a) = given.next() {
+                lowered.push(self.arg(a, param)?);
+            }
         }
         let ret = from_table(&sig.ret);
         let method = ir::Method {
@@ -186,21 +186,12 @@ impl Cx<'_> {
         _pos: u32,
         recv: Typed,
         name: &str,
-        args: &[&ast::Expr],
+        args: &[ast::Arg],
         null_safe: bool,
     ) -> Res<Typed> {
         let mut lowered = Vec::new();
-        for e in args {
-            let t = self.expr(e)?;
-            if t.ty == "void" {
-                return compile_error(e.pos, "cannot pass a void argument");
-            }
-            let t = if t.ty == "null" {
-                self.coerce(e.pos, t, "java.lang.Object", false)?
-            } else {
-                t
-            };
-            lowered.push(t.node);
+        for a in args {
+            lowered.push(self.def_arg(a)?);
         }
         let mut call = Node::InvokeCallDef {
             ty: DEF.into(),

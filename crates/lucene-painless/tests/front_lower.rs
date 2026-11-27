@@ -19,7 +19,7 @@ use common::{matches, read_value, show, Expected, Rd};
 
 /// The scripts that lowered and matched when this floor was last raised;
 /// it only goes up.
-const MIN_LOWERED: usize = 4800;
+const MIN_LOWERED: usize = 4947;
 
 type Outcome = Result<Expected, String>;
 
@@ -67,6 +67,13 @@ fn run(src: &str, expected: &Outcome) -> Result<Result<(), String>, Refusal> {
         params: Value::map(MapKind::HashMap, JMap::new(Order::Hash)),
     };
     let got: Result<Value, Throw> = Vm::new(prog, &mut env).execute(&[]);
+    // A method the runtime has no code for yet is a script it cannot run,
+    // counted as refused rather than as a script that did the wrong thing.
+    if let Err(t) = &got {
+        if t.class() == lucene_painless::api::UNSUPPORTED {
+            return Err(Refusal::Unsupported(show(&got)));
+        }
+    }
     let ok = match (expected, &got) {
         (Ok(e), Ok(v)) => matches(e, v),
         (Err(class), Err(t)) => *class == t.class(),

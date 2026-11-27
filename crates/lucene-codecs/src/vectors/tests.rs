@@ -654,6 +654,64 @@ fn a_merge_converts_between_full_and_half_floats() {
     }
 }
 
+#[test]
+fn a_streamed_merge_writes_the_bytes_a_buffered_one_does() {
+    let full = float_field(1, 3, vec![0, 1]);
+    let (full_data, full_meta) = write(&[full], 2);
+    let full_reader = open(&full_meta, &full_data).unwrap();
+    let sources = [
+        FlatVectorMergeSource {
+            values: MergeSourceValues::Float32(full_reader.float_vector_values(1).unwrap()),
+            doc_map: &[],
+        },
+        FlatVectorMergeSource {
+            values: MergeSourceValues::Float32(full_reader.float_vector_values(1).unwrap()),
+            doc_map: &[],
+        },
+    ];
+    let dir = std::env::temp_dir().join(format!("streamed-flat-merge-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A sparse merged field (4 of 12 documents) and a dense one (4 of 4).
+    for (max_doc, map_a, map_b) in [(12, [3, 5], [6, 9]), (4, [0, 1], [2, 3])] {
+        let sources = [
+            FlatVectorMergeSource {
+                doc_map: &map_a,
+                values: match &sources[0].values {
+                    MergeSourceValues::Float32(v) => MergeSourceValues::Float32(v.clone()),
+                    _ => unreachable!(),
+                },
+            },
+            FlatVectorMergeSource {
+                doc_map: &map_b,
+                values: match &sources[1].values {
+                    MergeSourceValues::Float32(v) => MergeSourceValues::Float32(v.clone()),
+                    _ => unreachable!(),
+                },
+            },
+        ];
+        let field = MergedFlatVectorField {
+            field_number: 1,
+            encoding: VectorEncoding::Float32,
+            similarity: VectorSimilarityFunction::Euclidean,
+            dimension: 3,
+            sources: &sources,
+        };
+        let mut buffered = FlatVectorsWriter::new(max_doc, &ID, "");
+        buffered.merge_one_flat_vector_field(&field).unwrap();
+        let (want_data, want_meta) = buffered.finish();
+
+        let mut streamed = FlatVectorsWriter::new(max_doc, &ID, "");
+        let out = lucene_store::FsIndexOutput::create(&dir, "out.vec").unwrap();
+        streamed.stream_to(out);
+        streamed.merge_one_flat_vector_field(&field).unwrap();
+        let (out, meta) = streamed.finish_streamed();
+        out.unwrap().close().unwrap();
+        assert_eq!(std::fs::read(dir.join("out.vec")).unwrap(), want_data);
+        assert_eq!(meta, want_meta);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------- write-side validation ----------------
 
 #[test]

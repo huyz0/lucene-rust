@@ -23,6 +23,9 @@ pub struct MethodSig {
     /// The class whose static method this is, for a method Painless adds to
     /// the receiver's class (`Augmentation`).
     pub augment: Option<String>,
+    /// The parameters (0-based) the compiler passes as a constant
+    /// (`regex_limit_factor`), which a script's call leaves out.
+    pub inject: Vec<usize>,
     /// The allowlist file that lists it, which names the contexts that serve it.
     pub file: String,
 }
@@ -71,6 +74,8 @@ pub struct Allowlist {
     imports: Vec<Import>,
     /// Canonical short name (`Map.Entry`) to class.
     shorts: HashMap<String, String>,
+    /// A functional interface to the name and arity of its one abstract method.
+    functional: HashMap<String, (String, usize)>,
 }
 
 fn class_mut<'a>(a: &'a mut Allowlist, name: &str, n: usize) -> Result<&'a mut Class, String> {
@@ -121,6 +126,10 @@ impl Allowlist {
                 Some("parent") if f.len() == 3 => {
                     class_mut(&mut a, f[1], n)?.parents.push(f[2].to_string())
                 }
+                Some("iface") if f.len() == 5 => {
+                    a.functional
+                        .insert(f[1].to_string(), (f[2].to_string(), params(f[4]).len()));
+                }
                 Some("ctor") if f.len() == 4 => class_mut(&mut a, f[1], n)?.ctors.push(CtorSig {
                     params: params(f[2]),
                     file: f[3].to_string(),
@@ -136,6 +145,12 @@ impl Allowlist {
                             .iter()
                             .find_map(|x| x.strip_prefix("augment="))
                             .map(str::to_string),
+                        inject: flags
+                            .iter()
+                            .filter_map(|x| x.strip_prefix("inject="))
+                            .filter_map(|n| n.parse::<usize>().ok())
+                            .map(|n| n - 1)
+                            .collect(),
                         file: f[6].to_string(),
                     };
                     class_mut(&mut a, f[1], n)?
@@ -179,6 +194,20 @@ impl Allowlist {
             return Some(full);
         }
         self.classes.get_key_value(written).map(|(k, _)| k.as_str())
+    }
+
+    /// The abstract method a functional interface's lambdas and method
+    /// references implement, as the allowlist lists it (`def` for `Object`).
+    pub fn functional_method(&self, class: &str) -> Option<(&str, &MethodSig)> {
+        let (name, arity) = self.functional.get(class)?;
+        let sig = self
+            .classes
+            .get(class)?
+            .methods
+            .get(name)?
+            .iter()
+            .find(|m| m.params.len() == *arity && !m.is_static)?;
+        Some((name.as_str(), sig))
     }
 
     pub fn imports(&self) -> &[Import] {

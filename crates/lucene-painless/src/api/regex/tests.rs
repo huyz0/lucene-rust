@@ -70,7 +70,13 @@ fn flags_change_how_a_pattern_reads() {
         text(find_op(&mut vm_unused(), &[s("a\nb"), nodot])),
         "false"
     );
-    assert!(compile_pattern("a", 4).is_err());
+    // A flag that changes what the pattern says is refused; one that cannot is not.
+    assert!(compile_pattern("a b", 4).is_err());
+    assert!(compile_pattern("^a", 8).is_err());
+    assert!(compile_pattern("a", 2 | 64).is_err());
+    assert!(compile_pattern("\\w", 256).is_err());
+    assert!(compile_pattern("é", 128).is_err());
+    assert!(compile_pattern("a", 4 | 8 | 64 | 128 | 256).is_ok());
     assert!(compile_pattern("(", 0).is_err());
     assert_eq!(t(&pat("x*", 0), "pattern", &[]), "x*");
     assert_eq!(t(&pat("x*", 0), "toString", &[]), "x*");

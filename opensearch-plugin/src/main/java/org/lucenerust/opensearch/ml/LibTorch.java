@@ -40,7 +40,15 @@ final class LibTorch {
     static final String VERSION = "2.5.1";
     private static final String NATIVE_LIB = "libtorch.so";
     private static final String DJL_SITE = "https://publish.djl.ai/pytorch/" + VERSION;
-    private static final String MAVEN = "https://repo1.maven.org/maven2/ai/djl/pytorch/";
+    /**
+     * Where DJL's Maven jars are downloaded from, in order: Google's mirror of Maven Central first
+     * (it does not throttle shared address ranges), then Central. A repository that answers with an
+     * error, such as HTTP 429, or cannot be reached passes the download to the next one.
+     */
+    static final List<String> MAVEN_REPOSITORIES = List.of(
+        "https://maven-central.storage-download.googleapis.com/maven2/ai/djl/pytorch/",
+        "https://repo1.maven.org/maven2/ai/djl/pytorch/"
+    );
     /**
      * SHA-256 of DJL's Maven jars of the default flavor. These flavors download from Maven Central,
      * checked against the pin, before DJL's own site; other flavors come from DJL's site unchecked,
@@ -105,7 +113,7 @@ final class LibTorch {
                 try {
                     fromMaven(flavor, classifier, sha, tmp);
                 } catch (IOException maven) {
-                    LOGGER.warn("accelerated-search: cannot download libtorch from Maven Central, trying {}: {}", DJL_SITE, maven.toString());
+                    LOGGER.warn("accelerated-search: cannot download libtorch from Maven, trying {}: {}", DJL_SITE, maven.toString());
                     IOUtils.rm(tmp);
                     Files.createDirectories(tmp);
                     fromDjl(flavor, classifier, tmp);
@@ -167,23 +175,45 @@ final class LibTorch {
         }
     }
 
-    /** DJL's Maven jar of the flavor, checked against its pinned SHA-256, unpacked. */
     private static void fromMaven(String flavor, String classifier, String sha256, Path into) throws IOException {
+        fromMaven(MAVEN_REPOSITORIES, flavor, classifier, sha256, into);
+    }
+
+    /**
+     * DJL's Maven jar of the flavor, from the first repository that serves a copy matching the
+     * pinned SHA-256, unpacked. A wrong checksum counts as a failed repository, so a damaged mirror
+     * falls through to Central.
+     */
+    static void fromMaven(List<String> repositories, String flavor, String classifier, String sha256, Path into)
+        throws IOException {
         String artifact = "pytorch-native-" + flavor;
-        String url = MAVEN + artifact + "/" + VERSION + "/" + artifact + "-" + VERSION + "-" + classifier + ".jar";
         Path jar = into.resolve("libtorch.jar");
-        MessageDigest sha;
-        try {
-            sha = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
+        IOException last = new IOException("no Maven repository configured");
+        boolean downloaded = false;
+        for (String repository : repositories) {
+            String url = repository + artifact + "/" + VERSION + "/" + artifact + "-" + VERSION + "-" + classifier + ".jar";
+            MessageDigest sha;
+            try {
+                sha = MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+            LOGGER.info("accelerated-search: downloading {}", url);
+            try (InputStream in = new DigestInputStream(open(url), sha)) {
+                Files.copy(in, jar, StandardCopyOption.REPLACE_EXISTING);
+                if (HexFormat.of().formatHex(sha.digest()).equals(sha256) == false) {
+                    throw new IOException("checksum mismatch for " + url);
+                }
+                downloaded = true;
+                break;
+            } catch (IOException e) {
+                LOGGER.warn("accelerated-search: {} failed, trying the next repository: {}", url, e.toString());
+                Files.deleteIfExists(jar);
+                last = e;
+            }
         }
-        LOGGER.info("accelerated-search: downloading {}", url);
-        try (InputStream in = new DigestInputStream(open(url), sha)) {
-            Files.copy(in, jar);
-        }
-        if (HexFormat.of().formatHex(sha.digest()).equals(sha256) == false) {
-            throw new IOException("checksum mismatch for " + url);
+        if (downloaded == false) {
+            throw last;
         }
         String prefix = "pytorch/" + flavor + "/" + classifier + "/";
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(jar))) {

@@ -14,7 +14,7 @@ Every patch below must apply exactly once, so a new OpenSearch release that move
 here rather than producing an engine that silently differs.
 
 Usage: derive_engine.py <extracted opensearch-X-sources.jar> <output dir>
-  curl -O https://repo1.maven.org/maven2/org/opensearch/opensearch/3.9.0/opensearch-3.9.0-sources.jar
+  deps/gradlew -q -p deps fetch -Pcoordinates=org.opensearch:opensearch:3.9.0:sources -PoutDir=$PWD
   unzip -d os-src opensearch-3.9.0-sources.jar
   opensearch-plugin/tools/derive_engine.py os-src \\
       opensearch-plugin/src/main/java/org/lucenerust/opensearch/engine

@@ -1164,6 +1164,57 @@ parent	java.util.stream.Stream	java.lang.Object
 parent	java.util.stream.Stream	java.util.stream.BaseStream
 parent	java.util.stream.Stream$Builder	java.lang.Object
 parent	java.util.stream.Stream$Builder	java.util.function.Consumer
+iface	java.lang.Comparable	compareTo	int	java.lang.Object
+iface	java.lang.Iterable	iterator	java.util.Iterator	
+iface	java.time.chrono.Era	getValue	int	
+iface	java.time.temporal.TemporalAdjuster	adjustInto	java.time.temporal.Temporal	java.time.temporal.Temporal
+iface	java.time.temporal.TemporalQuery	queryFrom	java.lang.Object	java.time.temporal.TemporalAccessor
+iface	java.util.Comparator	compare	int	java.lang.Object,java.lang.Object
+iface	java.util.Formattable	formatTo	void	java.util.Formatter,int,int,int
+iface	java.util.Observer	update	void	java.util.Observable,java.lang.Object
+iface	java.util.function.BiConsumer	accept	void	java.lang.Object,java.lang.Object
+iface	java.util.function.BiFunction	apply	java.lang.Object	java.lang.Object,java.lang.Object
+iface	java.util.function.BiPredicate	test	boolean	java.lang.Object,java.lang.Object
+iface	java.util.function.BinaryOperator	apply	java.lang.Object	java.lang.Object,java.lang.Object
+iface	java.util.function.BooleanSupplier	getAsBoolean	boolean	
+iface	java.util.function.Consumer	accept	void	java.lang.Object
+iface	java.util.function.DoubleBinaryOperator	applyAsDouble	double	double,double
+iface	java.util.function.DoubleConsumer	accept	void	double
+iface	java.util.function.DoubleFunction	apply	java.lang.Object	double
+iface	java.util.function.DoublePredicate	test	boolean	double
+iface	java.util.function.DoubleSupplier	getAsDouble	double	
+iface	java.util.function.DoubleToIntFunction	applyAsInt	int	double
+iface	java.util.function.DoubleToLongFunction	applyAsLong	long	double
+iface	java.util.function.DoubleUnaryOperator	applyAsDouble	double	double
+iface	java.util.function.Function	apply	java.lang.Object	java.lang.Object
+iface	java.util.function.IntBinaryOperator	applyAsInt	int	int,int
+iface	java.util.function.IntConsumer	accept	void	int
+iface	java.util.function.IntFunction	apply	java.lang.Object	int
+iface	java.util.function.IntPredicate	test	boolean	int
+iface	java.util.function.IntSupplier	getAsInt	int	
+iface	java.util.function.IntToDoubleFunction	applyAsDouble	double	int
+iface	java.util.function.IntToLongFunction	applyAsLong	long	int
+iface	java.util.function.IntUnaryOperator	applyAsInt	int	int
+iface	java.util.function.LongBinaryOperator	applyAsLong	long	long,long
+iface	java.util.function.LongConsumer	accept	void	long
+iface	java.util.function.LongFunction	apply	java.lang.Object	long
+iface	java.util.function.LongPredicate	test	boolean	long
+iface	java.util.function.LongSupplier	getAsLong	long	
+iface	java.util.function.LongToDoubleFunction	applyAsDouble	double	long
+iface	java.util.function.LongToIntFunction	applyAsInt	int	long
+iface	java.util.function.LongUnaryOperator	applyAsLong	long	long
+iface	java.util.function.ObjDoubleConsumer	accept	void	java.lang.Object,double
+iface	java.util.function.ObjIntConsumer	accept	void	java.lang.Object,int
+iface	java.util.function.ObjLongConsumer	accept	void	java.lang.Object,long
+iface	java.util.function.Predicate	test	boolean	java.lang.Object
+iface	java.util.function.Supplier	get	java.lang.Object	
+iface	java.util.function.ToDoubleBiFunction	applyAsDouble	double	java.lang.Object,java.lang.Object
+iface	java.util.function.ToDoubleFunction	applyAsDouble	double	java.lang.Object
+iface	java.util.function.ToIntBiFunction	applyAsInt	int	java.lang.Object,java.lang.Object
+iface	java.util.function.ToIntFunction	applyAsInt	int	java.lang.Object
+iface	java.util.function.ToLongBiFunction	applyAsLong	long	java.lang.Object,java.lang.Object
+iface	java.util.function.ToLongFunction	applyAsLong	long	java.lang.Object
+iface	java.util.function.UnaryOperator	apply	java.lang.Object	java.lang.Object
 ctor	java.lang.StackTraceElement	java.lang.String,java.lang.String,java.lang.String,int	java.lang
 ctor	java.lang.String		java.lang
 ctor	java.lang.StringBuffer		java.lang
@@ -3122,12 +3173,12 @@ method	java.util.function.ToLongFunction	applyAsLong	long	def	-	java.util.functi
 method	java.util.function.UnaryOperator	identity	java.util.function.UnaryOperator		static	java.util.function
 method	java.util.regex.Pattern	asPredicate	java.util.function.Predicate		-	java.util.regex
 method	java.util.regex.Pattern	flags	int		-	java.util.regex
-method	java.util.regex.Pattern	matcher	java.util.regex.Matcher	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	matcher	java.util.regex.Matcher	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
 method	java.util.regex.Pattern	pattern	java.lang.String		-	java.util.regex
 method	java.util.regex.Pattern	quote	java.lang.String	java.lang.String	static	java.util.regex
-method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
-method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence,int	augment=org.opensearch.painless.api.Augmentation	java.util.regex
-method	java.util.regex.Pattern	splitAsStream	java.util.stream.Stream	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence,int	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	splitAsStream	java.util.stream.Stream	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
 method	java.util.regex.Matcher	end	int		-	java.util.regex
 method	java.util.regex.Matcher	end	int	int	-	java.util.regex
 method	java.util.regex.Matcher	find	boolean		-	java.util.regex

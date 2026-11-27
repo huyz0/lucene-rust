@@ -218,8 +218,63 @@ pub struct IvfWriter {
     field_numbers: Vec<i32>,
     clusters: Vec<FieldClusters>,
     postings: Vec<u8>,
-    vectors: Vec<u8>,
+    vectors: VectorsBuf,
     meta: Vec<u8>,
+}
+
+/// The bytes written so far to the `.ivv` file: held in memory, or, once the
+/// writer is given an output with [`IvfWriter::stream_vectors_to`], passed on
+/// to it whenever a few megabytes have gathered. Offsets and alignment count
+/// every byte either way.
+#[derive(Debug)]
+struct VectorsBuf {
+    mem: Vec<u8>,
+    out: Option<lucene_store::FsIndexOutput>,
+    spilled: u64,
+}
+
+/// The most a streaming [`VectorsBuf`] holds before passing it on.
+const VECTORS_SPILL_BYTES: usize = 4 << 20;
+
+impl VectorsBuf {
+    fn new(mem: Vec<u8>) -> Self {
+        VectorsBuf {
+            mem,
+            out: None,
+            spilled: 0,
+        }
+    }
+
+    /// The file's length so far.
+    fn len(&self) -> usize {
+        usize::try_from(self.spilled)
+            .unwrap_or(usize::MAX)
+            .saturating_add(self.mem.len())
+    }
+
+    /// Pads the file with zeros to the next [`crate::VECTORS_ALIGNMENT`].
+    fn align(&mut self) {
+        let aligned = self.len().next_multiple_of(crate::VECTORS_ALIGNMENT);
+        let pad = aligned.saturating_sub(self.len());
+        self.mem.resize(self.mem.len().saturating_add(pad), 0);
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        self.mem.write_bytes(bytes);
+        if self.out.is_some() && self.mem.len() >= VECTORS_SPILL_BYTES {
+            self.spill();
+        }
+    }
+
+    fn spill(&mut self) {
+        if let Some(out) = self.out.as_mut() {
+            DataOutput::write_bytes(out, &self.mem);
+            self.spilled = self
+                .spilled
+                .saturating_add(u64::try_from(self.mem.len()).unwrap_or(u64::MAX));
+            self.mem.clear();
+        }
+    }
 }
 
 /// Spare bytes a buffer sized for a field keeps for the file's footer.
@@ -234,11 +289,24 @@ fn prepared_vectors<'a>(field: &FieldVectors<'a>) -> std::borrow::Cow<'a, [f32]>
         return std::borrow::Cow::Borrowed(field.vectors);
     }
     let mut out = field.vectors.to_vec();
-    out.par_chunks_mut(field.dimension).for_each(|v| {
+    prepare_vectors(field.similarity, field.dimension, &mut out);
+    std::borrow::Cow::Owned(out)
+}
+
+/// Unit-normalizes `vectors` (`dimension` floats each) in place when
+/// `similarity` is `Cosine`, which is what a field handed to
+/// [`crate::merge_field_with_prepared_vectors`] must be: the writer then
+/// reads it as given instead of normalizing a copy, which for a large merged
+/// field is a third of what the build holds. Other similarities are left
+/// as they are.
+pub fn prepare_vectors(similarity: Similarity, dimension: usize, vectors: &mut [f32]) {
+    if similarity != Similarity::Cosine || dimension == 0 {
+        return;
+    }
+    vectors.par_chunks_mut(dimension).for_each(|v| {
         // A zero vector has no direction and stays zero.
         let _ = lucene_util::vector_util::l2normalize(v, false);
     });
-    std::borrow::Cow::Owned(out)
 }
 
 /// The lengths of the runs of `docs` (ascending) to cluster on their own:
@@ -322,11 +390,6 @@ fn checked_clustering(
 /// Where a field's rerank vectors start in `.ivv`: a page boundary
 /// ([`crate::VECTORS_ALIGNMENT`]), so a vector that divides a page never
 /// straddles two.
-fn align_vectors(out: &mut Vec<u8>) {
-    let aligned = out.len().next_multiple_of(crate::VECTORS_ALIGNMENT);
-    out.resize(aligned, 0);
-}
-
 fn write_len(out: &mut Vec<u8>, v: usize) {
     // In-memory lengths fit an i64.
     out.write_vlong(i64::try_from(v).unwrap_or(i64::MAX));
@@ -424,9 +487,17 @@ impl IvfWriter {
             field_numbers: Vec::new(),
             clusters: Vec::new(),
             postings,
-            vectors,
+            vectors: VectorsBuf::new(vectors),
             meta,
         }
+    }
+
+    /// Writes the `.ivv` file to `out` as it is built instead of holding it,
+    /// which for a large field is its biggest buffer. Call before the first
+    /// field is added and finish with [`IvfWriter::finish_streamed`]; the
+    /// bytes are the same as [`IvfWriter::finish`] returns.
+    pub fn stream_vectors_to(&mut self, out: lucene_store::FsIndexOutput) {
+        self.vectors.out = Some(out);
     }
 
     fn check(&self, field: &FieldVectors<'_>) -> Result<()> {
@@ -506,21 +577,55 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
+        self.add_partitioned(field, false, partition_starts, factory, params)
+    }
+
+    /// [`IvfWriter::add_partitioned_field`] for vectors the caller has
+    /// already passed through [`prepare_vectors`].
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`].
+    pub fn add_partitioned_prepared_field(
+        &mut self,
+        field: &FieldVectors<'_>,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
+        self.add_partitioned(field, true, partition_starts, factory, params)
+    }
+
+    fn add_partitioned(
+        &mut self,
+        field: &FieldVectors<'_>,
+        prepared: bool,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
         let runs = partition_runs(
             field.docs,
             partition_starts,
             params.partition_min_vectors.max(1),
         );
-        self.add_clustered(field, factory, params, true, &mut |vectors, metric| {
-            kmeans::cluster_runs(
-                vectors,
-                field.dimension,
-                &runs,
-                params.target_cluster_size,
-                &params.kmeans,
-                metric,
-            )
-        })
+        self.add_prepared(
+            field,
+            prepared,
+            factory,
+            params,
+            true,
+            &mut |vectors, metric| {
+                kmeans::cluster_runs(
+                    vectors,
+                    field.dimension,
+                    &runs,
+                    params.target_cluster_size,
+                    &params.kmeans,
+                    metric,
+                )
+            },
+        )
     }
 
     /// Like [`IvfWriter::add_field`], but with the clusters given instead of
@@ -566,6 +671,23 @@ impl IvfWriter {
         partitioned: bool,
         clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
+        self.add_prepared(field, false, factory, params, partitioned, clusterer)
+    }
+
+    /// [`IvfWriter::add_clustered`], with `prepared` saying `field.vectors`
+    /// are already as [`prepare_vectors`] leaves them, so a cosine field is
+    /// not copied to be normalized.
+    // ARITH: as `add_clustered`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn add_prepared(
+        &mut self,
+        field: &FieldVectors<'_>,
+        prepared: bool,
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+        partitioned: bool,
+        clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
+    ) -> Result<()> {
         if params
             .calibration_recall
             .is_some_and(|t| !(t > 0.0 && t <= 1.0))
@@ -578,7 +700,11 @@ impl IvfWriter {
         self.check(field)?;
         let dim = field.dimension;
         let n = field.docs.len();
-        let vectors = prepared_vectors(field);
+        let vectors = if prepared {
+            std::borrow::Cow::Borrowed(field.vectors)
+        } else {
+            prepared_vectors(field)
+        };
         let metric = if spherical(field.similarity) {
             kmeans::Metric::InnerProduct
         } else {
@@ -790,16 +916,18 @@ impl IvfWriter {
         self.postings.extend_from_slice(&postings);
         drop(postings);
 
-        align_vectors(&mut self.vectors);
+        self.vectors.align();
         let vectors_offset = self.vectors.len();
         // Sized once: growing a buffer of this field's vectors by doubling
         // holds up to twice their bytes, plus the old copy while it moves.
         // The slack covers the footer, which would otherwise double it.
-        self.vectors.reserve_exact(
-            n.saturating_mul(vector_bytes)
-                .saturating_add(n.saturating_mul(8))
-                .saturating_add(FOOTER_SLACK),
-        );
+        if self.vectors.out.is_none() {
+            self.vectors.mem.reserve_exact(
+                n.saturating_mul(vector_bytes)
+                    .saturating_add(n.saturating_mul(8))
+                    .saturating_add(FOOTER_SLACK),
+            );
+        }
         for &i in &order {
             let i = i as usize;
             if encoding == VectorEncoding::F32 {
@@ -950,12 +1078,40 @@ impl IvfWriter {
         self.meta.write_bytes(&self.fields);
         codec_util::write_footer(&mut self.meta);
         codec_util::write_footer(&mut self.postings);
-        codec_util::write_footer(&mut self.vectors);
+        codec_util::write_footer(&mut self.vectors.mem);
         IvfFiles {
             meta: self.meta,
             postings: self.postings,
-            vectors: self.vectors,
+            vectors: self.vectors.mem,
         }
+    }
+
+    /// [`IvfWriter::finish`] for a writer given [`IvfWriter::stream_vectors_to`]:
+    /// the `.ivv` is complete in the output, which is handed back for the
+    /// caller to close, and the files' `vectors` is empty.
+    pub fn finish_streamed(mut self) -> (IvfFiles, Option<lucene_store::FsIndexOutput>) {
+        self.meta
+            .write_vint(i32::try_from(self.field_numbers.len()).unwrap_or(i32::MAX));
+        self.meta.write_bytes(&self.fields);
+        codec_util::write_footer(&mut self.meta);
+        codec_util::write_footer(&mut self.postings);
+        let Some(mut out) = self.vectors.out.take() else {
+            codec_util::write_footer(&mut self.vectors.mem);
+            let files = IvfFiles {
+                meta: self.meta,
+                postings: self.postings,
+                vectors: self.vectors.mem,
+            };
+            return (files, None);
+        };
+        DataOutput::write_bytes(&mut out, &self.vectors.mem);
+        codec_util::write_footer_to(&mut out);
+        let files = IvfFiles {
+            meta: self.meta,
+            postings: self.postings,
+            vectors: Vec::new(),
+        };
+        (files, Some(out))
     }
 }
 
@@ -1028,6 +1184,89 @@ mod tests {
                 "{c:?}"
             );
         }
+    }
+
+    fn field<'a>(docs: &'a [i32], v: &'a [f32]) -> FieldVectors<'a> {
+        FieldVectors {
+            number: 1,
+            similarity: Similarity::Cosine,
+            dimension: 24,
+            docs,
+            vectors: v,
+        }
+    }
+
+    fn cosine_field(n: usize, dim: usize) -> (Vec<i32>, Vec<f32>) {
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let docs = (0..n as i32).collect();
+        // Magnitudes that vary, one zero vector, so normalizing matters.
+        let mut vectors: Vec<f32> = (0..n * dim)
+            .map(|i| next() * (1.0 + (i / dim % 7) as f32))
+            .collect();
+        vectors[3 * dim..4 * dim].fill(0.0);
+        (docs, vectors)
+    }
+
+    #[test]
+    fn vectors_prepared_by_the_caller_write_the_same_files() {
+        let (docs, vectors) = cosine_field(900, 24);
+        let params = IvfParams {
+            target_cluster_size: 64,
+            ..IvfParams::default()
+        };
+        let factory = OsqFactory::bbq();
+        let mut copied = IvfWriter::new(&[7; ID_LENGTH], "");
+        copied
+            .add_field(&field(&docs, &vectors), &factory, &params)
+            .unwrap();
+        let mut prepared_vectors = vectors.clone();
+        prepare_vectors(Similarity::Cosine, 24, &mut prepared_vectors);
+        let mut in_place = IvfWriter::new(&[7; ID_LENGTH], "");
+        crate::merge_field_with_prepared_vectors(
+            &mut in_place,
+            &field(&docs, &prepared_vectors),
+            &[],
+            &factory,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(copied.finish(), in_place.finish());
+
+        let starts = [0, 300, 600];
+        let params = IvfParams {
+            partition_min_vectors: 100,
+            ..params
+        };
+        let mut copied = IvfWriter::new(&[7; ID_LENGTH], "");
+        copied
+            .add_partitioned_field(&field(&docs, &vectors), &starts, &factory, &params)
+            .unwrap();
+        let mut in_place = IvfWriter::new(&[7; ID_LENGTH], "");
+        in_place
+            .add_partitioned_prepared_field(
+                &field(&docs, &prepared_vectors),
+                &starts,
+                &factory,
+                &params,
+            )
+            .unwrap();
+        assert_eq!(copied.finish(), in_place.finish());
+    }
+
+    #[test]
+    fn preparing_leaves_other_similarities_alone() {
+        let mut v = vec![3.0, 4.0, 0.0, 5.0];
+        prepare_vectors(Similarity::Euclidean, 2, &mut v);
+        assert_eq!(v, [3.0, 4.0, 0.0, 5.0]);
+        prepare_vectors(Similarity::Cosine, 2, &mut v);
+        assert_eq!(v[..2], [0.6, 0.8]);
+        assert_eq!(v[2..], [0.0, 1.0]);
     }
 
     #[test]

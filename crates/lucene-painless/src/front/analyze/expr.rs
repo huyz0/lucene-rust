@@ -15,6 +15,11 @@ pub struct Typed {
     pub ty: String,
 }
 
+const PATTERN: &str = "java.util.regex.Pattern";
+
+/// The compiler's default `regex_limit_factor`, which `FIND` and `MATCH` carry.
+pub(super) const REGEX_LIMIT_FACTOR: i32 = 6;
+
 /// `BinaryMath`'s flag for a compound assignment (`def.rs`'s `COMPOUND`).
 pub(super) const COMPOUND: i32 = 1 << 1;
 
@@ -310,6 +315,31 @@ impl Cx<'_> {
                 },
                 STRING,
             ),
+            ExprKind::Regex(pattern, flags) => {
+                let mut bits = 0;
+                for f in flags.chars() {
+                    bits |= match f {
+                        'c' => 128,
+                        'i' => 2,
+                        'l' => 16,
+                        'm' => 8,
+                        's' => 32,
+                        'U' => 320,
+                        'u' => 64,
+                        'x' => 4,
+                        _ => {
+                            return compile_error(e.pos, format!("unknown regex flag [{f}]"));
+                        }
+                    };
+                }
+                typed(
+                    Node::Constant {
+                        ty: PATTERN.into(),
+                        value: Constant::Pattern(pattern.clone(), bits),
+                    },
+                    PATTERN,
+                )
+            }
             ExprKind::Paren(inner) => self.expr(inner)?,
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(ty) => {
@@ -322,20 +352,28 @@ impl Cx<'_> {
                         &ty,
                     )
                 }
-                None if name == "params" => typed(
-                    Node::InvokeCallMember {
-                        ty: "java.util.Map".into(),
-                        member: ir::Member::Local {
-                            name: "getParams".into(),
-                            internal: true,
-                            is_static: false,
-                            params: Vec::new(),
-                            ret: "java.util.Map".into(),
+                None if self.lambdas.bindings.iter().any(|b| b.var == name) => {
+                    let b = self
+                        .lambdas
+                        .bindings
+                        .iter()
+                        .find(|b| b.var == name)
+                        .expect("matched above");
+                    typed(
+                        Node::InvokeCallMember {
+                            ty: b.ty.into(),
+                            member: ir::Member::Local {
+                                name: b.getter.into(),
+                                internal: true,
+                                is_static: false,
+                                params: Vec::new(),
+                                ret: b.ty.into(),
+                            },
+                            args: Vec::new(),
                         },
-                        args: Vec::new(),
-                    },
-                    "java.util.Map",
-                ),
+                        b.ty,
+                    )
+                }
                 None => return unsupported(format!("variable [{name}]")),
             },
             ExprKind::Unary(UnOp::Minus, inner) => match &inner.kind {
@@ -416,7 +454,6 @@ impl Cx<'_> {
                 name,
                 null_safe,
             } => self.field(e.pos, recv, name, *null_safe)?,
-            other => return unsupported(kind_name(other)),
         })
     }
 
@@ -486,13 +523,14 @@ impl Cx<'_> {
         let cond = self.cond(c)?;
         let (l, r) = (self.expr(a)?, self.expr(b)?);
         let plain = |t: &str| is_primitive(t) || matches!(t, DEF | STRING | "null");
-        if l.ty != r.ty && !(plain(&l.ty) && plain(&r.ty)) {
-            return unsupported("conditional of different classes");
-        }
         let ty = if l.ty == r.ty {
             l.ty.clone()
         } else if l.ty == DEF || r.ty == DEF {
             DEF.into()
+        } else if !(plain(&l.ty) && plain(&r.ty)) {
+            // Two different classes (or a class and a primitive): their
+            // common type is `Object`.
+            "java.lang.Object".into()
         } else if l.ty == "null" {
             r.ty.clone()
         } else if r.ty == "null" {
@@ -609,14 +647,31 @@ impl Cx<'_> {
                 }
             }
             B::Lsh | B::Rsh | B::Ush => self.shift(pos, op, l, r, flags),
-            B::Find | B::Match => unsupported("regex operators"),
+            B::Find | B::Match => {
+                let l = self.coerce(pos, l, STRING, false)?;
+                let r = self.coerce(pos, r, PATTERN, false)?;
+                let name = if op == B::Find { "FIND" } else { "MATCH" };
+                Ok(typed(
+                    Node::BinaryMath {
+                        ty: "boolean".into(),
+                        op: name.into(),
+                        binary_ty: "boolean".into(),
+                        shift_ty: None,
+                        flags,
+                        regex_limit: REGEX_LIMIT_FACTOR,
+                        left: Box::new(l.node),
+                        right: Box::new(r.node),
+                    },
+                    "boolean",
+                ))
+            }
             B::Elvis => {
                 let ty = if l.ty == r.ty || r.ty == "null" {
                     l.ty.clone()
                 } else if l.ty == DEF || r.ty == DEF {
                     DEF.into()
                 } else {
-                    return unsupported("elvis of different classes");
+                    "java.lang.Object".into()
                 };
                 if is_primitive(&ty) || ty == "null" {
                     return compile_error(pos, "elvis cannot apply to a primitive");
@@ -881,11 +936,7 @@ impl Cx<'_> {
         }
         let mut lowered = Vec::new();
         for (arg, ty) in args.iter().zip(&sig.params) {
-            let ast::Arg::Expr(e) = arg else {
-                return unsupported("lambda or method reference argument");
-            };
-            let t = self.expr(e)?;
-            lowered.push(self.coerce(e.pos, t, ty, false)?.node);
+            lowered.push(self.arg(arg, ty)?);
         }
         Ok(typed(
             Node::InvokeCallMember {

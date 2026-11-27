@@ -165,7 +165,7 @@ fn a_field_without_a_quantizer_scores_on_the_raw_vectors() {
     meta.write_vlong(0);
     meta.write_vint(e.dimension);
     meta.write_i32(0);
-    crate::vectors::write_stored_meta(&mut meta, &mut data, &[], 10);
+    crate::vectors::write_stored_meta(&mut meta, &mut data, 0, &[], 10);
     meta.write_i32(-1);
     lucene_store::codec_util::write_footer(&mut meta);
     lucene_store::codec_util::write_footer(&mut data);

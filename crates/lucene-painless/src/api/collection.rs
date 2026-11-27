@@ -379,7 +379,7 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Res
                 }
                 new_list(vec![new_list(yes), new_list(no)])
             }
-            ("stream", 0) => return Err(crate::compile::missing("Collection.stream")),
+            ("stream", 0) => api::stream::of(elements(vm, recv)?),
             _ => return Err(Throw::new(api::UNSUPPORTED, "")),
         })
     })())

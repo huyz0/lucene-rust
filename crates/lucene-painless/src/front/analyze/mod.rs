@@ -11,6 +11,7 @@
 mod call;
 mod expr;
 mod init;
+mod lambda;
 mod literal;
 mod place;
 #[cfg(test)]
@@ -64,9 +65,122 @@ struct Signature {
     ret: String,
 }
 
+/// A variable the script class's own method supplies: `doc` is `getDoc()`.
+#[derive(Debug, Clone, Copy)]
+pub struct Binding {
+    /// The name a script reads it by.
+    pub var: &'static str,
+    /// The script class's getter that returns it.
+    pub getter: &'static str,
+    /// Its type.
+    pub ty: &'static str,
+}
+
+/// What a script of no particular context reads: `params`.
+pub const PARAMS: &[Binding] = &[Binding {
+    var: "params",
+    getter: "getParams",
+    ty: "java.util.Map",
+}];
+
+/// What a `score` context script reads: `params`, `doc` and `_score`.
+pub const SCORE: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "_score",
+        getter: "get_score",
+        ty: "double",
+    },
+];
+
+/// What a `filter`, number `sort` or `terms_set` script reads: `params` and `doc`.
+pub const DOC: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+];
+
+/// What an ingest `script` processor reads: `params` and `ctx`, the document.
+pub const INGEST: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "ctx",
+        getter: "getCtx",
+        ty: "java.util.Map",
+    },
+];
+
+/// What an `aggs` script reads: `params`, `doc` and `_value`.
+pub const AGG: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "_value",
+        getter: "get_value",
+        ty: crate::types::DEF,
+    },
+];
+
+/// The synthetic functions the lambdas of a script lower to.
+pub(super) struct Lambdas {
+    bindings: &'static [Binding],
+    count: std::cell::Cell<usize>,
+    done: std::cell::RefCell<Vec<ir::Function>>,
+}
+
+impl Lambdas {
+    fn new(bindings: &'static [Binding]) -> Self {
+        Lambdas {
+            bindings,
+            count: Default::default(),
+            done: Default::default(),
+        }
+    }
+
+    /// The number the next lambda is named by.
+    fn next(&self) -> usize {
+        let n = self.count.get();
+        self.count.set(n + 1);
+        n
+    }
+
+    fn push(&self, f: ir::Function) {
+        self.done.borrow_mut().push(f);
+    }
+}
+
 /// The state while one function lowers.
 pub(super) struct Cx<'a> {
     funcs: &'a HashMap<String, Signature>,
+    lambdas: &'a Lambdas,
     scopes: Vec<HashMap<String, String>>,
     ret: String,
     loops: usize,
@@ -74,6 +188,23 @@ pub(super) struct Cx<'a> {
 
 /// Lowers a parsed script to IR.
 pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
+    analyze_in(script, PARAMS)
+}
+
+/// Lowers a parsed script to IR, with `bindings` as the variables the
+/// context supplies.
+pub fn analyze_in(script: &ast::Script, bindings: &'static [Binding]) -> Res<ir::Script> {
+    analyze_returning(script, bindings, DEF)
+}
+
+/// [`analyze_in`] for a context whose `execute` returns `ret` (`double`,
+/// `boolean`, `def`): what the script returns is cast to it, or refused as
+/// Painless refuses the cast.
+pub fn analyze_returning(
+    script: &ast::Script,
+    bindings: &'static [Binding],
+    ret: &str,
+) -> Res<ir::Script> {
     let mut funcs: HashMap<String, Signature> = HashMap::new();
     for f in &script.functions {
         let sig = Signature {
@@ -88,10 +219,11 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             return compile_error(f.pos, format!("function [{}] is already defined", f.name));
         }
     }
+    let lambdas = Lambdas::new(bindings);
     let mut out = Vec::new();
     for f in &script.functions {
         let sig = funcs[&f.name].clone();
-        let mut cx = Cx::new(&funcs, sig.ret.clone());
+        let mut cx = Cx::new(&funcs, &lambdas, sig.ret.clone());
         for ((_, name), ty) in f.params.iter().zip(&sig.params) {
             cx.declare(f.pos, name, ty)?;
         }
@@ -107,13 +239,13 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         });
     }
-    let mut cx = Cx::new(&funcs, DEF.to_string());
+    let mut cx = Cx::new(&funcs, &lambdas, ret.to_string());
     let body = cx.body_of(&script.body, true)?;
     out.insert(
         0,
         ir::Function {
             name: "execute".into(),
-            ret: DEF.into(),
+            ret: ret.into(),
             param_types: Vec::new(),
             param_names: Vec::new(),
             is_static: false,
@@ -122,17 +254,21 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         },
     );
-    Ok(ir::Script {
+    out.extend(lambdas.done.take());
+    let mut script = ir::Script {
         functions: out,
         classes: ir::ClassTable::default(),
         sites: Vec::new(),
-    })
+    };
+    super::sites::fill(&mut script);
+    Ok(script)
 }
 
 impl<'a> Cx<'a> {
-    fn new(funcs: &'a HashMap<String, Signature>, ret: String) -> Self {
+    fn new(funcs: &'a HashMap<String, Signature>, lambdas: &'a Lambdas, ret: String) -> Self {
         Cx {
             funcs,
+            lambdas,
             scopes: vec![HashMap::new()],
             ret,
             loops: 0,

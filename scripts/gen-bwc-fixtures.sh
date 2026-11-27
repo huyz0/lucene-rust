@@ -119,7 +119,7 @@ if [ -n "$COMPLETION" ]; then
     jar="$JARS/bwc/$m-$COMPLETION.jar"
     if [ ! -s "$jar" ]; then
       mkdir -p "$JARS/bwc"
-      curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/$m/$COMPLETION/$m-$COMPLETION.jar"
+      bwc_jar "$m" "$COMPLETION" "$jar"
     fi
     old_cp="$old_cp${old_cp:+:}$jar"
   done
@@ -148,7 +148,7 @@ if [ -n "$DUMP" ] || [ -n "$QUANTIZED" ]; then
     jar="$JARS/bwc/lucene-core-$QUANTIZED.jar"
     if [ ! -s "$jar" ]; then
       mkdir -p "$JARS/bwc"
-      curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/lucene-core/$QUANTIZED/lucene-core-$QUANTIZED.jar"
+      bwc_jar lucene-core "$QUANTIZED" "$jar"
     fi
     DUMP="fixtures/data/bwc-quantized/$QUANTIZED"
     rm -rf "${DUMP:?}"
@@ -248,7 +248,7 @@ for v in "${VERSIONS[@]}"; do
   jar="$JARS/bwc/lucene-core-$v.jar"
   if [ ! -s "$jar" ]; then
     mkdir -p "$JARS/bwc"
-    curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/lucene-core/$v/lucene-core-$v.jar"
+    bwc_jar lucene-core "$v" "$jar"
   fi
   out="fixtures/data/bwc/$v"
   rm -rf "${out:?}"

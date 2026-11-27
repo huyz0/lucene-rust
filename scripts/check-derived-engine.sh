@@ -8,12 +8,11 @@
 #
 # SOURCES_JAR, when given, is opensearch-3.9.0-sources.jar already (offline); otherwise it is
 # downloaded. It is checked against its pinned SHA-256 either way: a republished jar is a failure,
-# not a new baseline. Needs python3, unzip, and (without SOURCES_JAR) curl.
+# not a new baseline. Needs python3, unzip, and (without SOURCES_JAR) a JDK for deps/gradlew.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION=3.9.0
-URL="https://repo1.maven.org/maven2/org/opensearch/opensearch/${VERSION}/opensearch-${VERSION}-sources.jar"
 SHA256=eb77911b062935c41513e29b6fb3c9da1aeceab7b33cefc85db864f0a8c42abf
 ENGINE=opensearch-plugin/src/main/java/org/lucenerust/opensearch/engine
 
@@ -23,7 +22,10 @@ jar="$work/sources.jar"
 if [[ $# -ge 1 ]]; then
     cp "$1" "$jar"
 else
-    curl -sSfL --retry 4 --retry-delay 2 -o "$jar" "$URL"
+    # shellcheck source=scripts/lib-lucene-jars.sh
+    source scripts/lib-lucene-jars.sh
+    deps_fetch "org.opensearch:opensearch:${VERSION}:sources" "$work"
+    mv "$work/opensearch-${VERSION}-sources.jar" "$jar"
 fi
 echo "$SHA256  $jar" | sha256sum -c --quiet - || {
     echo "check-derived-engine: the sources jar does not match its pinned SHA-256" >&2
