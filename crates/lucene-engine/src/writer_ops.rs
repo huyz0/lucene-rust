@@ -545,6 +545,35 @@ pub fn set_index_format(w: &EngineWriter, format: i32) -> Result<(), Status> {
     Ok(())
 }
 
+/// `index.hot_tier.max_memory` and `index.hot_tier.min_update_rate`: the
+/// hot tier ([`lucene_index::hot_tier`]) holds the latest update of rows
+/// updated faster than `min_updates_per_second` within `max_bytes`. `0` bytes
+/// leaves it off. Set once, when the writer opens.
+pub fn set_hot_tier(
+    w: &EngineWriter,
+    max_bytes: i64,
+    min_updates_per_second: f64,
+) -> Result<(), Status> {
+    use lucene_index::hot_tier::HotTierConfig;
+    let bytes = match usize::try_from(max_bytes) {
+        Ok(n) => n,
+        Err(_) => {
+            set_last_error(format!("hot tier memory must be >= 0; got {max_bytes}"));
+            return Err(Status::InvalidArgument);
+        }
+    };
+    let cfg = HotTierConfig::with_budget(bytes)
+        .with_min_updates_per_second(min_updates_per_second)
+        .map_err(|e| {
+            set_last_error(e);
+            Status::InvalidArgument
+        })?;
+    if bytes > 0 {
+        w.writer().enable_hot_tier(cfg);
+    }
+    Ok(())
+}
+
 /// `index.knn.ivf.partition_min_vectors`.
 pub fn set_ivf_partition_clusters(w: &EngineWriter, min_vectors: i64) -> Result<(), Status> {
     let min = match usize::try_from(min_vectors) {

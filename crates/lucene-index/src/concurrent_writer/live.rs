@@ -1380,6 +1380,7 @@ impl ConcurrentIndexWriter<'_> {
     /// whose buffers [`Self::release_live`] dropped, and when a delete by
     /// query reached a buffer.
     pub fn open_live_view(&self, commit: Option<i64>) -> Result<LiveView> {
+        self.drain_hot_tier()?;
         let opened = std::time::Instant::now();
         let cfg = self.check_live()?;
         let slots: Vec<_> = self.slots.iter().map(read_slot).collect();

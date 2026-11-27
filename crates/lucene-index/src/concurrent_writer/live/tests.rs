@@ -1772,3 +1772,67 @@ fn live_chunks_do_not_feed_the_adaptive_sample() {
     }
     assert_eq!(w.with_writer(|iw| iw.adaptive_doc_values_choice()), None);
 }
+
+/// A row updated again and again is held by the hot tier, only its latest
+/// version is added, and every cut applies what is held: the version a search
+/// reads is the last one acknowledged, and the versions it replaced were never
+/// inverted.
+#[test]
+fn the_hot_tier_adds_only_the_latest_version_of_a_hot_row() {
+    let tmp = TempDir::new("hot-tier");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    for i in 0..10 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    assert!(w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20)));
+    assert!(!w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20)));
+    for _ in 0..6 {
+        w.soft_update_explicit_documents(id(2), vec![doc(&f, 2)], &[soft_delete(2)])
+            .unwrap();
+    }
+    let st = w.hot_tier_stats().unwrap();
+    // Two updates went through (not hot yet), the third was held, three more
+    // replaced it.
+    assert_eq!((st.written_through, st.admitted, st.coalesced), (2, 1, 3));
+    assert_eq!(st.held_rows, 1);
+    // Held: the buffer has the ten documents and the two written through.
+    assert_eq!(w.pending_doc_count(), 12);
+    // A live view is a cut: it applies the held version first.
+    let view = w.open_live_view(None).unwrap();
+    w.close_live_view(&view);
+    let st = w.hot_tier_stats().unwrap();
+    assert_eq!((st.held_rows, st.drained), (0, 1));
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
+    assert_eq!(snap.buffers[0].max_doc, 13);
+    // Every earlier version of d2 is hidden, the last one is not.
+    assert_eq!(deleted_ids(&snap), [vec![2, 10, 11]]);
+}
+
+/// A flush and a commit drain the tier too, and a row updated once, as a bulk
+/// update does, is never held.
+#[test]
+fn the_hot_tier_is_drained_by_flush_and_skips_rows_updated_once() {
+    let tmp = TempDir::new("hot-tier-flush");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, false);
+    for i in 0..50 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20));
+    for i in 0..50 {
+        w.soft_update_explicit_documents(id(i), vec![doc(&f, i)], &[soft_delete(i)])
+            .unwrap();
+    }
+    let st = w.hot_tier_stats().unwrap();
+    assert_eq!((st.admitted, st.held_rows, st.written_through), (0, 0, 50));
+    for _ in 0..4 {
+        w.soft_update_explicit_documents(id(7), vec![doc(&f, 7)], &[soft_delete(7)])
+            .unwrap();
+    }
+    assert_eq!(w.hot_tier_stats().unwrap().held_rows, 1);
+    w.commit().unwrap();
+    let st = w.hot_tier_stats().unwrap();
+    assert_eq!((st.held_rows, st.drained), (0, 1));
+    assert_eq!(w.drain_hot_tier().unwrap(), 0);
+}

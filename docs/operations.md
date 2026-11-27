@@ -83,6 +83,19 @@ written), `method.engine` picks the k-NN engine. `extended` needs
 it: with it on, a document carrying a `__accelerated_panic` field makes the
 writer panic.
 
+### Hot rows (update coalescing)
+
+`index.hot_tier.max_memory` (index setting, final, default `0` = off) holds the latest version of rows that are
+updated often in a small, bounded buffer, so the versions in between are never indexed. Rows updated once or
+rarely, trickle updates and bulk updates never enter it: a row is held only after it is updated faster than
+`index.hot_tier.min_update_rate` (updates per second per row, default `1.0`, range 0.5 to 100). Heat is tracked in a fixed
+sketch of at most 2 MiB; held operations are counted against `max_memory` until applied, and an operation that does
+not fit is written through at once, so the budget (an estimate of the held operations' size) is not exceeded and the cost degrades to today's speed.
+
+Downsides, which is why it is off: a held update is not searchable until the next refresh, flush, commit or
+realtime view; the sequence numbers of dropped intermediate versions leave holes in the history that replicas and
+cross-cluster replication replay; intermediate versions are not kept. Segments are stock Lucene.
+
 ### Language data packs
 
 The plugin's `japanese`, `korean` and `chinese` tokenizers

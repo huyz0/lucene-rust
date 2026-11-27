@@ -875,6 +875,13 @@ final class AcceleratedIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code index.hot_tier.max_memory} and {@code index.hot_tier.min_update_rate}: the latest update of
+     * a row updated faster than the rate is held in memory, up to {@code maxBytes}, and applied at the
+     * next refresh.
+     */
+    void setHotTier(long maxBytes, double rate) throws IOException { locked(() -> NativeWriter.writerSetHotTier(handle, maxBytes, rate), "setting index.hot_tier.max_memory"); }
+
+    /**
      * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the
      * index sort's first field, {@code 0} off.
      */
