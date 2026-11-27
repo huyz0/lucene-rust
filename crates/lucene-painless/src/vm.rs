@@ -579,7 +579,7 @@ impl Env for ParamsEnv {
 }
 
 /// Deepest call nesting before a `StackOverflowError`.
-const MAX_CALL_DEPTH: u32 = 200;
+const MAX_CALL_DEPTH: u32 = 128;
 
 pub const LOOP_LIMIT_MESSAGE: &str =
     "The maximum number of statements that can be executed in a loop has been reached.";
@@ -675,9 +675,16 @@ impl<'a> Vm<'a> {
             counter: f.max_loop_counter,
             counting: f.max_loop_counter > 0,
         };
+        if self.depth == 0 {
+            crate::arena::begin();
+        }
         self.depth += 1;
         let r = self.run(&mut frame, &f.body);
         self.depth -= 1;
+        let r = match r {
+            Ok(flow) if self.depth == 0 => crate::arena::check().map(|()| flow),
+            other => other,
+        };
         let mut regs = frame.regs;
         regs.clear();
         self.pool.push(regs);
@@ -897,6 +904,7 @@ impl<'a> Vm<'a> {
                 },
                 Op::At(o) => self.loc = *o,
                 Op::Count => {
+                    crate::arena::check()?;
                     if frame.counting {
                         frame.counter -= 1;
                         if frame.counter <= 0 {
