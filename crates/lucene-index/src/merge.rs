@@ -4079,16 +4079,6 @@ struct FieldSource {
     ord_to_doc: Vec<i32>,
 }
 
-/// One `PerFieldKnnVectorsFormat` instance's merge
-/// (`Lucene99HnswVectorsWriter.mergeOneField` or a flat format's
-/// `mergeOneFlatVectorField`): the raw vectors, the quantized codes when the
-/// format quantizes (`Lucene104ScalarQuantizedVectorsWriter
-/// .mergeOneFlatVectorField`, centroids from `mergeAndRecalculateCentroids`),
-/// then -- for a format with a graph -- the graphs, over the vectors just
-/// written, scored with the quantized scorer for a quantized `FLOAT32` field
-/// (`getRandomVectorScorerSupplierForMerge`) and the raw one otherwise.
-/// Returns the instance's files by extension.
-#[allow(clippy::too_many_arguments)]
 /// Writes `vectors` (`dimension` floats each) to `name`, each vector
 /// unit-normalized as [`lucene_ivf::prepare_vectors`] does for a cosine
 /// field, a few thousand at a time.
@@ -4116,6 +4106,16 @@ fn write_normalized_vectors(
     Ok(())
 }
 
+/// One `PerFieldKnnVectorsFormat` instance's merge
+/// (`Lucene99HnswVectorsWriter.mergeOneField` or a flat format's
+/// `mergeOneFlatVectorField`): the raw vectors, the quantized codes when the
+/// format quantizes (`Lucene104ScalarQuantizedVectorsWriter
+/// .mergeOneFlatVectorField`, centroids from `mergeAndRecalculateCentroids`),
+/// then -- for a format with a graph -- the graphs, over the vectors just
+/// written, scored with the quantized scorer for a quantized `FLOAT32` field
+/// (`getRandomVectorScorerSupplierForMerge`) and the raw one otherwise.
+/// Returns the instance's files by extension.
+#[allow(clippy::too_many_arguments)]
 fn merge_vector_group(
     dir: &dyn Directory,
     merged_segment_name: &str,
