@@ -418,6 +418,14 @@ pub fn recognise(template: &str, spec: &TableSpec) -> Option<Shape> {
 /// (an escaped quote makes two literals) the statement is simply not a shape;
 /// an unterminated literal is `None`.
 pub fn templatize(sql: &str) -> Option<(String, Vec<String>)> {
+    templatize_with(sql, |_| PLACEHOLDER.to_string())
+}
+
+/// [`templatize`] with `marker(i)` as the text standing in for the i-th literal.
+pub fn templatize_with(
+    sql: &str,
+    marker: impl Fn(usize) -> String,
+) -> Option<(String, Vec<String>)> {
     let mut t = String::with_capacity(sql.len());
     let mut lits = Vec::new();
     let b = sql.as_bytes();
@@ -432,8 +440,10 @@ pub fn templatize(sql: &str) -> Option<(String, Vec<String>)> {
             if i >= b.len() {
                 return None;
             }
+            t.push('\'');
+            t.push_str(&marker(lits.len()));
+            t.push('\'');
             lits.push(sql[start..i].to_string());
-            t.push_str("'?'");
             i += 1;
         } else {
             let start = i;

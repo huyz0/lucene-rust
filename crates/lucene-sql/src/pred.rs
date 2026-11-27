@@ -40,6 +40,33 @@ pub enum Pred {
 }
 
 impl Pred {
+    /// The predicate with `lit` as its literal.
+    pub fn with_literal(&self, lit: &str) -> Pred {
+        match self {
+            Pred::Term { column, .. } => Pred::Term {
+                column: *column,
+                value: lit.to_string(),
+            },
+            Pred::Match { column, .. } => Pred::Match {
+                column: *column,
+                text: lit.to_string(),
+            },
+            Pred::Knn { column, .. } => Pred::Knn {
+                column: *column,
+                vector: lit.to_string(),
+            },
+        }
+    }
+
+    /// The literal.
+    pub fn literal(&self) -> &str {
+        match self {
+            Pred::Term { value, .. } => value,
+            Pred::Match { text, .. } => text,
+            Pred::Knn { vector, .. } => vector,
+        }
+    }
+
     /// Whether the predicate scores documents.
     pub fn is_scoring(&self) -> bool {
         !matches!(self, Pred::Term { .. })

@@ -214,6 +214,7 @@ fn a_memory_limit_stops_a_statement_instead_of_growing() {
         memory_limit: 64 << 10,
         worker_threads: 0,
         target_partitions: 1,
+        plan_cache: true,
     };
     let f = fixture_with(3000, 1, &[], spec(), &config);
     let r = f
