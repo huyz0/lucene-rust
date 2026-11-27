@@ -132,6 +132,12 @@ impl SqlEngine {
         &self.ctx
     }
 
+    /// The context without the aggregation-kernel rule, for tests and
+    /// benchmarks that compare against DataFusion's own aggregates.
+    pub fn plain_context(&self) -> &SessionContext {
+        &self.plain
+    }
+
     /// Runs `sql`: a recognised shape on the native API, anything else on
     /// DataFusion. Only queries run; DDL, DML and session statements are
     /// refused.
