@@ -33,7 +33,7 @@ when a file is missing (Python 3 and a JDK 17+). Every Maven jar is downloaded b
 the `deps/` Gradle project (`deps/gradlew`: the Maven Central mirror, then
 Central, checked against `deps/gradle/verification-metadata.xml`); a new jar is
 added to a group in `deps/build.gradle`, then
-`./gradlew --write-verification-metadata sha256 resolveAll` records its checksum. Do not commit
+`./gradlew --write-verification-metadata sha256 resolveAll` records its checksum. The Dockerfile, the check scripts, the old-Lucene fixture jars and the sources jars all use it; the one exception is the plugin's `LibTorch.java`, a runtime download that tries the mirror then Central itself, with its SHA-256 in Java. Do not commit
 compiled or downloadable files: `scripts/check-binary-size.py` fails a tracked
 binary above 64 KiB that is not in its shrink-only baseline. Java-written
 differential fixtures cannot be regenerated (random segment ids that tests

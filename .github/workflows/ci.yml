@@ -629,6 +629,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+      # check-snowball-generated.sh downloads its Lucene sources jar through deps/gradlew.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
