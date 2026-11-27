@@ -37,6 +37,7 @@ import io
 import json
 import pathlib
 import re
+import subprocess
 import sys
 import urllib.request
 import zipfile
@@ -50,8 +51,8 @@ LUCENE_TAG = "releases/lucene/10.5.0"
 NE_TAG = "v5.1.2"
 NE = f"https://raw.githubusercontent.com/nvkelso/natural-earth-vector/{NE_TAG}/geojson"
 SOURCES = {
-    "lucene-test-framework-10.5.0.jar": "https://repo1.maven.org/maven2/org/apache/lucene/"
-    "lucene-test-framework/10.5.0/lucene-test-framework-10.5.0.jar",
+    # Maven coordinates are fetched by deps/ (mirror fallback, verified), not by URL.
+    "lucene-test-framework-10.5.0.jar": "deps:org.apache.lucene:lucene-test-framework:10.5.0",
     "TestTessellator.java": f"https://raw.githubusercontent.com/apache/lucene/{LUCENE_TAG}/"
     "lucene/core/src/test/org/apache/lucene/geo/TestTessellator.java",
     **{
@@ -84,8 +85,15 @@ def fetch(name):
     if not path.exists():
         CACHE.mkdir(parents=True, exist_ok=True)
         print(f"tessellator-corpus: downloading {url}", file=sys.stderr)
-        with urllib.request.urlopen(url) as r:
-            path.write_bytes(r.read())
+        if url.startswith("deps:"):
+            subprocess.run(
+                [str(ROOT / "deps/gradlew"), "-q", "fetch", f"-Pcoordinates={url[5:]}", f"-PoutDir={CACHE}"],
+                cwd=ROOT / "deps",
+                check=True,
+            )
+        else:
+            with urllib.request.urlopen(url) as r:
+                path.write_bytes(r.read())
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     if SHA256.get(name) != digest:

@@ -10,15 +10,6 @@
 
 LUCENE_VERSION="${LUCENE_VERSION:-10.6.0}"
 
-# Historical Lucene versions (the backward-compatibility fixtures) are not
-# pinned in deps/; they come straight from Central, then its mirror.
-MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
-MAVEN_MIRROR_BASE="https://maven-central.storage-download.googleapis.com/maven2/org/apache/lucene"
-# maven_get <url under MAVEN_BASE> <dest>
-maven_get() {
-  curl -fsSL --retry 2 -o "$2" "$MAVEN_BASE/$1" || curl -fsSL --retry 2 -o "$2" "$MAVEN_MIRROR_BASE/$1"
-}
-
 # deps_fetch <group:artifact:version> <dir>: the `deps` Gradle project downloads
 # the jar (Maven Central mirror, then Central) and checks it against its
 # verification file.
@@ -115,4 +106,15 @@ thirdparty_classpath() {
   local cp="" c
   for c in "$@"; do cp="$cp${cp:+:}$(thirdparty_resolve_jar "$c")"; done
   echo "$cp"
+}
+
+# bwc_jar <module> <version> <dest>: an older Lucene release's jar (the versions
+# pinned in deps/ as `bwc-<version>` and `bwc-completion-<version>`), checked
+# against deps/gradle/verification-metadata.xml.
+bwc_jar() {
+  local dir
+  dir="$(dirname "$3")"
+  mkdir -p "$dir"
+  [ -s "$dir/$1-$2.jar" ] || deps_fetch "org.apache.lucene:$1:$2" "$dir"
+  [ "$dir/$1-$2.jar" = "$3" ] || cp "$dir/$1-$2.jar" "$3"
 }

@@ -15,7 +15,7 @@ listed in SKIPPED below: that list is the unsupported matrix, and nothing else i
 
 Usage: derive_engine_tests.py <dir holding InternalEngineTests.java> <test framework sources> <out dir>
   curl -O https://raw.githubusercontent.com/opensearch-project/OpenSearch/3.9.0/server/src/test/java/org/opensearch/index/engine/InternalEngineTests.java
-  curl -O https://repo1.maven.org/maven2/org/opensearch/test/framework/3.9.0/framework-3.9.0-sources.jar
+  deps/gradlew -q -p deps fetch -Pcoordinates=org.opensearch.test:framework:3.9.0:sources -PoutDir=$PWD
 """
 
 import re
