@@ -213,3 +213,51 @@ fn several_prefixes_are_listed_in_one_pass_each_with_its_own_limit() {
     assert_eq!(listed[1].len(), 2);
     assert!(listed[2].is_empty(), "c/ was not asked for");
 }
+
+#[test]
+fn a_file_matching_nested_or_repeated_prefixes_is_listed_under_the_first_asked() {
+    let tmp = lucene_util::test_support::TempDir::new("page-disk-nested");
+    let d = DiskTier::open(&tmp.path().join("t"), 16 * 4096, 4096).unwrap();
+    for k in ["ab/1", "a/2", "b/3", "é/4"] {
+        d.put(&key(k), 0, &[1; 10]);
+    }
+    let names = |l: &Vec<Resident>| l.iter().map(|p| p.key.to_string()).collect::<Vec<_>>();
+    // `ab/` is asked before `a`: `ab/1` goes to it, `a/2` to the shorter.
+    let listed = d.resident(&["ab/", "a", "ab/", "é", "b/"], 10);
+    assert_eq!(names(&listed[0]), ["ab/1"]);
+    assert_eq!(names(&listed[1]), ["a/2"]);
+    assert!(listed[2].is_empty(), "a repeated prefix is the first one's");
+    assert_eq!(names(&listed[3]), ["é/4"], "a multi-byte prefix matches");
+    assert_eq!(names(&listed[4]), ["b/3"]);
+    // `a` first: it takes `ab/1` as well, the longer prefix gets nothing.
+    let listed = d.resident(&["a", "ab/"], 10);
+    assert_eq!(listed[0].len(), 2);
+    assert!(listed[1].is_empty());
+    // An empty prefix matches every file; none asked lists none.
+    assert_eq!(d.resident(&[""], 10)[0].len(), 4);
+    assert!(d.resident(&[], 10).is_empty());
+}
+
+#[test]
+fn listing_many_shards_prefixes_over_many_files_is_not_files_times_prefixes() {
+    let tmp = lucene_util::test_support::TempDir::new("page-disk-many");
+    let d = DiskTier::open(&tmp.path().join("t"), u64::MAX / 2, 4096).unwrap();
+    let shards = 8000;
+    let prefixes: Vec<String> = (0..shards).map(|s| format!("base/logs/{s}/t=")).collect();
+    for p in &prefixes {
+        for f in 0..5 {
+            d.put(&key(&format!("{p}1\0_0.f{f}\0123\0p")), 0, &[1; 8]);
+        }
+    }
+    let asked: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    let started = std::time::Instant::now();
+    let listed = d.resident(&asked, 100);
+    let took = started.elapsed();
+    assert!(listed.iter().all(|l| l.len() == 5));
+    // 40,000 files against 8,000 prefixes: 320 million comparisons by scan,
+    // most of a second even optimised; by lookup it is a few milliseconds.
+    assert!(
+        took < std::time::Duration::from_millis(150),
+        "took {took:?}"
+    );
+}
