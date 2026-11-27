@@ -74,8 +74,8 @@ fn main() {
                 let t = Instant::now();
                 for op in group {
                     match tier.offer(op, &mut apply) {
-                        Ok(Offer::Through(_)) => through += 1,
-                        Ok(Offer::Held) => held += 1,
+                        Ok(Offer::Through { .. }) => through += 1,
+                        Ok(Offer::Held { .. }) => held += 1,
                         Err(never) => match never {},
                     }
                 }

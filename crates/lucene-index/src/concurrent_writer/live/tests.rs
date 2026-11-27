@@ -1836,3 +1836,201 @@ fn the_hot_tier_is_drained_by_flush_and_skips_rows_updated_once() {
     assert_eq!((st.held_rows, st.drained), (0, 1));
     assert_eq!(w.drain_hot_tier().unwrap(), 0);
 }
+
+/// A writer with the sequence-number fields an engine registers, and an
+/// update of row `i` that carries sequence number `seq`.
+fn history_writer(
+    dir: &FsDirectory,
+    with_tombstone: bool,
+    max_docs: Option<usize>,
+) -> (ConcurrentIndexWriter<'_>, Fields, [i32; 4]) {
+    let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    if let Some(n) = max_docs {
+        w.set_max_docs(n);
+    }
+    let numeric = |name: &str| {
+        FieldInfo::new(name, 0).with_doc_values(
+            DocValuesType::Numeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        )
+    };
+    let id = w
+        .register_field(
+            FieldInfo::new("_id", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true),
+        )
+        .unwrap();
+    let body = w
+        .register_field(
+            FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqsAndPositions),
+        )
+        .unwrap();
+    let soft = w
+        .register_field(numeric("__soft_deletes").with_soft_deletes_field(true))
+        .unwrap();
+    let seq = w.register_field(numeric("_seq_no")).unwrap();
+    let term = w.register_field(numeric("_primary_term")).unwrap();
+    let version = w.register_field(numeric("_version")).unwrap();
+    let tombstone = if with_tombstone {
+        w.register_field(numeric("_tombstone")).unwrap()
+    } else {
+        -1
+    };
+    let source = w.register_field(FieldInfo::new("_source", 0)).unwrap();
+    let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+    (
+        w,
+        Fields { id, body, soft },
+        [seq, term, version, tombstone.max(source)],
+    )
+}
+
+fn history_doc(f: &Fields, ids: &[i32; 4], i: i64, seq: i64) -> ExplicitDocument {
+    let mut d = doc(f, i);
+    for (n, v) in [(ids[0], seq), (ids[1], 1), (ids[2], seq + 100)] {
+        d.fields.doc_values.push(StoredField {
+            field_number: n,
+            value: FieldValue::Long(v),
+        });
+    }
+    d
+}
+
+fn history() -> crate::hot_tier::HistoryStub {
+    crate::hot_tier::HistoryStub {
+        copy: vec!["_seq_no".to_string(), "_primary_term".to_string()],
+        constants: vec![("_version".to_string(), 1), ("_tombstone".to_string(), 1)],
+        source: Some(("_source".to_string(), b"superseded".to_vec())),
+    }
+}
+
+/// The update the tier drops is replaced by a no-op that keeps its sequence
+/// number and primary term, hidden by the soft-deletes field, with no id and
+/// nothing inverted.
+#[test]
+fn a_dropped_update_leaves_a_no_op_with_its_sequence_number() {
+    let tmp = TempDir::new("hot-tier-history");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f, ids) = history_writer(&dir, true, None);
+    let held = crate::hot_tier::HeldOp::new(
+        None,
+        id(5),
+        vec![history_doc(&f, &ids, 5, 77)],
+        None,
+        vec![soft_delete(5)],
+    );
+    let stub = w.history_stub(&history(), &held).unwrap();
+    let values: Vec<(i32, i64)> = stub
+        .fields
+        .doc_values
+        .iter()
+        .map(|v| match v.value {
+            FieldValue::Long(n) => (v.field_number, n),
+            _ => unreachable!(),
+        })
+        .collect();
+    let tombstone = w
+        .field_infos()
+        .iter()
+        .find(|i| i.name == "_tombstone")
+        .unwrap()
+        .number;
+    assert!(values.contains(&(ids[0], 77)), "{values:?}");
+    assert!(values.contains(&(ids[1], 1)));
+    assert!(values.contains(&(ids[2], 1)));
+    assert!(values.contains(&(tombstone, 1)));
+    assert!(values.contains(&(f.soft, 1)));
+    assert!(stub.fields.inverted.is_empty() && stub.fields.points.is_empty());
+    assert_eq!(stub.stored.len(), 1);
+    assert!(matches!(&stub.stored[0].value, FieldValue::Binary(b) if b == b"superseded"));
+}
+
+/// Without a field the stub needs the dropped update is applied whole, so the
+/// history is never short of a sequence number.
+#[test]
+fn a_dropped_update_is_applied_whole_when_no_no_op_can_be_built() {
+    let tmp = TempDir::new("hot-tier-history-whole");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f, ids) = history_writer(&dir, false, None);
+    let held = crate::hot_tier::HeldOp::new(
+        None,
+        id(5),
+        vec![history_doc(&f, &ids, 5, 77)],
+        None,
+        vec![soft_delete(5)],
+    );
+    assert!(w.history_stub(&history(), &held).is_none());
+    w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20).with_history(history()));
+    for i in 0..6 {
+        w.soft_update_explicit_documents(
+            id(5),
+            vec![history_doc(&f, &ids, 5, 10 + i)],
+            &[soft_delete(5)],
+        )
+        .unwrap();
+    }
+    // Two written through, one held, three dropped and applied whole.
+    assert_eq!(w.pending_doc_count(), 5);
+    w.drain_hot_tier().unwrap();
+    assert_eq!(w.pending_doc_count(), 6);
+}
+
+/// With the stub fields registered every dropped update leaves a stub: six
+/// updates add six documents, one per sequence number.
+#[test]
+fn every_sequence_number_of_a_hot_row_is_in_the_buffer() {
+    let tmp = TempDir::new("hot-tier-history-all");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f, ids) = history_writer(&dir, true, None);
+    w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20).with_history(history()));
+    for i in 0..6 {
+        w.soft_update_explicit_documents(
+            id(5),
+            vec![history_doc(&f, &ids, 5, 10 + i)],
+            &[soft_delete(5)],
+        )
+        .unwrap();
+    }
+    w.drain_hot_tier().unwrap();
+    assert_eq!(w.pending_doc_count(), 6);
+    let st = w.hot_tier_stats().unwrap();
+    assert_eq!((st.written_through, st.coalesced), (2, 3));
+}
+
+/// A failed apply is reported to every later write and cut, and the documents
+/// a held update will add count against the limit when it is acknowledged.
+#[test]
+fn a_failed_held_update_is_reported_and_the_document_limit_is_checked_early() {
+    let tmp = TempDir::new("hot-tier-failed");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f, ids) = history_writer(&dir, true, Some(3));
+    w.enable_hot_tier(crate::hot_tier::HotTierConfig::with_budget(1 << 20));
+    let send = |seq: i64| {
+        w.soft_update_explicit_documents(
+            id(1),
+            vec![history_doc(&f, &ids, 1, seq)],
+            &[soft_delete(1)],
+        )
+    };
+    for seq in 0..3 {
+        send(seq).unwrap();
+    }
+    assert_eq!(w.hot_tier_stats().unwrap().held_rows, 1);
+    // No more room for what it holds and what comes: refused now, not when
+    // the held update is applied.
+    let refused = send(9);
+    assert!(
+        matches!(refused, Err(crate::index_writer::Error::TooManyDocs(_))),
+        "{refused:?} {:?} {}",
+        w.hot_tier_stats(),
+        w.pending_doc_count()
+    );
+    // A failure while applying sticks.
+    w.hot_fail(&crate::index_writer::explicit_error("disk full"));
+    let e = w.drain_hot_tier().unwrap_err().to_string();
+    assert!(e.contains("disk full"), "{e}");
+    assert!(send(10).is_err());
+}
