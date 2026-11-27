@@ -482,8 +482,6 @@ fn negative_scores_as_non_negative_scores_similarity() {
 const IN_JAVA: &[&str] = &[
     // `_source`.
     "params._source.size()",
-    // Streams.
-    "doc['vals'].stream().mapToLong(x -> x).sum()",
     // A field Painless does not see named: `params.doc[...]`.
     "params.doc['likes'].value + params._doc['flag'].value.compareTo(true) + 3",
     // A collection of `params` changed, which every segment's script shares.
