@@ -188,52 +188,6 @@ impl SegScanExec {
             props,
         })
     }
-
-    /// This scan's predicates, in the order the plan holds them.
-    pub fn preds(&self) -> &[Pred] {
-        &self.preds
-    }
-
-    /// The same scan with its predicates' literals replaced: the i-th takes
-    /// `lits[i]`.
-    pub fn bind(&self, lits: &[String]) -> SegScanExec {
-        let preds = self
-            .preds
-            .iter()
-            .zip(lits)
-            .map(|(p, l)| p.with_literal(l))
-            .collect();
-        SegScanExec {
-            snapshot: self.snapshot.clone(),
-            projection: self.projection.clone(),
-            preds,
-            fetch: self.fetch,
-            groups: self.groups.clone(),
-            schema: self.schema.clone(),
-            props: self.props.clone(),
-        }
-    }
-
-    /// Replaces the predicates' literals by name: each literal that is a key
-    /// of `by_marker` becomes its value. Returns the scan and how many
-    /// literals were replaced.
-    pub fn bind_markers(&self, by_marker: &dyn Fn(&str) -> Option<String>) -> (SegScanExec, usize) {
-        let mut hit = 0;
-        let preds = self
-            .preds
-            .iter()
-            .map(|p| match by_marker(p.literal()) {
-                Some(v) => {
-                    hit += 1;
-                    p.with_literal(&v)
-                }
-                None => p.clone(),
-            })
-            .collect();
-        let mut s = self.bind(&[]);
-        s.preds = preds;
-        (s, hit)
-    }
 }
 
 impl DisplayAs for SegScanExec {
@@ -426,6 +380,6 @@ impl SegScanExec {
         let options =
             datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(rows));
         RecordBatch::try_new_with_options(self.schema.clone(), arrays, &options)
-            .map_err(Error::from_arrow)
+            .map_err(Error::from)
     }
 }

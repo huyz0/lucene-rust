@@ -60,3 +60,42 @@ fn group_by_asks_for_the_right_columns() {
     assert!(f.snapshot().group_by(2, &[AggFn::Sum(2)]).is_err());
     assert!(f.snapshot().group_by(99, &[]).is_err());
 }
+
+#[test]
+fn averages_and_extremes_the_kernels_cannot_hold_run_the_standard_way() {
+    use lucene_sql::group::AggFn;
+    let mut d = corpus(60);
+    d[0].price = i64::MAX / 4;
+    let f = fixture_docs(d, 1, &[], spec(), &SqlConfig::default());
+    for agg in [AggFn::Avg(1), AggFn::Min(1), AggFn::Max(1)] {
+        // Exact only for groups whose values fit; the huge one makes it None.
+        assert!(
+            f.snapshot()
+                .group_by(2, std::slice::from_ref(&agg))
+                .unwrap()
+                .is_none(),
+            "{agg:?}"
+        );
+    }
+    for sql in [
+        "SELECT cat, avg(price) FROM t GROUP BY cat",
+        "SELECT cat, min(price), max(price) FROM t GROUP BY cat",
+    ] {
+        assert_eq!(sorted(run(&f, sql)), sorted(standard(&f, sql)), "{sql}");
+    }
+}
+
+#[test]
+fn a_window_scan_has_a_null_score_and_search_columns_have_no_values() {
+    use lucene_sql::columns::Columns;
+    let f = fixture(10, 1, &[]);
+    let r = run(
+        &f,
+        "SELECT id, price, cat, _score FROM t ORDER BY id LIMIT 2",
+    );
+    assert_eq!(r[0][3], "");
+    let mut cols = Columns::new(f.snapshot());
+    assert!(cols.for_window(&[3], 0, 0, 5, None).is_err());
+    assert!(cols.for_window(&[99], 0, 0, 5, None).is_err());
+    assert!(cols.for_docs(&[3], &[(0, None)]).is_err());
+}

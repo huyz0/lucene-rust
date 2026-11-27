@@ -40,33 +40,6 @@ pub enum Pred {
 }
 
 impl Pred {
-    /// The predicate with `lit` as its literal.
-    pub fn with_literal(&self, lit: &str) -> Pred {
-        match self {
-            Pred::Term { column, .. } => Pred::Term {
-                column: *column,
-                value: lit.to_string(),
-            },
-            Pred::Match { column, .. } => Pred::Match {
-                column: *column,
-                text: lit.to_string(),
-            },
-            Pred::Knn { column, .. } => Pred::Knn {
-                column: *column,
-                vector: lit.to_string(),
-            },
-        }
-    }
-
-    /// The literal.
-    pub fn literal(&self) -> &str {
-        match self {
-            Pred::Term { value, .. } => value,
-            Pred::Match { text, .. } => text,
-            Pred::Knn { vector, .. } => vector,
-        }
-    }
-
     /// Whether the predicate scores documents.
     pub fn is_scoring(&self) -> bool {
         !matches!(self, Pred::Term { .. })
@@ -158,4 +131,80 @@ pub fn knn_udf() -> ScalarUDF {
         name: "knn",
         signature: Signature::any(2, Volatility::Immutable),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::logical_expr::{col, lit};
+
+    fn spec() -> TableSpec {
+        TableSpec::new("t")
+            .key("id")
+            .long("price")
+            .keyword("cat")
+            .text("body")
+            .vector("vec", 2)
+    }
+
+    #[test]
+    fn predicates_are_parsed_from_expressions() {
+        let s = spec();
+        let m = match_text_udf().call(vec![col("body"), lit("a b")]);
+        assert_eq!(
+            parse(&s, &m),
+            Some(Pred::Match {
+                column: 3,
+                text: "a b".into()
+            })
+        );
+        let k = knn_udf().call(vec![col("vec"), lit("1,2")]);
+        let p = parse(&s, &k).unwrap();
+        assert_eq!(
+            p,
+            Pred::Knn {
+                column: 4,
+                vector: "1,2".into()
+            }
+        );
+        assert!(p.is_scoring());
+        let t = col("cat").eq(lit("x"));
+        let p = parse(&s, &t).unwrap();
+        assert!(!p.is_scoring());
+        // The literal may come first.
+        assert_eq!(parse(&s, &lit("x").eq(col("cat"))), Some(p));
+        // Not predicates: wrong column kind, unknown column, non-literal, other operator.
+        assert!(parse(&s, &match_text_udf().call(vec![col("cat"), lit("a")])).is_none());
+        assert!(parse(&s, &knn_udf().call(vec![col("body"), lit("1")])).is_none());
+        assert!(parse(&s, &col("price").eq(lit("5"))).is_none());
+        assert!(parse(&s, &col("nope").eq(lit("x"))).is_none());
+        assert!(parse(&s, &col("cat").eq(col("id"))).is_none());
+        assert!(parse(&s, &lit("a").eq(lit("b"))).is_none());
+        assert!(parse(&s, &col("cat").gt(lit("x"))).is_none());
+        assert!(parse(&s, &match_text_udf().call(vec![col("body"), col("id")])).is_none());
+        assert!(parse(&s, &col("cat")).is_none());
+    }
+
+    #[test]
+    fn vectors_parse_or_not() {
+        assert_eq!(parse_vector("1, 2.5,-3"), Some(vec![1.0, 2.5, -3.0]));
+        assert_eq!(parse_vector("1,x"), None);
+        assert_eq!(parse_vector(""), None);
+    }
+
+    #[test]
+    fn the_functions_refuse_to_be_evaluated() {
+        use datafusion::arrow::datatypes::Field;
+        let udf = match_text_udf();
+        let args = ScalarFunctionArgs {
+            args: vec![],
+            arg_fields: vec![],
+            number_rows: 0,
+            return_field: std::sync::Arc::new(Field::new("r", DataType::Boolean, true)),
+            config_options: std::sync::Arc::new(Default::default()),
+        };
+        let err = udf.invoke_with_args(args).unwrap_err().to_string();
+        assert!(err.contains("match_text"), "{err}");
+        assert_eq!(udf.return_type(&[]).unwrap(), DataType::Boolean);
+    }
 }

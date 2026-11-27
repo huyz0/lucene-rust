@@ -11,6 +11,9 @@ pub enum Error {
     /// A segment could not be opened or read.
     #[error("index: {0}")]
     Reader(#[from] lucene_search::directory_reader::Error),
+    /// Arrow could not build an array or batch.
+    #[error("arrow: {0}")]
+    Arrow(#[from] datafusion::arrow::error::ArrowError),
     /// A statement the SQL layer does not run, or a table definition that
     /// does not fit the index.
     #[error("{0}")]
@@ -39,10 +42,4 @@ impl Error {
 /// `err` wrapped for a DataFusion stream.
 pub(crate) fn external(err: impl std::error::Error + Send + Sync + 'static) -> DataFusionError {
     DataFusionError::External(Box::new(err))
-}
-
-impl Error {
-    pub(crate) fn from_arrow(e: datafusion::arrow::error::ArrowError) -> Self {
-        Error::DataFusion(DataFusionError::ArrowError(Box::new(e), None))
-    }
 }

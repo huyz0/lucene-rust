@@ -6,7 +6,6 @@ use std::sync::Arc;
 use datafusion::arrow::array::{
     ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, StringBuilder,
 };
-use datafusion::arrow::datatypes::DataType;
 use lucene_codecs::doc_values::NumericReader;
 use lucene_search::global_ords::{keyword_column, Ords};
 
@@ -234,7 +233,7 @@ impl<'s> Columns<'s> {
         if let Some(live) = live {
             out = out
                 .iter()
-                .map(|a| datafusion::arrow::compute::filter(a, live).map_err(Error::from_arrow))
+                .map(|a| datafusion::arrow::compute::filter(a, live).map_err(Error::from))
                 .collect::<Result<_>>()?;
         }
         Ok(out)
@@ -245,13 +244,4 @@ fn unreadable(name: &str) -> Error {
     Error::unsupported(format!(
         "column `{name}` is a search column: use it in match_text or knn, it has no values to read"
     ))
-}
-
-/// The Arrow type of a column read by [`Columns`].
-pub fn arrow_type(kind: &ColumnKind) -> Option<DataType> {
-    match kind {
-        ColumnKind::Key | ColumnKind::Keyword => Some(DataType::Utf8),
-        ColumnKind::Long => Some(DataType::Int64),
-        _ => None,
-    }
 }

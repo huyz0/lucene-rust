@@ -98,8 +98,8 @@ impl Snapshot {
     pub fn read(&self, projection: &[usize], docs: &[Hit]) -> Result<RecordBatch> {
         let arrays = Columns::new(self).for_docs(projection, docs)?;
         let schema = self.spec().arrow_schema();
-        let schema = std::sync::Arc::new(schema.project(projection).map_err(Error::from_arrow)?);
-        RecordBatch::try_new(schema, arrays).map_err(Error::from_arrow)
+        let schema = std::sync::Arc::new(schema.project(projection).map_err(Error::from)?);
+        RecordBatch::try_new(schema, arrays).map_err(Error::from)
     }
 }
 

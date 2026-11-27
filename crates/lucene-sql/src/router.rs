@@ -415,8 +415,9 @@ pub fn recognise(template: &str, spec: &TableSpec) -> Option<Shape> {
 
 /// Replaces every single-quoted literal with `'?'`; returns the template and
 /// the literals in order. A scan of the text, no parsing: when it cannot tell
-/// (an escaped quote makes two literals) the statement is simply not a shape.
-pub fn templatize(sql: &str) -> (String, Vec<String>) {
+/// (an escaped quote makes two literals) the statement is simply not a shape;
+/// an unterminated literal is `None`.
+pub fn templatize(sql: &str) -> Option<(String, Vec<String>)> {
     let mut t = String::with_capacity(sql.len());
     let mut lits = Vec::new();
     let b = sql.as_bytes();
@@ -428,7 +429,10 @@ pub fn templatize(sql: &str) -> (String, Vec<String>) {
             while i < b.len() && b[i] != b'\'' {
                 i += 1;
             }
-            lits.push(sql[start..i.min(b.len())].to_string());
+            if i >= b.len() {
+                return None;
+            }
+            lits.push(sql[start..i].to_string());
             t.push_str("'?'");
             i += 1;
         } else {
@@ -439,7 +443,7 @@ pub fn templatize(sql: &str) -> (String, Vec<String>) {
             t.push_str(&sql[start..i]);
         }
     }
-    (t, lits)
+    Some((t, lits))
 }
 
 /// How many templates the shape cache holds before it starts over.
@@ -462,7 +466,7 @@ impl Router {
 
     /// The shape of `sql` with its literal bound, when it is one.
     pub fn shape(&self, sql: &str) -> Option<Shape> {
-        let (template, lits) = templatize(sql);
+        let (template, lits) = templatize(sql)?;
         let cached = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if cache.len() >= MAX_TEMPLATES && !cache.contains_key(&template) {
@@ -558,8 +562,7 @@ impl Router {
                     .map(|(n, a): (&String, &ArrayRef)| Field::new(n, a.data_type().clone(), true))
                     .collect();
                 let _ = DataType::Null;
-                RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
-                    .map_err(Error::from_arrow)?
+                RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(Error::from)?
             }
         }))
     }
