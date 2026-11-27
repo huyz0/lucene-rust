@@ -44,17 +44,6 @@ pub(crate) struct IvfField<'a> {
     pub partitions: Option<Partitions<'a>>,
 }
 
-/// An [`IvfField`] whose vectors the caller owns: see
-/// [`IvfGroupWriter::add_in_place`].
-pub(crate) struct IvfFieldMut<'a> {
-    pub number: i32,
-    pub similarity: VectorSimilarityFunction,
-    pub dimension: usize,
-    pub docs: &'a [i32],
-    pub vectors: &'a mut [f32],
-    pub partitions: Option<Partitions<'a>>,
-}
-
 /// A segment's documents grouped by partition, for IVF fields clustered per
 /// partition.
 #[derive(Debug, Clone, Copy)]
@@ -174,38 +163,23 @@ impl IvfGroupWriter {
         self.add_vectors(field, sources, false, fit)
     }
 
-    /// [`IvfGroupWriter::add`] for a field whose vectors the caller owns and
-    /// will not read again: a cosine field is normalized in `vectors` itself
-    /// rather than in a second copy, so a large merged field costs the writer
-    /// one buffer less. The files are those `add` writes for the same
-    /// vectors.
-    pub(crate) fn add_in_place(
+    /// [`IvfGroupWriter::add`] for `field.vectors` the caller has already
+    /// normalized for a cosine field (`lucene_ivf::prepare_vectors`), so the
+    /// writer reads them as they are instead of normalizing a copy.
+    /// `fits_half` is [`IvfGroupWriter::fits_half`] of the vectors as they
+    /// were before that. The files are those `add` writes for them.
+    pub(crate) fn add_prepared(
         &mut self,
-        field: IvfFieldMut<'_>,
+        field: &IvfField<'_>,
         sources: &[IvfSource<'_>],
+        fits_half: bool,
     ) -> Result<()> {
-        // The half-float check reads the values as given, before they are
-        // normalized.
-        let fit = self.fits_half(field.vectors);
-        lucene_ivf::prepare_vectors(
-            util_similarity(field.similarity),
-            field.dimension,
-            field.vectors,
-        );
-        let field = IvfField {
-            number: field.number,
-            similarity: field.similarity,
-            dimension: field.dimension,
-            docs: field.docs,
-            vectors: field.vectors,
-            partitions: field.partitions,
-        };
-        self.add_vectors(&field, sources, true, fit)
+        self.add_vectors(field, sources, true, fits_half)
     }
 
     /// Whether every value fits a half float, which is when a field asking
     /// for half-float rerank vectors can have them.
-    fn fits_half(&self, vectors: &[f32]) -> bool {
+    pub(crate) fn fits_half(&self, vectors: &[f32]) -> bool {
         self.params.rerank_encoding != VectorEncoding::F16
             || vectors.iter().all(|v| v.abs() <= 65_504.0)
     }
@@ -497,7 +471,7 @@ pub fn open(
 mod tests {
     use lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS;
 
-    use super::{quantizer_factory, IvfField, IvfFieldMut, IvfGroupWriter};
+    use super::{quantizer_factory, IvfField, IvfGroupWriter};
     use lucene_codecs::field_infos::VectorSimilarityFunction;
     use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
 
@@ -520,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn a_field_normalized_in_place_writes_the_files_add_writes() {
+    fn a_prepared_field_writes_the_files_add_writes() {
         let n = 700usize;
         let dim = 16usize;
         let docs: Vec<i32> = (0..n as i32).collect();
@@ -555,18 +529,21 @@ mod tests {
                 )
                 .unwrap();
             let mut in_place = IvfGroupWriter::new(format, &id, "").unwrap().unwrap();
+            let fit = in_place.fits_half(&vectors);
             let mut owned = vectors.clone();
+            lucene_ivf::prepare_vectors(lucene_ivf::Similarity::Cosine, dim, &mut owned);
             in_place
-                .add_in_place(
-                    IvfFieldMut {
+                .add_prepared(
+                    &IvfField {
                         number: 0,
                         similarity: VectorSimilarityFunction::Cosine,
                         dimension: dim,
                         docs: &docs,
-                        vectors: &mut owned,
+                        vectors: &owned,
                         partitions: None,
                     },
                     &[],
+                    fit,
                 )
                 .unwrap();
             assert_eq!(by_copy.finish(), in_place.finish());

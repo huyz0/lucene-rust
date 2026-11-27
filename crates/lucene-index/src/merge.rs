@@ -4089,6 +4089,33 @@ struct FieldSource {
 /// (`getRandomVectorScorerSupplierForMerge`) and the raw one otherwise.
 /// Returns the instance's files by extension.
 #[allow(clippy::too_many_arguments)]
+/// Writes `vectors` (`dimension` floats each) to `name`, each vector
+/// unit-normalized as [`lucene_ivf::prepare_vectors`] does for a cosine
+/// field, a few thousand at a time.
+fn write_normalized_vectors(
+    dir: &dyn Directory,
+    name: &str,
+    dimension: usize,
+    vectors: &[f32],
+) -> Result<()> {
+    const ROWS: usize = 4096;
+    let mut out = dir.create_output(name)?;
+    let mut rows: Vec<f32> = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    for chunk in vectors.chunks(dimension.max(1).saturating_mul(ROWS)) {
+        rows.clear();
+        rows.extend_from_slice(chunk);
+        lucene_ivf::prepare_vectors(lucene_ivf::Similarity::Cosine, dimension, &mut rows);
+        bytes.clear();
+        for x in &rows {
+            bytes.extend_from_slice(&x.to_le_bytes());
+        }
+        out.write_bytes(&bytes);
+    }
+    out.close()?;
+    Ok(())
+}
+
 fn merge_vector_group(
     dir: &dyn Directory,
     merged_segment_name: &str,
@@ -4294,18 +4321,54 @@ fn merge_vector_group(
             for ord in 0..values.size() {
                 docs.push(values.ord_to_doc(ord)?);
             }
-            let mut merged = values.all_vectors()?;
-            ivf.add_in_place(
-                crate::ivf_vectors::IvfFieldMut {
-                    number: merged_field.number,
-                    similarity: merged_field.vector_similarity_function,
-                    dimension: usize::try_from(merged_field.vector_dimension).unwrap_or(0),
-                    docs: &docs,
-                    vectors: merged.to_mut(),
-                    partitions,
-                },
-                &ivf_sources,
-            )?;
+            let merged = values.all_vectors()?;
+            let dimension = usize::try_from(merged_field.vector_dimension).unwrap_or(0);
+            let similarity = merged_field.vector_similarity_function;
+            if similarity != field_infos::VectorSimilarityFunction::Cosine {
+                ivf.add(
+                    &crate::ivf_vectors::IvfField {
+                        number: merged_field.number,
+                        similarity,
+                        dimension,
+                        docs: &docs,
+                        vectors: &merged,
+                        partitions,
+                    },
+                    &ivf_sources,
+                )?;
+            } else {
+                // A cosine field is written unit-normalized: the normalized
+                // vectors go to a scratch file the writer reads mapped, so the
+                // merge holds neither them nor the source's vectors on the heap.
+                let fits_half = ivf.fits_half(&merged);
+                let scratch =
+                    crate::index_writer::segment_file_name(merged_segment_name, suffix, "ivn");
+                write_normalized_vectors(dir, &scratch, dimension, &merged)?;
+                drop(merged);
+                let input = dir.open(&scratch)?;
+                match lucene_util::vector_util::le_f32s(&input) {
+                    Some(normalized) => ivf.add_prepared(
+                        &crate::ivf_vectors::IvfField {
+                            number: merged_field.number,
+                            similarity,
+                            dimension,
+                            docs: &docs,
+                            vectors: normalized,
+                            partitions,
+                        },
+                        &ivf_sources,
+                        fits_half,
+                    )?,
+                    None => {
+                        return Err(lucene_store::Error::Io(std::io::Error::other(
+                            "the normalized vectors are not aligned floats",
+                        ))
+                        .into())
+                    }
+                }
+                drop(input);
+                dir.delete_file(&scratch)?;
+            }
         }
         match ivf.finish_streamed() {
             Some((written, out)) => {
