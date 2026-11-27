@@ -118,8 +118,8 @@ fn word(state: &mut u64) -> String {
     format!("w{rank}")
 }
 
-fn build(store: &InMemoryBlobStore, docs: usize, segs: usize) {
-    let dir = BlobDirectory::new(store.clone());
+fn build(store: &InMemoryBlobStore, docs: usize, segs: usize, bundle: bool) {
+    let dir = BlobDirectory::new(store.clone()).with_open_bundle(bundle);
     let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.set_ram_buffer_size_mb(64.0).unwrap();
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
@@ -153,7 +153,8 @@ fn main() {
     let prefetch = !args.iter().any(|a| a == "--no-prefetch");
     let segs: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(1);
 
-    let use_bundle = args.iter().any(|a| a == "--bundle");
+    // `--no-bundle`: write and read without the open bundle.
+    let use_bundle = !args.iter().any(|a| a == "--no-bundle");
     let dump = args
         .iter()
         .position(|a| a == "--dump")
@@ -161,22 +162,7 @@ fn main() {
         .cloned();
     let inner = InMemoryBlobStore::new();
     let t = Instant::now();
-    build(&inner, docs, segs);
-    if use_bundle {
-        let cache = PageCacheConfig::default();
-        let pinned = |n: &str| {
-            let ext = n.rsplit_once('.').map_or("", |(_, e)| e);
-            cache.pinned_extensions.iter().any(|p| p == ext)
-        };
-        let t = Instant::now();
-        let w = lucene_store::open_bundle::write_open_bundle(&inner, &pinned, 8 << 20).unwrap();
-        eprintln!(
-            "open bundle: {} files, {} bytes, built in {:.1?}",
-            w.files,
-            w.bytes,
-            t.elapsed()
-        );
-    }
+    build(&inner, docs, segs, use_bundle);
     if let Some(dir) = &dump {
         std::fs::create_dir_all(dir).unwrap();
         for n in inner.list().unwrap() {
@@ -261,12 +247,9 @@ fn main() {
             })
             .unwrap(),
         );
-        let dir = CachedBlobDirectory::new(store.clone(), cache, "idx");
+        let dir =
+            CachedBlobDirectory::new(store.clone(), cache, "idx").with_open_bundle(use_bundle);
         let t = Instant::now();
-        if use_bundle {
-            let p = dir.prime_from_open_bundle().unwrap();
-            assert!(p.found, "bundle not found");
-        }
         let reader = DirectoryReader::open(&dir).unwrap();
         let opened = reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
