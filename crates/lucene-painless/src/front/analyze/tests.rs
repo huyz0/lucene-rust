@@ -101,11 +101,7 @@ fn a_call_checks_its_arity_and_functions_are_unique() {
 
 #[test]
 fn what_is_not_lowered_yet_is_named() {
-    for (src, what) in [
-        ("for (def x : [1]) { }", "for-each"),
-        ("try { } catch (Exception e) { }", "try"),
-        ("return doc", "variable"),
-    ] {
+    for (src, what) in [("return doc", "variable")] {
         match refusal(src) {
             Refusal::Unsupported(w) => assert!(w.contains(what), "{src}: {w}"),
             other => panic!("{src}: {other}"),
@@ -384,4 +380,48 @@ fn elements_and_members_of_lists_maps_and_defs_are_assigned() {
         Value::Int(6)
     ));
     assert!(message("String s = 'a'; s?.x = 1").contains("null-safe"));
+}
+
+#[test]
+fn instanceof_and_for_each_follow_the_value_and_the_collection() {
+    assert!(matches!(
+        eval("def x = 'a'; x instanceof String"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("int x = 1; x instanceof Integer"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("def x = []; x instanceof Map"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("int s = 0; for (int i : [1, 2, 3]) { s += i } s"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("int s = 0; for (x in new int[] {4, 5}) { s += x } s"),
+        Value::Int(9)
+    ));
+    assert!(matches!(
+        eval("long s = 0; for (long i : new int[] {4, 5}) { s += i } s"),
+        Value::Long(9)
+    ));
+    assert!(message("for (int i : 5) { }").contains("Illegal for each"));
+    assert!(message("for (int i : 'ab') { }").contains("Illegal for each"));
+}
+
+#[test]
+fn try_catch_and_throw_follow_the_exception_type() {
+    assert!(matches!(
+        eval("int x = 1; try { x = 2 } catch (Exception e) { x = 3 } x"),
+        Value::Int(2)
+    ));
+    assert!(matches!(
+        eval("int x = 1; try { throw new RuntimeException('a') } catch (Exception e) { x = 3 } x"),
+        Value::Int(3)
+    ));
+    assert!(message("throw 'a'").contains("cannot cast"));
+    assert!(message("try { } catch (String e) { }").contains("not an exception type"));
 }

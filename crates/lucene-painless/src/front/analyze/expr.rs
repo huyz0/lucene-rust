@@ -379,6 +379,26 @@ impl Cx<'_> {
                 self.incdec(e.pos, *inc, target, true, false)?
             }
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
+            ExprKind::InstanceOf(inner, ty) => {
+                let instance = super::ty::resolve(ty)?;
+                let t = self.expr(inner)?;
+                if t.ty == "void" || t.ty == "null" {
+                    return compile_error(inner.pos, "instanceof needs a value");
+                }
+                let t = if is_primitive(&t.ty) {
+                    self.coerce(inner.pos, t, "java.lang.Object", false)?
+                } else {
+                    t
+                };
+                typed(
+                    Node::Instanceof {
+                        ty: "boolean".into(),
+                        instance_ty: instance,
+                        child: Box::new(t.node),
+                    },
+                    "boolean",
+                )
+            }
             ExprKind::NewObject(ty, args) => self.new_object(e.pos, ty, args, true)?,
             ExprKind::NewArray(ty, dims) => self.new_array(e.pos, ty, dims)?,
             ExprKind::NewArrayInit(ty, values) => self.new_array_init(e.pos, ty, values)?,

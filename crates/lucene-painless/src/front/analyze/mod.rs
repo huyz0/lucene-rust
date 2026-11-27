@@ -314,9 +314,117 @@ impl<'a> Cx<'a> {
             }
             K::Break => ir::Node::Break,
             K::Continue => ir::Node::Continue,
-            K::Each { .. } => return unsupported("for-each loop"),
-            K::Try { .. } => return unsupported("try"),
-            K::Throw(_) => return unsupported("throw"),
+            K::Each {
+                ty,
+                name,
+                iterable,
+                body,
+            } => self.each(s.pos, ty.as_ref(), name, iterable, body)?,
+            K::Try { body, catches } => {
+                let body = self.block(&body.stmts)?;
+                let mut out = Vec::new();
+                for c in catches {
+                    let exception = ty::resolve(&c.ty)?;
+                    let al = crate::front::allowlist::Allowlist::get();
+                    if exception != "java.lang.Exception"
+                        && !al.is_assignable(&exception, "java.lang.Exception")
+                    {
+                        return compile_error(
+                            c.pos,
+                            format!(
+                                "[{}] is not an exception type",
+                                crate::types::canonical(&exception)
+                            ),
+                        );
+                    }
+                    let body = self.scoped(|cx| {
+                        cx.declare(c.pos, &c.name, &exception)?;
+                        cx.block(&c.body.stmts)
+                    })?;
+                    out.push(ir::Node::Catch {
+                        exception,
+                        symbol: c.name.clone(),
+                        body: Some(Box::new(body)),
+                    });
+                }
+                ir::Node::Try {
+                    body: Box::new(body),
+                    catches: out,
+                }
+            }
+            K::Throw(e) => {
+                let t = self.expr(e)?;
+                let t = self.coerce(e.pos, t, "java.lang.Exception", false)?;
+                ir::Node::Throw(Box::new(t.node))
+            }
+        })
+    }
+
+    /// `for (T x : e)` over an array or an `Iterable` (or a `def`).
+    fn each(
+        &mut self,
+        pos: u32,
+        written: Option<&ast::Type>,
+        name: &str,
+        iterable: &ast::Expr,
+        body: &ast::Stmt,
+    ) -> Res<ir::Node> {
+        let var_ty = match written {
+            Some(t) => ty::resolve(t)?,
+            None => DEF.to_string(),
+        };
+        let it = self.expr(iterable)?;
+        let element = match ty::component(&it.ty) {
+            Some(c) => c,
+            None => DEF.to_string(),
+        };
+        let is_array = ty::component(&it.ty).is_some();
+        if !is_array
+            && it.ty != DEF
+            && !crate::front::allowlist::Allowlist::get()
+                .is_assignable(&it.ty, "java.lang.Iterable")
+        {
+            return compile_error(
+                iterable.pos,
+                format!(
+                    "Illegal for each type [{}].",
+                    crate::types::canonical(&it.ty)
+                ),
+            );
+        }
+        let probe = expr::Typed {
+            node: ir::Node::Null {
+                ty: element.clone(),
+            },
+            ty: element.clone(),
+        };
+        let cast = match self.coerce(pos, probe, &var_ty, true)?.node {
+            ir::Node::Cast { cast, .. } => cast,
+            _ => None,
+        };
+        let body = self.scoped(|cx| {
+            cx.declare(pos, name, &var_ty)?;
+            cx.body(&Some(Box::new(body.clone())))
+        })?;
+        Ok(if is_array {
+            ir::Node::ForEachArray {
+                var_ty,
+                var: name.into(),
+                cast,
+                array_ty: it.ty.clone(),
+                indexed_ty: element,
+                iterable: Box::new(it.node),
+                body,
+            }
+        } else {
+            ir::Node::ForEachIterable {
+                var_ty,
+                var: name.into(),
+                cast,
+                method: None,
+                iterable: Box::new(it.node),
+                body,
+            }
         })
     }
 
