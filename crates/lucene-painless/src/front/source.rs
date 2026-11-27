@@ -61,14 +61,28 @@ pub fn compile(source: &str, context: u8) -> Result<Script, Refused> {
         10..=12 => "void",
         _ => crate::types::DEF,
     };
-    analyze_returning(&ast, bindings, ret).map_err(|r| match r {
+    let script = analyze_returning(&ast, bindings, ret).map_err(|r| match r {
         Refusal::Compile { offset, message } => Refused::Compile {
             offset: offset as usize,
             message,
         },
         Refusal::Unsupported(what) => Refused::Unsupported(what),
-    })
+    })?;
+    let mut nodes = 0usize;
+    for f in &script.functions {
+        any_node(&f.body, &mut |_| nodes += 1);
+    }
+    if nodes > MAX_IR_NODES {
+        return Err(Refused::Compile {
+            offset: 0,
+            message: format!("the script has {nodes} operations, over the limit of {MAX_IR_NODES}"),
+        });
+    }
+    Ok(script)
 }
+
+/// The most IR nodes a script may lower to.
+pub const MAX_IR_NODES: usize = 20_000;
 
 /// The fields the script reads through a constant name (`doc['f']`,
 /// `doc.get('f')`, `doc.containsKey('f')`), in the order it first reads them.

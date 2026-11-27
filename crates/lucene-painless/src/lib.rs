@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod arena;
 pub mod check;
 pub mod compare;
 pub mod compile;
