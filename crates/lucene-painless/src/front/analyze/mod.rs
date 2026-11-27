@@ -102,6 +102,39 @@ pub const SCORE: &[Binding] = &[
     },
 ];
 
+/// What a `filter`, number `sort` or `terms_set` script reads: `params` and `doc`.
+pub const DOC: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+];
+
+/// What an `aggs` script reads: `params`, `doc` and `_value`.
+pub const AGG: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "_value",
+        getter: "get_value",
+        ty: crate::types::DEF,
+    },
+];
+
 /// The synthetic functions the lambdas of a script lower to.
 pub(super) struct Lambdas {
     bindings: &'static [Binding],
