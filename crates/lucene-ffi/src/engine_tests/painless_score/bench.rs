@@ -122,6 +122,7 @@ fn painless_script_loop_bench() {
             filter: false,
             sort: false,
             agg: false,
+            metric_map: false,
             terms_set: false,
             interval: false,
             similarity: false,

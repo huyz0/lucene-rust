@@ -1124,3 +1124,75 @@ fn painless_check_cost() {
         all[all.len() - 1]
     );
 }
+
+/// A `scripted_metric` map script over the fixture's documents: one state
+/// across every segment, the script run once per document, the state
+/// handed back whole.
+#[test]
+fn metric_map_script_folds_every_document_into_one_state() {
+    use lucene_aggs::bucket_aggs::ScriptValuesSource;
+    use lucene_painless::ir::Constant;
+    let tmp = TempDir::new("painless-metric-map");
+    for e in std::fs::read_dir(fixture("index")).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+    }
+    let h = open(&tmp);
+    let handle = crate::jvm_reader::lookup(h, "reader").unwrap();
+    let spec = source_spec(
+        11,
+        "state.sum = state.sum + doc['likes'].value; state.docs = state.docs + 1",
+        Constant::Map(vec![]),
+        "idx",
+        0,
+        vec![("likes".into(), "likes".into(), FieldKind::Long)],
+    )
+    .unwrap();
+    let init = Constant::Map(vec![
+        (Constant::Str("sum".into()), Constant::Long(0)),
+        (Constant::Str("docs".into()), Constant::Int(0)),
+    ]);
+    let map = PainlessMetricMap::new(spec, init).unwrap();
+    let mut total = 0;
+    for seg in handle.reader.segment_readers() {
+        let mut leaf = map.open(seg).unwrap();
+        for doc in 0..seg.max_doc {
+            let mut out = Vec::new();
+            leaf.values(doc, &mut out).unwrap();
+            assert!(out.is_empty());
+            total += 1;
+        }
+    }
+    let Constant::Map(entries) = map.finish().unwrap() else {
+        panic!("the state is a map");
+    };
+    let get = |k: &str| {
+        entries
+            .iter()
+            .find(|(key, _)| *key == Constant::Str(k.into()))
+            .map(|(_, v)| v.clone())
+            .unwrap()
+    };
+    assert_eq!(get("docs"), Constant::Int(total));
+    assert!(matches!(get("sum"), Constant::Long(n) if n > 0));
+    // A second segment cannot start while one holds the state.
+    let seg = &handle.reader.segment_readers()[0];
+    let held = map.open(seg).unwrap();
+    assert!(map.open(seg).is_err());
+    drop(held);
+    assert!(map.open(seg).is_ok());
+    drop(handle);
+    assert_eq!(ffi_close_jvm_reader(h), 0);
+}
+
+/// A map script is a `metric_map` context script; another context's is
+/// refused, and an untouched state comes back as it went in.
+#[test]
+fn metric_map_script_refuses_another_contexts_script() {
+    use lucene_painless::ir::Constant;
+    let spec = source_spec(11, "state.x = 1", Constant::Map(vec![]), "idx", 0, vec![]).unwrap();
+    let other = source_spec(2, "true", Constant::Map(vec![]), "idx", 0, vec![]).unwrap();
+    assert!(PainlessMetricMap::new(other, Constant::Null).is_err());
+    let map = PainlessMetricMap::new(spec, Constant::Map(vec![])).unwrap();
+    assert_eq!(map.finish().unwrap(), Constant::Map(vec![]));
+}
