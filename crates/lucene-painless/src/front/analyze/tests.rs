@@ -102,7 +102,6 @@ fn a_call_checks_its_arity_and_functions_are_unique() {
 #[test]
 fn what_is_not_lowered_yet_is_named() {
     for (src, what) in [
-        ("[1, 2]", "list"),
         ("for (def x : [1]) { }", "for-each"),
         ("try { } catch (Exception e) { }", "try"),
         ("int[] a = new int[1];", "array"),
@@ -262,4 +261,20 @@ fn a_postfix_increment_yields_the_old_value() {
         Value::Int(11)
     ));
     assert!(matches!(eval("int i = 5; ++i + i++"), Value::Int(12)));
+}
+
+#[test]
+fn objects_lists_and_maps_are_built() {
+    assert!(matches!(eval("new ArrayList().size()"), Value::Int(0)));
+    assert!(matches!(
+        eval("new StringBuilder('ab').length()"),
+        Value::Int(2)
+    ));
+    assert!(matches!(eval("[1, 'a', 2.5].size()"), Value::Int(3)));
+    assert!(matches!(eval("[1, 2, 3].get(1)"), Value::Int(2)));
+    assert!(matches!(eval("[:].size()"), Value::Int(0)));
+    assert!(matches!(eval("['a': 1, 'b': 2].get('b')"), Value::Int(2)));
+    assert!(matches!(eval("new ArrayList(); 7"), Value::Int(7)));
+    assert!(message("new ArrayList(1, 2, 3)").contains("Unknown new call"));
+    assert!(message("new List()").contains("Unknown new call"));
 }

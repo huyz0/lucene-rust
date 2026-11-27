@@ -357,6 +357,9 @@ impl Cx<'_> {
                 self.incdec(e.pos, *inc, target, true, false)?
             }
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
+            ExprKind::NewObject(ty, args) => self.new_object(e.pos, ty, args, true)?,
+            ExprKind::List(values) => self.list_init(values)?,
+            ExprKind::Map(pairs) => self.map_init(pairs)?,
             ExprKind::Call {
                 recv,
                 name,
@@ -389,6 +392,7 @@ impl Cx<'_> {
                 args,
                 null_safe,
             } => Ok(self.call(e.pos, recv, name, args, *null_safe)?.node),
+            ExprKind::NewObject(ty, args) => Ok(self.new_object(e.pos, ty, args, false)?.node),
             _ => compile_error(e.pos, "not a statement"),
         }
     }
