@@ -156,6 +156,8 @@ pub const SOURCE_SCRIPT: u8 = 0x20;
 
 mod expr;
 pub use expr::{ExprBinding, ExprSource, Mode};
+mod metric_map;
+pub use metric_map::PainlessMetricMap;
 mod source;
 pub use source::{fields_of, spec as source_spec, SourceError};
 
@@ -220,6 +222,9 @@ pub struct Spec {
     pub sort: bool,
     /// An `AggregationScript`: `execute()` returns the document's values.
     pub agg: bool,
+    /// A `scripted_metric`'s `map_script`: `execute()` mutates the shared
+    /// `state` and returns nothing.
+    pub metric_map: bool,
     /// A `TermsSetQueryScript`: `execute()` returns the document's
     /// minimum number of matching terms.
     pub terms_set: bool,
@@ -290,6 +295,7 @@ pub fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, Status> 
 /// The node's script, after its sub-query.
 pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
     let (mut agg, mut sort, mut terms_set, mut interval) = (false, false, false, false);
+    let mut metric_map = false;
     let (mut similarity, mut similarity_weight) = (false, false);
     let context = c.u8()?;
     let is_js = context & JS_SCRIPT != 0;
@@ -333,9 +339,13 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
             similarity_weight = true;
             (false, false)
         }
+        11 => {
+            metric_map = true;
+            (false, false)
+        }
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=9)"
+                "query tree: painless script context {other} (expected 0..=9 or 11)"
             )))
         }
     };
@@ -416,6 +426,7 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
         filter,
         sort,
         agg,
+        metric_map,
         terms_set,
         interval,
         similarity,
@@ -618,6 +629,7 @@ impl Spec {
         !self.filter
             && !self.sort
             && !self.agg
+            && !self.metric_map
             && !self.terms_set
             && !self.interval
             && !self.similarity
@@ -652,7 +664,10 @@ impl Spec {
         const FILTER: &[&str] = &["getParams", "getDoc"];
         const AGGREGATION: &[&str] = &["getParams", "getDoc", "get_value"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
-        if self.interval || self.similarity || self.similarity_weight {
+        const METRIC_MAP: &[&str] = &["getParams", "getDoc", "getState"];
+        if self.metric_map {
+            METRIC_MAP
+        } else if self.interval || self.similarity || self.similarity_weight {
             &[]
         } else if self.agg {
             AGGREGATION
@@ -842,6 +857,8 @@ pub struct ScoreEnv<'c> {
     pub score: f64,
     /// An aggregation script's `_value`: the field value it maps, else null.
     pub agg_value: Value,
+    /// A `scripted_metric` map script's `state`, else null.
+    pub state: Value,
     pub params: Value,
     pub doc_lookup: Value,
     pub index: Value,
@@ -1206,6 +1223,7 @@ impl Env for ScoreEnv<'_> {
             "getDoc" => Ok(self.doc_lookup.clone()),
             "get_score" if self.source.needs_score => Ok(Value::Double(self.score)),
             "get_value" if self.source.agg => Ok(self.agg_value.clone()),
+            "getState" if self.source.metric_map => Ok(self.state.clone()),
             "_getDocId" => Ok(Value::Int(self.doc)),
             "_getDocBaseId" => Ok(Value::Int(self.reader.doc_base.wrapping_add(self.doc))),
             "_getIndex" => Ok(self.index.clone()),
@@ -1687,6 +1705,7 @@ fn score_env<'c>(
         doc: -1,
         score: 0.0,
         agg_value: Value::Null,
+        state: Value::Null,
         params,
         doc_lookup,
     }

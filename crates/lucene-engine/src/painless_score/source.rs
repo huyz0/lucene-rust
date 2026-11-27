@@ -109,6 +109,7 @@ impl Spec {
             filter: kind == 2,
             sort,
             agg,
+            metric_map: kind == 11,
             terms_set,
             interval: false,
             similarity: false,
