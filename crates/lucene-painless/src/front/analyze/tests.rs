@@ -634,3 +634,21 @@ fn a_stream_pipeline_runs_lazily_once() {
         "used"
     );
 }
+
+#[test]
+fn a_context_supplies_its_variables_as_the_script_classs_getters() {
+    use super::{analyze_in, SCORE};
+    let ast = parse("_score + doc['f'].value + params.x", &Limits::default()).expect("parses");
+    // Without the score context, none of them exists.
+    assert!(matches!(analyze(&ast), Err(Refusal::Unsupported(_))));
+    let script = analyze_in(&ast, SCORE).expect("lowers in the score context");
+    let body = format!("{:?}", script.functions[0].body);
+    for getter in ["get_score", "getDoc", "getParams"] {
+        assert!(body.contains(getter), "{getter} is called");
+    }
+    // `doc['f'].value` reads a member by name, and so is a site.
+    assert!(script
+        .sites
+        .iter()
+        .any(|s| s.name == "value" && s.kind == crate::ir::SiteKind::Getter));
+}
