@@ -9,16 +9,24 @@
 # `lucene_classpath <module>...` to get a ready `:`-joined classpath.
 
 LUCENE_VERSION="${LUCENE_VERSION:-10.6.0}"
-MAVEN_ROOT="https://repo1.maven.org/maven2"
-# Central throttles busy runner pools (HTTP 429); this mirror serves the same
-# artifacts, and every jar is checked by its consumer, so it is tried next.
-MAVEN_MIRROR="https://maven-central.storage-download.googleapis.com/maven2"
-MAVEN_BASE="$MAVEN_ROOT/org/apache/lucene"
 
-# maven_get <path under maven2> <dest>: Central first, then the mirror.
+# Historical Lucene versions (the backward-compatibility fixtures) are not
+# pinned in deps/; they come straight from Central, then its mirror.
+MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
+MAVEN_MIRROR_BASE="https://maven-central.storage-download.googleapis.com/maven2/org/apache/lucene"
+# maven_get <url under MAVEN_BASE> <dest>
 maven_get() {
-  curl -fsSL --retry 2 -o "$2" "$MAVEN_ROOT/$1" \
-    || curl -fsSL --retry 2 -o "$2" "$MAVEN_MIRROR/$1"
+  curl -fsSL --retry 2 -o "$2" "$MAVEN_BASE/$1" || curl -fsSL --retry 2 -o "$2" "$MAVEN_MIRROR_BASE/$1"
+}
+
+# deps_fetch <group:artifact:version> <dir>: the `deps` Gradle project downloads
+# the jar (Maven Central mirror, then Central) and checks it against its
+# verification file.
+deps_fetch() {
+  local deps
+  deps="$(cd "$(dirname "${BASH_SOURCE[0]}")/../deps" && pwd)"
+  echo "lucene-jars: fetching $1 with deps/gradlew" >&2
+  (cd "$deps" && ./gradlew -q fetch "-Pcoordinates=$1" "-PoutDir=$2" >&2)
 }
 
 # JVM flags every fixture-writing `java` passes. Lucene's scalar float kernels
@@ -41,8 +49,7 @@ lucene_resolve_jar() {
   found=$(find "$HOME/.gradle/caches" -name "$jar" ! -name '*sources*' ! -name '*javadoc*' 2>/dev/null | head -1 || true)
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
-  echo "lucene-jars: downloading $jar from Maven Central" >&2
-  maven_get "org/apache/lucene/$module/$LUCENE_VERSION/$jar" "$JARS/$jar"
+  deps_fetch "org.apache.lucene:$module:$LUCENE_VERSION" "$JARS"
   echo "$JARS/$jar"
 }
 
@@ -100,8 +107,7 @@ thirdparty_resolve_jar() {
   found=$(find "$HOME/.gradle/caches" -name "$jar" 2>/dev/null | head -1 || true)
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
-  echo "lucene-jars: downloading $jar from Maven Central" >&2
-  maven_get "${group//.//}/$artifact/$version/$jar" "$JARS/$jar"
+  deps_fetch "$coord" "$JARS"
   echo "$JARS/$jar"
 }
 

@@ -19,11 +19,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
+MIRROR_BASE="https://maven-central.storage-download.googleapis.com/maven2/org/apache/lucene"
 jar_for() {
   local v="$1" jar="$JARS/lucene-core-$1.jar"
   if [ ! -s "$jar" ]; then
     mkdir -p "$JARS"
-    curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/lucene-core/$v/lucene-core-$v.jar"
+    curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/lucene-core/$v/lucene-core-$v.jar" \
+      || curl -fsSL --retry 5 -o "$jar" "$MIRROR_BASE/lucene-core/$v/lucene-core-$v.jar"
   fi
   echo "$jar"
 }
