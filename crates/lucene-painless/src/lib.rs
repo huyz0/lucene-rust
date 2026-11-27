@@ -16,6 +16,7 @@ pub mod jmap;
 pub mod lambda;
 pub mod number;
 pub mod object;
+pub mod scripted_metric;
 pub mod specialize;
 pub mod typed;
 pub mod types;
