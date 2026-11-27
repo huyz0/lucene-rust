@@ -352,20 +352,28 @@ impl Cx<'_> {
                         &ty,
                     )
                 }
-                None if name == "params" => typed(
-                    Node::InvokeCallMember {
-                        ty: "java.util.Map".into(),
-                        member: ir::Member::Local {
-                            name: "getParams".into(),
-                            internal: true,
-                            is_static: false,
-                            params: Vec::new(),
-                            ret: "java.util.Map".into(),
+                None if self.lambdas.bindings.iter().any(|b| b.var == name) => {
+                    let b = self
+                        .lambdas
+                        .bindings
+                        .iter()
+                        .find(|b| b.var == name)
+                        .expect("matched above");
+                    typed(
+                        Node::InvokeCallMember {
+                            ty: b.ty.into(),
+                            member: ir::Member::Local {
+                                name: b.getter.into(),
+                                internal: true,
+                                is_static: false,
+                                params: Vec::new(),
+                                ret: b.ty.into(),
+                            },
+                            args: Vec::new(),
                         },
-                        args: Vec::new(),
-                    },
-                    "java.util.Map",
-                ),
+                        b.ty,
+                    )
+                }
                 None => return unsupported(format!("variable [{name}]")),
             },
             ExprKind::Unary(UnOp::Minus, inner) => match &inner.kind {

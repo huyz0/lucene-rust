@@ -65,14 +65,59 @@ struct Signature {
     ret: String,
 }
 
+/// A variable the script class's own method supplies: `doc` is `getDoc()`.
+#[derive(Debug, Clone, Copy)]
+pub struct Binding {
+    /// The name a script reads it by.
+    pub var: &'static str,
+    /// The script class's getter that returns it.
+    pub getter: &'static str,
+    /// Its type.
+    pub ty: &'static str,
+}
+
+/// What a script of no particular context reads: `params`.
+pub const PARAMS: &[Binding] = &[Binding {
+    var: "params",
+    getter: "getParams",
+    ty: "java.util.Map",
+}];
+
+/// What a `score` context script reads: `params`, `doc` and `_score`.
+pub const SCORE: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "_score",
+        getter: "get_score",
+        ty: "double",
+    },
+];
+
 /// The synthetic functions the lambdas of a script lower to.
-#[derive(Default)]
 pub(super) struct Lambdas {
+    bindings: &'static [Binding],
     count: std::cell::Cell<usize>,
     done: std::cell::RefCell<Vec<ir::Function>>,
 }
 
 impl Lambdas {
+    fn new(bindings: &'static [Binding]) -> Self {
+        Lambdas {
+            bindings,
+            count: Default::default(),
+            done: Default::default(),
+        }
+    }
+
     /// The number the next lambda is named by.
     fn next(&self) -> usize {
         let n = self.count.get();
@@ -96,6 +141,12 @@ pub(super) struct Cx<'a> {
 
 /// Lowers a parsed script to IR.
 pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
+    analyze_in(script, PARAMS)
+}
+
+/// Lowers a parsed script to IR, with `bindings` as the variables the
+/// context supplies.
+pub fn analyze_in(script: &ast::Script, bindings: &'static [Binding]) -> Res<ir::Script> {
     let mut funcs: HashMap<String, Signature> = HashMap::new();
     for f in &script.functions {
         let sig = Signature {
@@ -110,7 +161,7 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             return compile_error(f.pos, format!("function [{}] is already defined", f.name));
         }
     }
-    let lambdas = Lambdas::default();
+    let lambdas = Lambdas::new(bindings);
     let mut out = Vec::new();
     for f in &script.functions {
         let sig = funcs[&f.name].clone();
@@ -146,11 +197,13 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
         },
     );
     out.extend(lambdas.done.take());
-    Ok(ir::Script {
+    let mut script = ir::Script {
         functions: out,
         classes: ir::ClassTable::default(),
         sites: Vec::new(),
-    })
+    };
+    super::sites::fill(&mut script);
+    Ok(script)
 }
 
 impl<'a> Cx<'a> {
