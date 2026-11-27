@@ -842,6 +842,9 @@ pub fn rewrite_rescore_clauses(
                 // `PhraseWildcardQuery.createWeight`: its multi-terms'
                 // expansions over the reader's segments.
                 ExtendedQuery::PhraseWildcard(q) => Some(q.resolve(ctx.searcher()?.segments())?),
+                // `MultiPhrasePrefixQuery.rewrite(searcher)`: the last
+                // position's prefixes expanded over the reader's leaves.
+                ExtendedQuery::MultiPhrasePrefix(q) => Some(q.resolve(ctx.searcher()?.segments())?),
                 // `CoveringQuery.rewrite`: its queries, each rewritten.
                 ExtendedQuery::Covering(q) => {
                     let mut changed = false;
@@ -916,6 +919,7 @@ pub(crate) fn has_rescore_clauses(query: &BooleanQuery) -> bool {
                         | ExtendedQuery::MoreLikeThis(_)
                         | ExtendedQuery::FuzzyLikeThis(_)
                         | ExtendedQuery::PhraseWildcard(_)
+                        | ExtendedQuery::MultiPhrasePrefix(_)
                 ) || matches!(e.as_ref(), ExtendedQuery::Span(q) if q.needs_rewrite())
                     || e.children().into_iter().any(clause)
             }

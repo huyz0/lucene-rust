@@ -257,7 +257,9 @@ pub(crate) fn build<'a>(
             "MoreLikeThisQuery is only highlighted here".into(),
         )),
         ExtendedQuery::MultiPhrasePrefix(_) => Err(crate::Error::IllegalState(
-            "MultiPhrasePrefixQuery is only highlighted".into(),
+            "MultiPhrasePrefixQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
         )),
         ExtendedQuery::VisitOnly(_) | ExtendedQuery::Visited(_) => Err(crate::Error::IllegalState(
             "a visit-only query is only highlighted".into(),
