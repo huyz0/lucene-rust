@@ -23,6 +23,9 @@ pub struct MethodSig {
     /// The class whose static method this is, for a method Painless adds to
     /// the receiver's class (`Augmentation`).
     pub augment: Option<String>,
+    /// The parameters (0-based) the compiler passes as a constant
+    /// (`regex_limit_factor`), which a script's call leaves out.
+    pub inject: Vec<usize>,
     /// The allowlist file that lists it, which names the contexts that serve it.
     pub file: String,
 }
@@ -142,6 +145,12 @@ impl Allowlist {
                             .iter()
                             .find_map(|x| x.strip_prefix("augment="))
                             .map(str::to_string),
+                        inject: flags
+                            .iter()
+                            .filter_map(|x| x.strip_prefix("inject="))
+                            .filter_map(|n| n.parse::<usize>().ok())
+                            .map(|n| n - 1)
+                            .collect(),
                         file: f[6].to_string(),
                     };
                     class_mut(&mut a, f[1], n)?

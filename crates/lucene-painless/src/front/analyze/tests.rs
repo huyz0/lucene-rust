@@ -460,3 +460,17 @@ fn lambdas_and_method_references_implement_the_parameter_interface() {
             .contains("already defined")
     );
 }
+
+#[test]
+fn regex_literals_and_operators_follow_painless() {
+    assert!(matches!(eval("'foo' ==~ /fo+/"), Value::Bool(true)));
+    assert!(matches!(eval("'a foo b' ==~ /foo/"), Value::Bool(false)));
+    assert!(matches!(eval("'a foo b' =~ /foo/"), Value::Bool(true)));
+    assert!(matches!(eval("'FOO' ==~ /foo/i"), Value::Bool(true)));
+    assert!(matches!(
+        eval("Matcher m = /(f)(o)o/.matcher('foo'); m.find(); m.group(2)"),
+        Value::Str(s) if &*s == "o"
+    ));
+    assert!(matches!(eval("/,/.split('a,b').length"), Value::Int(2)));
+    assert!(message("'a' ==~ 1").contains("cannot cast"));
+}

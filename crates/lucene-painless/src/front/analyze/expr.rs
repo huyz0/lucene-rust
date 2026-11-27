@@ -15,6 +15,11 @@ pub struct Typed {
     pub ty: String,
 }
 
+const PATTERN: &str = "java.util.regex.Pattern";
+
+/// The compiler's default `regex_limit_factor`, which `FIND` and `MATCH` carry.
+pub(super) const REGEX_LIMIT_FACTOR: i32 = 6;
+
 /// `BinaryMath`'s flag for a compound assignment (`def.rs`'s `COMPOUND`).
 pub(super) const COMPOUND: i32 = 1 << 1;
 
@@ -310,6 +315,31 @@ impl Cx<'_> {
                 },
                 STRING,
             ),
+            ExprKind::Regex(pattern, flags) => {
+                let mut bits = 0;
+                for f in flags.chars() {
+                    bits |= match f {
+                        'c' => 128,
+                        'i' => 2,
+                        'l' => 16,
+                        'm' => 8,
+                        's' => 32,
+                        'U' => 256,
+                        'u' => 64,
+                        'x' => 4,
+                        _ => {
+                            return compile_error(e.pos, format!("unknown regex flag [{f}]"));
+                        }
+                    };
+                }
+                typed(
+                    Node::Constant {
+                        ty: PATTERN.into(),
+                        value: Constant::Pattern(pattern.clone(), bits),
+                    },
+                    PATTERN,
+                )
+            }
             ExprKind::Paren(inner) => self.expr(inner)?,
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(ty) => {
@@ -416,7 +446,6 @@ impl Cx<'_> {
                 name,
                 null_safe,
             } => self.field(e.pos, recv, name, *null_safe)?,
-            other => return unsupported(kind_name(other)),
         })
     }
 
@@ -609,7 +638,24 @@ impl Cx<'_> {
                 }
             }
             B::Lsh | B::Rsh | B::Ush => self.shift(pos, op, l, r, flags),
-            B::Find | B::Match => unsupported("regex operators"),
+            B::Find | B::Match => {
+                let l = self.coerce(pos, l, STRING, false)?;
+                let r = self.coerce(pos, r, PATTERN, false)?;
+                let name = if op == B::Find { "FIND" } else { "MATCH" };
+                Ok(typed(
+                    Node::BinaryMath {
+                        ty: "boolean".into(),
+                        op: name.into(),
+                        binary_ty: "boolean".into(),
+                        shift_ty: None,
+                        flags,
+                        regex_limit: REGEX_LIMIT_FACTOR,
+                        left: Box::new(l.node),
+                        right: Box::new(r.node),
+                    },
+                    "boolean",
+                ))
+            }
             B::Elvis => {
                 let ty = if l.ty == r.ty || r.ty == "null" {
                     l.ty.clone()
