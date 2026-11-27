@@ -130,6 +130,54 @@ pub const INGEST: &[Binding] = &[
     },
 ];
 
+/// What a `scripted_metric` `init_script` and `combine_script` read: `params`
+/// and `state`, a map.
+pub const METRIC_STATE: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "state",
+        getter: "getState",
+        ty: "java.util.Map",
+    },
+];
+
+/// What a `scripted_metric` `map_script` reads: `params`, `state` and `doc`.
+pub const METRIC_MAP: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "state",
+        getter: "getState",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "doc",
+        getter: "getDoc",
+        ty: "java.util.Map",
+    },
+];
+
+/// What a `scripted_metric` `reduce_script` reads: `params` and `states`.
+pub const METRIC_REDUCE: &[Binding] = &[
+    Binding {
+        var: "params",
+        getter: "getParams",
+        ty: "java.util.Map",
+    },
+    Binding {
+        var: "states",
+        getter: "getStates",
+        ty: "java.util.List",
+    },
+];
+
 /// What an `aggs` script reads: `params`, `doc` and `_value`.
 pub const AGG: &[Binding] = &[
     Binding {
