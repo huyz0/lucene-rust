@@ -352,8 +352,10 @@ impl Cx<'_> {
                 prefix: true,
                 inc,
                 target,
-            } => self.incdec(e.pos, *inc, target, true)?,
-            ExprKind::IncDec { .. } => return unsupported("postfix increment as a value"),
+            } => self.incdec(e.pos, *inc, target, true, true)?,
+            ExprKind::IncDec { inc, target, .. } => {
+                self.incdec(e.pos, *inc, target, true, false)?
+            }
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
             ExprKind::Call {
                 recv,
@@ -378,7 +380,7 @@ impl Cx<'_> {
                 Ok(self.assign(e.pos, *op, target, value, false)?.node)
             }
             ExprKind::IncDec { inc, target, .. } => {
-                Ok(self.incdec(e.pos, *inc, target, false)?.node)
+                Ok(self.incdec(e.pos, *inc, target, false, true)?.node)
             }
             ExprKind::CallLocal(name, args) => Ok(self.call_local(e.pos, name, args)?.node),
             ExprKind::Call {
@@ -557,10 +559,50 @@ impl Cx<'_> {
                     ),
                 }
             }
-            B::Lsh | B::Rsh | B::Ush => unsupported("shift operators"),
+            B::Lsh | B::Rsh | B::Ush => self.shift(pos, op, l, r, flags),
             B::Find | B::Match => unsupported("regex operators"),
             B::Elvis => unsupported("elvis operator"),
         }
+    }
+
+    /// `<<`, `>>`, `>>>`: the left operand is promoted to `int` or `long`
+    /// and the distance to one of them on its own; `def` on either side
+    /// makes both `def`.
+    fn shift(&mut self, pos: u32, op: BinOp, l: Typed, r: Typed, flags: i32) -> Res<Typed> {
+        let name = match op {
+            BinOp::Lsh => "LSH",
+            BinOp::Rsh => "RSH",
+            _ => "USH",
+        };
+        let (pl, pr) = (promote_one(&l.ty), promote_one(&r.ty));
+        let int_or_long = |t: &Option<String>| {
+            t.as_deref()
+                .filter(|t| matches!(*t, "int" | "long" | DEF))
+                .map(str::to_string)
+        };
+        let (Some(pl), Some(pr)) = (int_or_long(&pl), int_or_long(&pr)) else {
+            return compile_error(pos, format!("cannot shift [{}] by [{}]", l.ty, r.ty));
+        };
+        let (bt, st) = if pl == DEF || pr == DEF {
+            (DEF.to_string(), DEF.to_string())
+        } else {
+            (pl, pr)
+        };
+        let l = self.coerce(pos, l, &bt, false)?;
+        let r = self.coerce(pos, r, &st, false)?;
+        Ok(typed(
+            Node::BinaryMath {
+                ty: bt.clone(),
+                op: name.into(),
+                binary_ty: bt.clone(),
+                shift_ty: Some(st),
+                flags,
+                regex_limit: 0,
+                left: Box::new(l.node),
+                right: Box::new(r.node),
+            },
+            &bt,
+        ))
     }
 
     fn math(&mut self, pos: u32, op: &str, p: &str, l: Typed, r: Typed, flags: i32) -> Res<Typed> {
@@ -659,15 +701,33 @@ impl Cx<'_> {
         Ok(self.store(&name, &ty, child, want_value))
     }
 
-    fn incdec(&mut self, pos: u32, inc: bool, target: &ast::Expr, want_value: bool) -> Res<Typed> {
+    /// `++x`, `x++`, `--x`, `x--`; a postfix one used for its value leaves
+    /// the variable's old value, kept by a `Dup` before the arithmetic.
+    fn incdec(
+        &mut self,
+        pos: u32,
+        inc: bool,
+        target: &ast::Expr,
+        want_value: bool,
+        prefix: bool,
+    ) -> Res<Typed> {
         let (name, ty) = self.target(target)?;
-        let load = typed(
+        let mut load = typed(
             Node::LoadVariable {
                 ty: ty.clone(),
                 name: name.clone(),
             },
             &ty,
         );
+        let post = want_value && !prefix;
+        if post {
+            load.node = Node::Dup {
+                ty: ty.clone(),
+                size: words(&ty) as i32,
+                depth: 0,
+                child: Box::new(load.node),
+            };
+        }
         let one = typed(
             Node::Constant {
                 ty: "int".into(),
@@ -678,6 +738,17 @@ impl Cx<'_> {
         let op = if inc { BinOp::Add } else { BinOp::Sub };
         let r = self.binary(pos, op, load, one, COMPOUND)?;
         let child = self.coerce(pos, r, &ty, true)?;
+        if post {
+            return Ok(typed(
+                Node::StoreVariable {
+                    ty: ty.clone(),
+                    store_ty: ty.clone(),
+                    name,
+                    child: Box::new(child.node),
+                },
+                &ty,
+            ));
+        }
         Ok(self.store(&name, &ty, child, want_value))
     }
 

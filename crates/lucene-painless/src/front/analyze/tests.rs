@@ -108,7 +108,6 @@ fn what_is_not_lowered_yet_is_named() {
         ("int[] a = new int[1];", "array"),
         ("return params", "variable"),
         ("params.x", "variable"),
-        ("return 1 << 2", "shift"),
     ] {
         match refusal(src) {
             Refusal::Unsupported(w) => assert!(w.contains(what), "{src}: {w}"),
@@ -232,4 +231,35 @@ fn a_call_on_nothing_callable_is_a_compile_error() {
     assert!(message("null.length()").contains("cannot call"));
     assert!(message("'a'.valueOf(1)").contains("Unknown call [valueOf]"));
     assert!(message("String.length()").contains("Unknown call [length]"));
+}
+
+#[test]
+fn shifts_promote_the_value_and_the_distance_on_their_own() {
+    assert!(matches!(eval("1 << 4"), Value::Int(16)));
+    assert!(matches!(eval("-16 >> 2"), Value::Int(-4)));
+    assert!(matches!(eval("-16 >>> 28"), Value::Int(15)));
+    assert!(matches!(eval("1L << 40"), Value::Long(1_099_511_627_776)));
+    assert!(matches!(eval("1 << 33L"), Value::Int(2)));
+    assert!(matches!(eval("def x = 3; x << 2"), Value::Int(12)));
+    assert!(matches!(eval("int x = 1; x <<= 3; x"), Value::Int(8)));
+    assert!(message("1.5 << 1").contains("cannot shift"));
+    assert!(message("1 << true").contains("cannot shift"));
+}
+
+#[test]
+fn a_postfix_increment_yields_the_old_value() {
+    assert!(matches!(
+        eval("int i = 5; int j = i++; j * 10 + i"),
+        Value::Int(56)
+    ));
+    assert!(matches!(
+        eval("int i = 5; int j = i--; j * 10 + i"),
+        Value::Int(54)
+    ));
+    assert!(matches!(eval("long i = 5; i++"), Value::Long(5)));
+    assert!(matches!(
+        eval("def i = 5; def j = i++; j + i"),
+        Value::Int(11)
+    ));
+    assert!(matches!(eval("int i = 5; ++i + i++"), Value::Int(12)));
 }
