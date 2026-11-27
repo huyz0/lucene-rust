@@ -182,10 +182,7 @@ fn a_wrapper_compares_as_an_object_and_widens_as_an_argument() {
         eval("Long b = Long.valueOf(1L); byte u = 1; b.compareTo(u)"),
         Value::Int(0)
     ));
-    assert!(matches!(
-        refusal("Integer a = 5; true ? a : 6"),
-        Refusal::Unsupported(w) if w.contains("conditional")
-    ));
+    assert!(matches!(eval("Integer a = 5; true ? a : 6"), Value::Int(5)));
 }
 
 #[test]
@@ -473,4 +470,18 @@ fn regex_literals_and_operators_follow_painless() {
     ));
     assert!(matches!(eval("/,/.split('a,b').length"), Value::Int(2)));
     assert!(message("'a' ==~ 1").contains("cannot cast"));
+}
+
+#[test]
+fn a_conditional_or_elvis_of_two_classes_is_an_object() {
+    assert!(matches!(
+        eval(
+            "boolean b = false; Object o = b ? new HashMap() : new ArrayList(); o instanceof List"
+        ),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("String s = null; Object o = s ?: 5; o"),
+        Value::Int(5)
+    ));
 }
