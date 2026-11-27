@@ -15,6 +15,7 @@ pub mod columns;
 pub mod engine;
 pub mod error;
 pub mod group;
+pub mod group_rule;
 pub mod native;
 pub mod plan_cache;
 pub mod pred;
