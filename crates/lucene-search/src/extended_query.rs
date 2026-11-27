@@ -977,28 +977,73 @@ impl MultiPhrasePrefixQuery {
     /// matches nothing -- around the whole positions' multi-phrase when
     /// there are any, as Java keeps it for the highlighters.
     pub fn rewrite_over(&self, terms: &[Vec<u8>]) -> Clause {
-        use crate::query::{BooleanQuery, MatchNoDocsQuery, MultiPhraseQuery};
-        let Some((suffixes, whole)) = self.term_arrays.split_last() else {
-            return Clause::MatchNoDocs(MatchNoDocsQuery::new());
-        };
-        let mut expanded: Vec<Vec<u8>> = Vec::new();
-        let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
-        let max = usize::try_from(self.max_expansions).unwrap_or(0);
-        'suffixes: for prefix in suffixes {
-            let start = terms.partition_point(|t| t.as_slice() < prefix.as_slice());
+        self.rewrite_with(&mut |prefix, add| {
+            let start = terms.partition_point(|t| t.as_slice() < prefix);
             for t in &terms[start..] {
-                if !t.starts_with(prefix) {
-                    break;
-                }
-                if seen.insert(t.as_slice()) {
-                    expanded.push(t.clone());
-                }
-                if expanded.len() >= max {
+                if !t.starts_with(prefix) || add(t) {
                     break;
                 }
             }
+            Ok(())
+        })
+        .unwrap_or_else(|_| Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new()))
+    }
+
+    /// `rewrite(searcher)` over the reader's segments (`getPrefixTerms`):
+    /// each prefix's terms leaf by leaf, each leaf in term order, until
+    /// there are `max_expansions` of them in all.
+    ///
+    /// # Errors
+    /// What reading a segment's term dictionary reports.
+    pub fn resolve(&self, segments: &[crate::multi_segment::OpenSegment<'_>]) -> Result<Clause> {
+        self.rewrite_with(&mut |prefix, add| {
+            let source = crate::extended_query::MultiTermSource::Prefix(PrefixQuery::new(
+                self.field.clone(),
+                prefix.to_vec(),
+            ));
+            for segment in segments {
+                if segment.fields.field(&self.field).is_none() {
+                    continue;
+                }
+                let stopped = std::cell::Cell::new(false);
+                crate::exec::extended::visit_terms(segment.fields, &source, None, &mut |t, _| {
+                    if add(&t) {
+                        stopped.set(true);
+                        return Ok(std::ops::ControlFlow::Break(()));
+                    }
+                    Ok(std::ops::ControlFlow::Continue(()))
+                })?;
+                if stopped.get() {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// The rewrite over what `expand` finds: it is given each prefix and a
+    /// sink for its terms, which answers `true` once there are
+    /// `max_expansions` terms.
+    fn rewrite_with(&self, expand: &mut PrefixExpander<'_>) -> Result<Clause> {
+        use crate::query::{BooleanQuery, MatchNoDocsQuery, MultiPhraseQuery};
+        let Some((suffixes, whole)) = self.term_arrays.split_last() else {
+            return Ok(Clause::MatchNoDocs(MatchNoDocsQuery::new()));
+        };
+        let mut expanded: Vec<Vec<u8>> = Vec::new();
+        let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+        let max = usize::try_from(self.max_expansions).unwrap_or(0);
+        for prefix in suffixes {
+            {
+                let mut add = |t: &[u8]| {
+                    if seen.insert(t.to_vec()) {
+                        expanded.push(t.to_vec());
+                    }
+                    expanded.len() >= max
+                };
+                expand(prefix, &mut add)?;
+            }
             if expanded.len() > max {
-                break 'suffixes;
+                break;
             }
         }
         let mut arrays: Vec<(Vec<Vec<u8>>, i32)> = whole
@@ -1008,26 +1053,32 @@ impl MultiPhrasePrefixQuery {
             .collect();
         if expanded.is_empty() {
             if whole.is_empty() {
-                return Clause::MatchNoDocs(MatchNoDocsQuery::new());
+                return Ok(Clause::MatchNoDocs(MatchNoDocsQuery::new()));
             }
             let phrase = MultiPhraseQuery::with_positions(self.field.clone(), arrays)
                 .map(|p| p.with_slop(self.slop));
-            return match phrase {
+            return Ok(match phrase {
                 Ok(p) => Clause::Boolean(Box::new(BooleanQuery::new().with_must([
                     Clause::MultiPhrase(p),
                     Clause::MatchNoDocs(MatchNoDocsQuery::new()),
                 ]))),
                 Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
-            };
+            });
         }
         let last = self.positions.last().copied().unwrap_or(0);
         arrays.push((expanded, last));
-        match MultiPhraseQuery::with_positions(self.field.clone(), arrays) {
-            Ok(p) => Clause::MultiPhrase(p.with_slop(self.slop)),
-            Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
-        }
+        Ok(
+            match MultiPhraseQuery::with_positions(self.field.clone(), arrays) {
+                Ok(p) => Clause::MultiPhrase(p.with_slop(self.slop)),
+                Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+            },
+        )
     }
 }
+
+/// What expands a prefix: given the prefix and a sink for its terms, which
+/// answers `true` once enough have been taken.
+type PrefixExpander<'a> = dyn FnMut(&[u8], &mut dyn FnMut(&[u8]) -> bool) -> Result<()> + 'a;
 
 /// A search over a BINARY doc-values field of the `Substring90` format
 /// ([`lucene_codecs::substring`]) -- OpenSearch's `wildcard` field
