@@ -154,7 +154,11 @@ fn main() {
     let segs: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(1);
 
     let use_bundle = args.iter().any(|a| a == "--bundle");
-    let dump = args.iter().position(|a| a == "--dump").and_then(|i| args.get(i + 1)).cloned();
+    let dump = args
+        .iter()
+        .position(|a| a == "--dump")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
     let inner = InMemoryBlobStore::new();
     let t = Instant::now();
     build(&inner, docs, segs);
@@ -166,7 +170,12 @@ fn main() {
         };
         let t = Instant::now();
         let w = lucene_store::open_bundle::write_open_bundle(&inner, &pinned, 8 << 20).unwrap();
-        eprintln!("open bundle: {} files, {} bytes, built in {:.1?}", w.files, w.bytes, t.elapsed());
+        eprintln!(
+            "open bundle: {} files, {} bytes, built in {:.1?}",
+            w.files,
+            w.bytes,
+            t.elapsed()
+        );
     }
     if let Some(dir) = &dump {
         std::fs::create_dir_all(dir).unwrap();
@@ -314,7 +323,12 @@ fn main() {
         let by_file: Vec<String> = open_counts
             .iter()
             .map(|(k, (r, b))| format!("OPEN-{k}:{r}/{}K", b / 1024))
-            .chain(search_counts.iter().map(|(k, (r, _))| format!("{k}:{r}")).collect::<Vec<_>>())
+            .chain(
+                search_counts
+                    .iter()
+                    .map(|(k, (r, _))| format!("{k}:{r}"))
+                    .collect::<Vec<_>>(),
+            )
             .collect();
         let _unused: Vec<String> = search_counts
             .iter()
