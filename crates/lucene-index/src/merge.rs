@@ -4275,14 +4275,14 @@ fn merge_vector_group(
             for ord in 0..values.size() {
                 docs.push(values.ord_to_doc(ord)?);
             }
-            let merged = values.all_vectors()?;
-            ivf.add(
-                &crate::ivf_vectors::IvfField {
+            let mut merged = values.all_vectors()?;
+            ivf.add_in_place(
+                crate::ivf_vectors::IvfFieldMut {
                     number: merged_field.number,
                     similarity: merged_field.vector_similarity_function,
                     dimension: usize::try_from(merged_field.vector_dimension).unwrap_or(0),
                     docs: &docs,
-                    vectors: &merged,
+                    vectors: merged.to_mut(),
                     partitions,
                 },
                 &ivf_sources,

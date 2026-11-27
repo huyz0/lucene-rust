@@ -67,14 +67,17 @@ pub mod writer;
 pub use auto::{AutoQuantizer, AUTO_MIN_VECTORS};
 pub use calibrate::{Calibration, DEFAULT_CALIBRATION_RECALL};
 pub use encoding::VectorEncoding;
-pub use merge::{merge_field, merge_field_with_vectors, MergeClustering, MergeSource};
+pub use merge::{
+    merge_field, merge_field_with_prepared_vectors, merge_field_with_vectors, MergeClustering,
+    MergeSource,
+};
 pub use reader::{
     segment_nprobe, Grouping, IvfField, IvfReader, Probes, RangeSource, Rerank, ScoredDoc,
     SearchOutput, SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION,
     DEFAULT_RERANK_MULTIPLE,
 };
 pub use routing::Routing;
-pub use writer::{FieldClusters, FieldVectors, IvfFiles, IvfParams, IvfWriter};
+pub use writer::{prepare_vectors, FieldClusters, FieldVectors, IvfFiles, IvfParams, IvfWriter};
 
 pub use lucene_vector_quant::Similarity;
 

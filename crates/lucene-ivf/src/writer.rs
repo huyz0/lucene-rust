@@ -234,11 +234,24 @@ fn prepared_vectors<'a>(field: &FieldVectors<'a>) -> std::borrow::Cow<'a, [f32]>
         return std::borrow::Cow::Borrowed(field.vectors);
     }
     let mut out = field.vectors.to_vec();
-    out.par_chunks_mut(field.dimension).for_each(|v| {
+    prepare_vectors(field.similarity, field.dimension, &mut out);
+    std::borrow::Cow::Owned(out)
+}
+
+/// Unit-normalizes `vectors` (`dimension` floats each) in place when
+/// `similarity` is `Cosine`, which is what a field handed to
+/// [`crate::merge_field_with_prepared_vectors`] must be: the writer then
+/// reads it as given instead of normalizing a copy, which for a large merged
+/// field is a third of what the build holds. Other similarities are left
+/// as they are.
+pub fn prepare_vectors(similarity: Similarity, dimension: usize, vectors: &mut [f32]) {
+    if similarity != Similarity::Cosine || dimension == 0 {
+        return;
+    }
+    vectors.par_chunks_mut(dimension).for_each(|v| {
         // A zero vector has no direction and stays zero.
         let _ = lucene_util::vector_util::l2normalize(v, false);
     });
-    std::borrow::Cow::Owned(out)
 }
 
 /// The lengths of the runs of `docs` (ascending) to cluster on their own:
@@ -506,21 +519,55 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
+        self.add_partitioned(field, false, partition_starts, factory, params)
+    }
+
+    /// [`IvfWriter::add_partitioned_field`] for vectors the caller has
+    /// already passed through [`prepare_vectors`].
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`].
+    pub fn add_partitioned_prepared_field(
+        &mut self,
+        field: &FieldVectors<'_>,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
+        self.add_partitioned(field, true, partition_starts, factory, params)
+    }
+
+    fn add_partitioned(
+        &mut self,
+        field: &FieldVectors<'_>,
+        prepared: bool,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
         let runs = partition_runs(
             field.docs,
             partition_starts,
             params.partition_min_vectors.max(1),
         );
-        self.add_clustered(field, factory, params, true, &mut |vectors, metric| {
-            kmeans::cluster_runs(
-                vectors,
-                field.dimension,
-                &runs,
-                params.target_cluster_size,
-                &params.kmeans,
-                metric,
-            )
-        })
+        self.add_prepared(
+            field,
+            prepared,
+            factory,
+            params,
+            true,
+            &mut |vectors, metric| {
+                kmeans::cluster_runs(
+                    vectors,
+                    field.dimension,
+                    &runs,
+                    params.target_cluster_size,
+                    &params.kmeans,
+                    metric,
+                )
+            },
+        )
     }
 
     /// Like [`IvfWriter::add_field`], but with the clusters given instead of
@@ -566,6 +613,23 @@ impl IvfWriter {
         partitioned: bool,
         clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
+        self.add_prepared(field, false, factory, params, partitioned, clusterer)
+    }
+
+    /// [`IvfWriter::add_clustered`], with `prepared` saying `field.vectors`
+    /// are already as [`prepare_vectors`] leaves them, so a cosine field is
+    /// not copied to be normalized.
+    // ARITH: as `add_clustered`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn add_prepared(
+        &mut self,
+        field: &FieldVectors<'_>,
+        prepared: bool,
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+        partitioned: bool,
+        clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
+    ) -> Result<()> {
         if params
             .calibration_recall
             .is_some_and(|t| !(t > 0.0 && t <= 1.0))
@@ -578,7 +642,11 @@ impl IvfWriter {
         self.check(field)?;
         let dim = field.dimension;
         let n = field.docs.len();
-        let vectors = prepared_vectors(field);
+        let vectors = if prepared {
+            std::borrow::Cow::Borrowed(field.vectors)
+        } else {
+            prepared_vectors(field)
+        };
         let metric = if spherical(field.similarity) {
             kmeans::Metric::InnerProduct
         } else {
@@ -1028,6 +1096,89 @@ mod tests {
                 "{c:?}"
             );
         }
+    }
+
+    fn field<'a>(docs: &'a [i32], v: &'a [f32]) -> FieldVectors<'a> {
+        FieldVectors {
+            number: 1,
+            similarity: Similarity::Cosine,
+            dimension: 24,
+            docs,
+            vectors: v,
+        }
+    }
+
+    fn cosine_field(n: usize, dim: usize) -> (Vec<i32>, Vec<f32>) {
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let docs = (0..n as i32).collect();
+        // Magnitudes that vary, one zero vector, so normalizing matters.
+        let mut vectors: Vec<f32> = (0..n * dim)
+            .map(|i| next() * (1.0 + (i / dim % 7) as f32))
+            .collect();
+        vectors[3 * dim..4 * dim].fill(0.0);
+        (docs, vectors)
+    }
+
+    #[test]
+    fn vectors_prepared_by_the_caller_write_the_same_files() {
+        let (docs, vectors) = cosine_field(900, 24);
+        let params = IvfParams {
+            target_cluster_size: 64,
+            ..IvfParams::default()
+        };
+        let factory = OsqFactory::bbq();
+        let mut copied = IvfWriter::new(&[7; ID_LENGTH], "");
+        copied
+            .add_field(&field(&docs, &vectors), &factory, &params)
+            .unwrap();
+        let mut prepared_vectors = vectors.clone();
+        prepare_vectors(Similarity::Cosine, 24, &mut prepared_vectors);
+        let mut in_place = IvfWriter::new(&[7; ID_LENGTH], "");
+        crate::merge_field_with_prepared_vectors(
+            &mut in_place,
+            &field(&docs, &prepared_vectors),
+            &[],
+            &factory,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(copied.finish(), in_place.finish());
+
+        let starts = [0, 300, 600];
+        let params = IvfParams {
+            partition_min_vectors: 100,
+            ..params
+        };
+        let mut copied = IvfWriter::new(&[7; ID_LENGTH], "");
+        copied
+            .add_partitioned_field(&field(&docs, &vectors), &starts, &factory, &params)
+            .unwrap();
+        let mut in_place = IvfWriter::new(&[7; ID_LENGTH], "");
+        in_place
+            .add_partitioned_prepared_field(
+                &field(&docs, &prepared_vectors),
+                &starts,
+                &factory,
+                &params,
+            )
+            .unwrap();
+        assert_eq!(copied.finish(), in_place.finish());
+    }
+
+    #[test]
+    fn preparing_leaves_other_similarities_alone() {
+        let mut v = vec![3.0, 4.0, 0.0, 5.0];
+        prepare_vectors(Similarity::Euclidean, 2, &mut v);
+        assert_eq!(v, [3.0, 4.0, 0.0, 5.0]);
+        prepare_vectors(Similarity::Cosine, 2, &mut v);
+        assert_eq!(v[..2], [0.6, 0.8]);
+        assert_eq!(v[2..], [0.0, 1.0]);
     }
 
     #[test]
