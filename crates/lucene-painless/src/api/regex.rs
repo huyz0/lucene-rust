@@ -16,8 +16,13 @@ use crate::vm::{ApiFn, Throw, Vm};
 
 const UNIX_LINES: i32 = 1;
 const CASE_INSENSITIVE: i32 = 2;
+const COMMENTS: i32 = 4;
+const MULTILINE: i32 = 8;
 const LITERAL: i32 = 16;
 const DOTALL: i32 = 32;
+const UNICODE_CASE: i32 = 64;
+const CANON_EQ: i32 = 128;
+const UNICODE_CLASS: i32 = 256;
 
 #[derive(Debug)]
 pub struct JPattern {
@@ -241,9 +246,37 @@ fn translate(p: &str, flags: i32) -> Result<String, String> {
     Ok(out)
 }
 
+/// Whether the flags beyond the ones `translate` honours leave the pattern
+/// `p` meaning what it means without them: each is checked against the
+/// characters of `p` it could change.
+fn flags_do_not_apply(p: &str, flags: i32) -> bool {
+    let known = CASE_INSENSITIVE
+        | LITERAL
+        | DOTALL
+        | UNIX_LINES
+        | COMMENTS
+        | MULTILINE
+        | UNICODE_CASE
+        | CANON_EQ
+        | UNICODE_CLASS;
+    flags & !known == 0
+        // Line anchors.
+        && (flags & MULTILINE == 0 || !p.contains(['^', '$']))
+        // Whitespace and `#` comments.
+        && (flags & COMMENTS == 0 || !p.contains(|c: char| c.is_whitespace() || c == '#'))
+        // Folding beyond ASCII.
+        && (flags & (UNICODE_CASE | UNICODE_CLASS) == 0 || flags & CASE_INSENSITIVE == 0)
+        // Predefined classes and properties.
+        && (flags & UNICODE_CLASS == 0 || !p.contains('\\'))
+        // Canonical equivalence of composed characters.
+        && (flags & CANON_EQ == 0 || p.is_ascii())
+}
+
 /// Compiles a regex constant (`/.../flags`).
 pub fn compile_pattern(p: &str, flags: i32) -> Result<Value, String> {
-    if flags & !(CASE_INSENSITIVE | LITERAL | DOTALL | UNIX_LINES) != 0 {
+    if flags & !(CASE_INSENSITIVE | LITERAL | DOTALL | UNIX_LINES) != 0
+        && !flags_do_not_apply(p, flags)
+    {
         return Err(format!("pattern flags {flags}"));
     }
     let body = if flags & LITERAL != 0 {
