@@ -1,8 +1,9 @@
 //! Expressions: typing, conversion and the operators.
 
 use super::literal::number;
-use super::ty::{boxed, is_numeric, promote, promote_one, widens, STRING};
+use super::ty::{boxed, is_numeric, is_primitive, promote, promote_one, unboxed, widens, STRING};
 use super::{compile_error, unsupported, Cx, Res};
+use crate::front::allowlist::Allowlist;
 use crate::front::ast::{self, AssignOp, BinOp, ExprKind, UnOp};
 use crate::ir::{self, Constant, Node};
 use crate::types::{words, DEF};
@@ -96,7 +97,7 @@ impl Cx<'_> {
             });
         }
         if from == DEF {
-            return if to_prim || to == STRING {
+            return if to_prim || to == STRING || Allowlist::get().class(to).is_some() {
                 Ok(cast(DEF, t.node, no_cast()))
             } else {
                 refuse()
@@ -157,6 +158,119 @@ impl Cx<'_> {
         }
         if from == "char" && to == STRING && explicit {
             return Ok(cast("char", t.node, no_cast()));
+        }
+        if from_prim
+            || to_prim
+            || (Allowlist::get().class(from).is_some() && Allowlist::get().class(to).is_some())
+        {
+            return self.coerce_class(pos, t, to, explicit);
+        }
+        refuse()
+    }
+
+    /// A conversion with a class on one side: boxing, unboxing, or the
+    /// class hierarchy. What Painless would do and this does not know is
+    /// refused as unsupported, never guessed.
+    fn coerce_class(&self, pos: u32, t: Typed, to: &str, explicit: bool) -> Res<Typed> {
+        let from = t.ty.clone();
+        let al = Allowlist::get();
+        let cast = |extra: ir::Cast, node: Node| {
+            typed(
+                Node::Cast {
+                    ty: to.into(),
+                    cast: Some(ir::Cast {
+                        from: from.clone(),
+                        to: to.into(),
+                        explicit,
+                        ..extra
+                    }),
+                    child: Box::new(node),
+                },
+                to,
+            )
+        };
+        let refuse = || {
+            compile_error(
+                pos,
+                format!(
+                    "cannot cast from [{}] to [{}]",
+                    crate::types::canonical(&from),
+                    crate::types::canonical(to)
+                ),
+            )
+        };
+        if (from == STRING && is_primitive(to)) || (is_primitive(&from) && to == STRING) {
+            return refuse();
+        }
+        if is_primitive(&from) {
+            if let Some(p) = unboxed(to) {
+                let ok = from == p
+                    || widens(&from, p)
+                    || (explicit && is_numeric(&from) && is_numeric(p));
+                return if ok {
+                    Ok(cast(
+                        ir::Cast {
+                            box_to: Some(p.into()),
+                            ..no_cast()
+                        },
+                        t.node,
+                    ))
+                } else {
+                    refuse()
+                };
+            }
+            if al.is_assignable(boxed(&from), to) {
+                return Ok(cast(
+                    ir::Cast {
+                        box_from: Some(from.clone()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ));
+            }
+            return if al.class(to).is_some() && !explicit {
+                refuse()
+            } else {
+                unsupported(format!("cast of [{from}] to [{to}]"))
+            };
+        }
+        if let (Some(p), true) = (unboxed(&from), is_primitive(to)) {
+            let ok = widens(p, to) || (explicit && is_numeric(p) && is_numeric(to));
+            return if ok {
+                Ok(cast(
+                    ir::Cast {
+                        unbox_from: Some(p.into()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ))
+            } else {
+                refuse()
+            };
+        }
+        if is_primitive(to) {
+            return unsupported(format!("cast of [{from}] to [{to}]"));
+        }
+        if let (Some(p), Some(q)) = (unboxed(&from), unboxed(to)) {
+            if is_numeric(p) && is_numeric(q) && p != q && (explicit || widens(p, q)) {
+                return Ok(cast(
+                    ir::Cast {
+                        unbox_from: Some(p.into()),
+                        box_to: Some(q.into()),
+                        ..no_cast()
+                    },
+                    t.node,
+                ));
+            }
+        }
+        if al.is_assignable(&from, to) {
+            return Ok(typed(t.node, to));
+        }
+        if explicit && al.is_assignable(to, &from) {
+            return Ok(cast(no_cast(), t.node));
+        }
+        if explicit {
+            return unsupported(format!("cast of [{from}] to [{to}]"));
         }
         refuse()
     }
@@ -241,6 +355,17 @@ impl Cx<'_> {
             } => self.incdec(e.pos, *inc, target, true)?,
             ExprKind::IncDec { .. } => return unsupported("postfix increment as a value"),
             ExprKind::CallLocal(name, args) => self.call_local(e.pos, name, args)?,
+            ExprKind::Call {
+                recv,
+                name,
+                args,
+                null_safe,
+            } => self.call(e.pos, recv, name, args, *null_safe)?,
+            ExprKind::Field {
+                recv,
+                name,
+                null_safe,
+            } => self.field(e.pos, recv, name, *null_safe)?,
             other => return unsupported(kind_name(other)),
         })
     }
@@ -256,7 +381,12 @@ impl Cx<'_> {
                 Ok(self.incdec(e.pos, *inc, target, false)?.node)
             }
             ExprKind::CallLocal(name, args) => Ok(self.call_local(e.pos, name, args)?.node),
-            ExprKind::Call { .. } => unsupported("method call"),
+            ExprKind::Call {
+                recv,
+                name,
+                args,
+                null_safe,
+            } => Ok(self.call(e.pos, recv, name, args, *null_safe)?.node),
             _ => compile_error(e.pos, "not a statement"),
         }
     }
@@ -304,6 +434,10 @@ impl Cx<'_> {
     fn conditional(&mut self, c: &ast::Expr, a: &ast::Expr, b: &ast::Expr) -> Res<Typed> {
         let cond = self.cond(c)?;
         let (l, r) = (self.expr(a)?, self.expr(b)?);
+        let plain = |t: &str| is_primitive(t) || matches!(t, DEF | STRING | "null");
+        if l.ty != r.ty && !(plain(&l.ty) && plain(&r.ty)) {
+            return unsupported("conditional of different classes");
+        }
         let ty = if l.ty == r.ty {
             l.ty.clone()
         } else if l.ty == DEF || r.ty == DEF {
@@ -486,6 +620,11 @@ impl Cx<'_> {
         }
         if l.ty == "boolean" && r.ty == "boolean" {
             return self.compare(pos, op, "boolean", l, r);
+        }
+        if !(is_numeric(&l.ty) && is_numeric(&r.ty))
+            && (!is_primitive(&l.ty) || !is_primitive(&r.ty))
+        {
+            return self.compare(pos, op, "java.lang.Object", l, r);
         }
         match promote(&l.ty, &r.ty) {
             Some(p) => self.compare(pos, op, &p, l, r),
