@@ -108,7 +108,10 @@ pub fn write_open_bundle<S: BlobStore>(
 
 /// The entries of a bundle's bytes, or `None` when they are not a whole,
 /// intact bundle.
-#[allow(clippy::arithmetic_side_effects)] // every offset is bounds-checked by `get`; the lengths come from the CRC-checked body
+// ARITH: `pos` only ever advances past a range `get` just returned, so it
+// never exceeds `body.len()`; the one length read from the file, `len`, is
+// added with `checked_add`. The other additions use small constants.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn parse_open_bundle(buf: &[u8]) -> Option<Vec<(String, &[u8])>> {
     if buf.len() < 16 || &buf[..8] != MAGIC {
         return None;
@@ -129,8 +132,9 @@ pub fn parse_open_bundle(buf: &[u8]) -> Option<Vec<(String, &[u8])>> {
         pos += nl;
         let len = u64::from_le_bytes(body.get(pos..pos + 8)?.try_into().ok()?) as usize;
         pos += 8;
-        let bytes = body.get(pos..pos + len)?;
-        pos += len;
+        let end = pos.checked_add(len)?;
+        let bytes = body.get(pos..end)?;
+        pos = end;
         out.push((name, bytes));
     }
     (pos == body.len()).then_some(out)
