@@ -1,0 +1,19 @@
+# lucene-sql
+
+[Index](../parity.md). Read-only SQL over an index: a router for four hot
+statement shapes and DataFusion (no default features) for everything else,
+over a table whose scans call the same native searches. There is no Lucene
+counterpart; the rows record what each file does.
+
+| Java | Rust | Status |
+|---|---|---|
+| (none: Rust-only) the table a statement queries: columns (key, long, keyword, text, vector) declared once, the Arrow schema with a virtual `_score`, and how `match_text` analyses its text | `lucene-sql/src/spec.rs::{TableSpec, Column, ColumnKind, Analyzer}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) an index at one commit with its table: per-segment field numbers, keyword terms read through `TermsDict::lookup_ord` (a masked field shows masked), whether every document has a keyword value, and the segments opened per search | `lucene-sql/src/snapshot.rs::{Snapshot, Searcher}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) reading columns into Arrow arrays, for matched documents or a window of a segment (deleted documents left out, absent values NULL) | `lucene-sql/src/columns.rs::Columns` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) the native searches a statement is answered with: a term lookup, a scored top-k, nearest neighbours with an optional pre-filter, a document read; the router and the table scan call the same functions | `lucene-sql/src/native.rs::{lookup_in, match_in, knn_in, KNN_CANDIDATES}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) `GROUP BY` a keyword on the aggregation kernels (a keyword `terms` with metric sub-aggregations); declines (`None`) when SQL would give a NULL group or the kernels' `f64` cannot hold a sum or extreme exactly | `lucene-sql/src/group.rs::{AggFn, Grouped}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) fast-path routing: four statement shapes recognised from the parse tree (never the text) and answered natively, a template cache keyed by the statement with its literals cut out | `lucene-sql/src/router.rs::{recognise, templatize, Router, Shape}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) predicates the scan absorbs exactly: term equality on key or keyword columns, `match_text`, `knn`; the two functions are never evaluated by DataFusion | `lucene-sql/src/pred.rs::{Pred, parse, match_text_udf, knn_udf}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) the DataFusion table: an unfiltered scan reads doc values one partition per group of segments; a scan with predicates runs one native search over the whole index in one partition, so its top-k and neighbours are the direct API's | `lucene-sql/src/provider.rs::{LuceneTable, SegScanExec}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) optimiser rule pushing `ORDER BY _score DESC LIMIT k` into the scan as its fetch; fires only for a sort on `_score DESC` alone | `lucene-sql/src/rule.rs::ScoreTopKRule` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |
+| (none: Rust-only) the engine: router first, DataFusion behind it with a memory limit, queries only (DDL, DML and session statements refused) | `lucene-sql/src/engine.rs::{SqlEngine, SqlConfig}` | **rust-only**. Tests: `lucene-sql/tests/paths.rs`, `lucene-sql/tests/exactness.rs`. |

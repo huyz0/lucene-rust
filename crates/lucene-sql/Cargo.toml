@@ -1,0 +1,24 @@
+[package]
+name = "lucene-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+lucene-aggs = { path = "../lucene-aggs" }
+# No default features: they pull Parquet, compression codecs and the other
+# table formats (a 122 MB binary against 8 MB), none of which a query over our
+# segments reads. `sql` is the parser and planner.
+datafusion = { version = "56", default-features = false, features = ["sql"] }
+thiserror.workspace = true
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"] }
+
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
