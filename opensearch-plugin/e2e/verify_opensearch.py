@@ -47,7 +47,7 @@ UNVERIFIABLE = []
 # Similarities the e2e index maps on `tuned.*`. OpenSearch 2.x has no `LegacyBM25` type, so
 # verify_upgrade.py, whose indices 2.x creates, drops it.
 SIMILARITIES = ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy")
-# Scripted similarities: native, weighted, throwing, and one the static check refuses.
+# Scripted similarities: native, weighted, throwing, and one that streams.
 SCRIPTED = ("scr", "scrw", "scrx", "scrs", "scrn")
 
 
@@ -288,8 +288,8 @@ def matrix():
         "minimum_should_match_script": {"source": "doc['qty'].size() == 0 ? 1 : Math.min(params.num_terms, doc['qty'].value % 3 + 1)"}}}}}, "native")
     add("terms_set script null minimum", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3"],
         "minimum_should_match_script": {"source": "def m = null; if (doc['qty'].size() > 0 && doc['qty'].value <= 20) { m = 1; } return m;"}}}}}, "native")
-    add("terms_set script refused", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
-        "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "covering_painless")
+    add("terms_set script stream", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "native")
     add("terms_set script options", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
         "minimum_should_match_script": {"source": "int s = 0; for (int i = 0; i < 3; i++) { s++; } return s - 2;", "options": {"max_loop_counter": "100"}}}}}}, "covering_options")
     # Two minimums over the same terms are two clauses: the rewrite keeps both.
@@ -350,7 +350,7 @@ def matrix():
     add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "native")
     add("similarity scripted weight", {"query": {"bool": {"should": [{"match": {"tuned.scrw": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity scripted phrase", {"query": {"match_phrase": {"tuned.scrw": "beta alpha"}}}, "native")
-    add("similarity scripted refused", {"query": {"match": {"tuned.scrs": "alpha"}}}, "field_similarity")
+    add("similarity scripted stream", {"query": {"match": {"tuned.scrs": "alpha"}}}, "native")
     # Sorted searches: numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.
     add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
