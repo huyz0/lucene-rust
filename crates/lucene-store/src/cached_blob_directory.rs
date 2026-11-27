@@ -134,6 +134,56 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         &self.cache
     }
 
+    /// Fills the cache from the store's open bundle
+    /// ([`crate::open_bundle`]): one request instead of the reads opening
+    /// each segment's small files would send. Entries the listing does not
+    /// confirm (same name and length) are skipped, and a missing or damaged
+    /// bundle leaves everything to the ordinary ranged reads.
+    pub fn prime_from_open_bundle(&self) -> Result<crate::open_bundle::BundlePrimed> {
+        use crate::open_bundle::{parse_open_bundle, BundlePrimed, OPEN_BUNDLE_NAME};
+        let mut stats = BundlePrimed::default();
+        if !self.cache.has_disk() {
+            return Ok(stats);
+        }
+        let listing = match self.store.list_with_sizes()? {
+            Some(l) => l,
+            None => return Ok(stats),
+        };
+        let bundle = match self.store.get(OPEN_BUNDLE_NAME) {
+            Ok(b) => b,
+            Err(e) if e.is_no_such_file() => return Ok(stats),
+            Err(e) => return Err(e),
+        };
+        let Some(entries) = parse_open_bundle(&bundle) else {
+            return Ok(stats);
+        };
+        stats.found = true;
+        let sizes: HashMap<&str, u64> = listing.iter().map(|(n, l)| (n.as_str(), *l)).collect();
+        let page_size = self.cache.config().page_size;
+        for (name, bytes) in entries {
+            if sizes.get(name.as_str()).copied() != Some(bytes.len() as u64) {
+                stats.stale += 1;
+                continue;
+            }
+            let version = self.current_version(&name)?;
+            let prefix = self.key_prefix(&name);
+            let key = match version.as_deref() {
+                None => format!("{prefix}{}\u{0}p", bytes.len()),
+                Some(v) => format!("{prefix}{}\u{0}p\u{0}v{}:{v}", bytes.len(), v.len()),
+            };
+            if self.cache.is_pinned_name(&name) {
+                self.cache.pin(&key);
+            }
+            for (i, page) in bytes.chunks(page_size).enumerate() {
+                self.cache.insert_page(&key, i as u64, page);
+            }
+            lock_ignoring_poison(&self.sizes).insert(name, bytes.len() as u64);
+            stats.primed += 1;
+            stats.bytes += bytes.len() as u64;
+        }
+        Ok(stats)
+    }
+
     fn key_prefix(&self, name: &str) -> String {
         format!("{}\u{0}{name}\u{0}", self.namespace)
     }
