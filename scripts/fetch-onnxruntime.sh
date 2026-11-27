@@ -16,12 +16,11 @@ case "$(uname -m)" in
     *) echo "fetch-onnxruntime: no ONNX Runtime build for $(uname -m)" >&2; exit 1 ;;
 esac
 if ! echo "$SHA256  $jar" | sha256sum -c --status 2>/dev/null; then
-    url="https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime/$VERSION/onnxruntime-$VERSION.jar"
-    for delay in 2 4 8 16 32 0; do
-        curl -sSfL -o "$jar.part" "$url" && break
-        [ "$delay" = 0 ] && { echo "fetch-onnxruntime: cannot download $url" >&2; exit 1; }
-        sleep "$delay"
-    done
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    fetched="$(mktemp -d)"
+    (cd "$root/deps" && ./gradlew -q fetch -Pgroups=onnxruntime "-PoutDir=$fetched" >&2)
+    mv "$fetched/onnxruntime-$VERSION.jar" "$jar.part"
+    rmdir "$fetched"
     echo "$SHA256  $jar.part" | sha256sum -c --status || { echo "fetch-onnxruntime: checksum mismatch" >&2; exit 1; }
     mv "$jar.part" "$jar"
 fi

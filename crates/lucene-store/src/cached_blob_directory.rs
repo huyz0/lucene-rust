@@ -134,6 +134,56 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         &self.cache
     }
 
+    /// Fills the cache from the store's open bundle
+    /// ([`crate::open_bundle`]): one request instead of the reads opening
+    /// each segment's small files would send. Entries the listing does not
+    /// confirm (same name and length) are skipped, and a missing or damaged
+    /// bundle leaves everything to the ordinary ranged reads.
+    pub fn prime_from_open_bundle(&self) -> Result<crate::open_bundle::BundlePrimed> {
+        use crate::open_bundle::{parse_open_bundle, BundlePrimed, OPEN_BUNDLE_NAME};
+        let mut stats = BundlePrimed::default();
+        if !self.cache.has_disk() {
+            return Ok(stats);
+        }
+        let listing = match self.store.list_with_sizes()? {
+            Some(l) => l,
+            None => return Ok(stats),
+        };
+        let bundle = match self.store.get(OPEN_BUNDLE_NAME) {
+            Ok(b) => b,
+            Err(e) if e.is_no_such_file() => return Ok(stats),
+            Err(e) => return Err(e),
+        };
+        let Some(entries) = parse_open_bundle(&bundle) else {
+            return Ok(stats);
+        };
+        stats.found = true;
+        let sizes: HashMap<&str, u64> = listing.iter().map(|(n, l)| (n.as_str(), *l)).collect();
+        let page_size = self.cache.config().page_size;
+        for (name, bytes) in entries {
+            if sizes.get(name.as_str()).copied() != Some(bytes.len() as u64) {
+                stats.stale = stats.stale.saturating_add(1);
+                continue;
+            }
+            let version = self.current_version(&name)?;
+            let prefix = self.key_prefix(&name);
+            let key = match version.as_deref() {
+                None => format!("{prefix}{}\u{0}p", bytes.len()),
+                Some(v) => format!("{prefix}{}\u{0}p\u{0}v{}:{v}", bytes.len(), v.len()),
+            };
+            if self.cache.is_pinned_name(&name) {
+                self.cache.pin(&key);
+            }
+            for (i, page) in bytes.chunks(page_size).enumerate() {
+                self.cache.insert_page(&key, i as u64, page);
+            }
+            lock_ignoring_poison(&self.sizes).insert(name, bytes.len() as u64);
+            stats.primed = stats.primed.saturating_add(1);
+            stats.bytes = stats.bytes.saturating_add(bytes.len() as u64);
+        }
+        Ok(stats)
+    }
+
     fn key_prefix(&self, name: &str) -> String {
         format!("{}\u{0}{name}\u{0}", self.namespace)
     }
@@ -382,7 +432,17 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         match pager {
             Some(pager) => {
                 let name = file.name.clone();
+                let file_pages = file.geom.pages;
+                let head_tail = Arc::clone(&file);
                 let filler: Arc<dyn PageFiller> = file;
+                // The header and footer pages first, without the window's
+                // read-ahead: the open checks only those bytes, and a window
+                // of megabytes around each, for every file of every segment,
+                // is what a cold open of a many-segment shard waits for.
+                // A failure is only a missed hint: the fault retries.
+                if file_pages > 2 && self.cache.has_disk() {
+                    let _ = head_tail.pages_with(&[0, file_pages.saturating_sub(1)], false);
+                }
                 let paged = pager.open(len, page, filler, &name)?;
                 self.cache.note_demand_paged_open();
                 // Lucene's readers check a file's header and footer as they
@@ -418,6 +478,11 @@ struct CachedFile<S: BlobStore + 'static> {
 impl<S: BlobStore + 'static> CachedFile<S> {
     /// The decoded bytes of `pages`.
     fn pages(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
+        self.pages_with(pages, true)
+    }
+
+    /// [`Self::pages`], with the read-ahead of the download window on or off.
+    fn pages_with(&self, pages: &[u64], read_ahead: bool) -> Result<Vec<Arc<[u8]>>> {
         // The buffer is allocated inside the request's in-flight permit
         // ([`PageCacheConfig::max_inflight_bytes`]) and the store reads
         // into it, so fetching holds no heap the bound does not count.
@@ -427,7 +492,9 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             buf.truncate(n);
             Ok(buf)
         };
-        let stored = self.cache.stored_pages(&self.geom, pages, &fetch)?;
+        let stored = self
+            .cache
+            .stored_pages_with(&self.geom, pages, &fetch, read_ahead)?;
         pages
             .iter()
             .zip(stored)

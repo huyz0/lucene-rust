@@ -1,0 +1,160 @@
+// The one place third-party jars are downloaded. Every consumer (the data
+// packs the Rust build needs, the fixture generators, the ML test libraries)
+// asks this project for a named group of jars and reads them from the
+// directory it fills, so a throttled or unreachable repository falls back to the
+// next one in one place, and every jar is checked against gradle/verification-metadata.xml.
+//
+//   ./gradlew -q fetch -Pgroups=data,icu -PoutDir=DIR
+//   ./gradlew -q fetch -Pcoordinates=group:artifact:version[,...] -PoutDir=DIR
+//
+// Coordinates outside the groups below have no entry in the verification file
+// and are refused.
+//
+// Gradle itself moves to the next repository only when one lacks a module (a
+// 404); a throttled download (HTTP 429) or an unreachable host fails the
+// build. So `resolveWith` below tries each repository on its own, in order, and
+// retries the whole resolution with the next one when one fails: the mirror
+// first (it does not throttle runner pools), then Central.
+
+def repositoryUrls = [
+    'https://maven-central.storage-download.googleapis.com/maven2',
+    'https://repo.maven.apache.org/maven2',
+]
+// -PrepositoryUrls=a,b replaces them (tests point it at a stand-in server).
+if (findProperty('repositoryUrls')) {
+    repositoryUrls = findProperty('repositoryUrls').split(',').collect { it.trim() }
+}
+
+// Resolves the coordinates (jar only, no transitive dependencies) against each
+// repository alone until one succeeds, and returns the files.
+def resolveWith = { List<String> coordinates ->
+    Exception last = null
+    for (url in repositoryUrls) {
+        repositories.clear()
+        repositories.maven {
+            it.url = uri(url)
+            it.allowInsecureProtocol = url.startsWith('http://')
+        }
+        try {
+            def cfg = configurations.detachedConfiguration(
+                    *coordinates.collect { dependencies.create(it + '@jar') })
+            cfg.transitive = false
+            return cfg.resolve()
+        } catch (Exception e) {
+            logger.warn("deps: ${url} failed (${e.cause?.message ?: e.message}); trying the next repository")
+            last = e
+        }
+    }
+    throw last
+}
+
+// Group name -> Maven coordinates. Versions are the pins the consumers named
+// before this project existed; each group is the set one consumer needs.
+def groups = [
+    // scripts/fetch-data.py: the dictionary and data packs.
+    data: [
+        'org.apache.lucene:lucene-analysis-kuromoji:10.5.0',
+        'org.apache.lucene:lucene-analysis-nori:10.5.0',
+        'org.apache.lucene:lucene-analysis-smartcn:10.5.0',
+        'org.apache.lucene:lucene-analysis-stempel:10.5.0',
+        'org.apache.lucene:lucene-analysis-icu:10.5.0',
+        'com.ibm.icu:icu4j:77.1',
+        'org.carrot2:morfologik-polish:2.1.9',
+        'ua.net.nlp:morfologik-ukrainian-search:4.9.1',
+    ],
+    // scripts/lib-lucene-jars.sh: what the fixture generators compile against.
+    lucene: [
+        'org.apache.lucene:lucene-analysis-common:10.6.0',
+        'org.apache.lucene:lucene-analysis-icu:10.6.0',
+        'org.apache.lucene:lucene-analysis-kuromoji:10.6.0',
+        'org.apache.lucene:lucene-analysis-morfologik:10.6.0',
+        'org.apache.lucene:lucene-analysis-nori:10.6.0',
+        'org.apache.lucene:lucene-analysis-opennlp:10.6.0',
+        'org.apache.lucene:lucene-analysis-phonetic:10.6.0',
+        'org.apache.lucene:lucene-analysis-smartcn:10.6.0',
+        'org.apache.lucene:lucene-analysis-stempel:10.6.0',
+        'org.apache.lucene:lucene-backward-codecs:10.6.0',
+        'org.apache.lucene:lucene-benchmark:10.6.0',
+        'org.apache.lucene:lucene-classification:10.6.0',
+        'org.apache.lucene:lucene-codecs:10.6.0',
+        'org.apache.lucene:lucene-core:10.6.0',
+        'org.apache.lucene:lucene-demo:10.6.0',
+        'org.apache.lucene:lucene-expressions:10.6.0',
+        'org.apache.lucene:lucene-facet:10.6.0',
+        'org.apache.lucene:lucene-grouping:10.6.0',
+        'org.apache.lucene:lucene-highlighter:10.6.0',
+        'org.apache.lucene:lucene-join:10.6.0',
+        'org.apache.lucene:lucene-luke:10.6.0',
+        'org.apache.lucene:lucene-memory:10.6.0',
+        'org.apache.lucene:lucene-misc:10.6.0',
+        'org.apache.lucene:lucene-monitor:10.6.0',
+        'org.apache.lucene:lucene-queries:10.6.0',
+        'org.apache.lucene:lucene-queryparser:10.6.0',
+        'org.apache.lucene:lucene-replicator:10.6.0',
+        'org.apache.lucene:lucene-sandbox:10.6.0',
+        'org.apache.lucene:lucene-spatial-extras:10.6.0',
+        'org.apache.lucene:lucene-spatial3d:10.6.0',
+        'org.apache.lucene:lucene-suggest:10.6.0',
+        'org.apache.lucene:lucene-test-framework:10.6.0',
+    ],
+    phonetic: ['commons-codec:commons-codec:1.17.2'],
+    morfologik: [
+        'org.carrot2:morfologik-fsa:2.1.9',
+        'org.carrot2:morfologik-stemming:2.1.9',
+        'org.carrot2:morfologik-polish:2.1.9',
+        'ua.net.nlp:morfologik-ukrainian-search:4.9.1',
+        'org.carrot2:morfologik-fsa-builders:2.1.9',
+        'com.carrotsearch:hppc:0.7.2',
+    ],
+    icu: ['com.ibm.icu:icu4j:77.1'],
+    opennlp: ['org.apache.opennlp:opennlp-tools:2.5.3', 'org.slf4j:slf4j-api:2.0.16'],
+    expressions: [
+        'org.antlr:antlr4-runtime:4.13.2',
+        'org.ow2.asm:asm:9.6',
+        'org.ow2.asm:asm-commons:9.6',
+    ],
+    testframework: [
+        'junit:junit:4.13.1',
+        'org.hamcrest:hamcrest:2.2',
+        'com.carrotsearch.randomizedtesting:randomizedtesting-runner:2.8.1',
+    ],
+    // scripts/fetch-onnxruntime.sh and scripts/fetch-libtorch.sh.
+    onnxruntime: ['com.microsoft.onnxruntime:onnxruntime:1.23.2'],
+    'libtorch-x86_64': ['ai.djl.pytorch:pytorch-native-cpu-precxx11:2.5.1:linux-x86_64'],
+    'libtorch-aarch64': ['ai.djl.pytorch:pytorch-native-cpu-precxx11:2.5.1:linux-aarch64'],
+]
+
+def wanted = (findProperty('groups') ?: '').split(',').collect { it.trim() }.findAll { it }
+def outDir = findProperty('outDir')
+def extra = (findProperty('coordinates') ?: '').split(',').collect { it.trim() }.findAll { it }
+
+tasks.register('fetch') {
+    doLast {
+        if ((wanted.isEmpty() && extra.isEmpty()) || outDir == null) {
+            throw new GradleException('usage: fetch -Pgroups=<name>[,<name>...] or -Pcoordinates=<g:a:v>[,...] -PoutDir=<dir>; groups: ' + groups.keySet().join(', '))
+        }
+        if (!extra.isEmpty()) {
+            copy {
+                from resolveWith(extra)
+                into outDir
+            }
+        }
+        wanted.each { name ->
+            def coordinates = groups[name]
+            if (coordinates == null) {
+                throw new GradleException("unknown group '${name}'; groups: " + groups.keySet().join(', '))
+            }
+            copy {
+                from resolveWith(coordinates)
+                into outDir
+            }
+        }
+    }
+}
+
+// Every group at once, for `--write-verification-metadata`.
+tasks.register('resolveAll') {
+    doLast {
+        groups.values().flatten().unique().each { coordinate -> resolveWith([coordinate]) }
+    }
+}
