@@ -13,12 +13,15 @@ pub mod dynamic;
 pub mod functional;
 pub mod iter;
 pub mod list;
+pub mod locale;
 pub mod map;
 pub mod math;
 pub mod number;
 pub mod objects;
+pub mod optional;
 pub mod regex;
 pub mod score;
+pub mod stream;
 pub mod string;
 pub mod time;
 
@@ -60,6 +63,8 @@ pub fn static_method(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         "java.lang.String" => string::static_lookup(name, arity),
         "java.lang.CharSequence" => string::static_lookup(name, arity),
         "java.util.Objects" => objects::objects_lookup(name, arity),
+        "java.util.stream.Collectors" => stream::static_lookup(class, name, arity),
+        "java.util.Optional" => optional::static_lookup(name, arity),
         "java.util.Arrays" => array::arrays_lookup(name, arity),
         "java.util.Collections" => collection::collections_lookup(name, arity),
         "java.util.List" => list::static_lookup(name, arity),
@@ -132,7 +137,7 @@ pub fn static_field(class: &str, name: &str) -> Option<Value> {
             crate::value::MapKind::Immutable,
             crate::jmap::JMap::new(crate::jmap::Order::Hash),
         ),
-        _ => return time::static_field(class, name),
+        _ => return locale::static_field(class, name).or_else(|| time::static_field(class, name)),
     })
 }
 

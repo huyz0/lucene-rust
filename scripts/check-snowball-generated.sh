@@ -13,14 +13,13 @@
 # file by file, .git excluded), and lucene-analysis-common 10.5.0's sources
 # jar from Maven Central (or the given file), with which gen_snowball.sh first
 # checks that the compiler's Java backend reproduces Lucene's stemmers.
-# Needs git (without a checkout), curl (without a jar), gcc, make, perl,
+# Needs git (without a checkout), a JDK for deps/gradlew (without a jar), gcc, make, perl,
 # python3 and unzip.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 SNOWBALL_COMMIT=34f3612e5e8c48975243bc2e87561abdac5aa9bb
 SNOWBALL_TREE_SHA256=30402baf3c9d496ceb7a0007ca80cc440f9ec992321de2d42705b0e58d42f527
-JAR_URL=https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-common/10.5.0/lucene-analysis-common-10.5.0-sources.jar
 JAR_SHA256=bf873863f14c621ae0a8b13d9530e269a778f7552c47c05a00b85ca18f248df7
 GENERATED=crates/lucene-analysis/src/snowball/algorithms
 
@@ -49,7 +48,10 @@ fi
 if [[ $# -ge 2 ]]; then
     cp "$2" "$work/sources.jar"
 else
-    curl -sSfL --retry 4 --retry-delay 2 -o "$work/sources.jar" "$JAR_URL"
+    # shellcheck source=scripts/lib-lucene-jars.sh
+    source scripts/lib-lucene-jars.sh
+    deps_fetch "org.apache.lucene:lucene-analysis-common:10.5.0:sources" "$work"
+    mv "$work/lucene-analysis-common-10.5.0-sources.jar" "$work/sources.jar"
 fi
 echo "$JAR_SHA256  $work/sources.jar" | sha256sum -c --quiet - || {
     echo "check-snowball-generated: the Lucene sources jar does not match its pinned SHA-256" >&2

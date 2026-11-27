@@ -262,10 +262,10 @@ const KNOWN_GAPS: &[&str] = &[
 ];
 
 /// Scripts that must match; raised as the runtime grows.
-const MIN_PASS: usize = 4897;
+const MIN_PASS: usize = 4949;
 
 /// Scripts the check must pass; raised as the runtime grows.
-const MIN_CHECKED: usize = 4894;
+const MIN_CHECKED: usize = 4934;
 
 #[test]
 fn corpus_matches_painless() {

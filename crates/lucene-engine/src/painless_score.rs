@@ -150,8 +150,14 @@ pub const JS_SCRIPT: u8 = 0x80;
 /// The context byte's flag for a Lucene expression (`lang: expression`).
 pub const EXPR_SCRIPT: u8 = 0x40;
 
+/// The context byte's flag for a script given as Painless source: the
+/// script's bytes are its source, which the engine compiles.
+pub const SOURCE_SCRIPT: u8 = 0x20;
+
 mod expr;
 pub use expr::{ExprBinding, ExprSource, Mode};
+mod source;
+pub use source::{fields_of, spec as source_spec, SourceError};
 
 /// A JavaScript script, as V8 runs it.
 #[derive(Debug)]
@@ -288,10 +294,14 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
     let context = c.u8()?;
     let is_js = context & JS_SCRIPT != 0;
     let is_expr = context & EXPR_SCRIPT != 0;
-    if is_js && is_expr {
-        return Err(invalid("query tree: a script is both js and an expression"));
+    let is_source = context & SOURCE_SCRIPT != 0;
+    if [is_js, is_expr, is_source].iter().filter(|b| **b).count() > 1 {
+        return Err(invalid(
+            "query tree: a script is more than one of js, an expression and source",
+        ));
     }
-    let (needs_score, filter) = match context & !(JS_SCRIPT | EXPR_SCRIPT) {
+    let kind = context & !(JS_SCRIPT | EXPR_SCRIPT | SOURCE_SCRIPT);
+    let (mut needs_score, filter) = match kind {
         0 => (false, false),
         1 => (true, false),
         2 => (false, true),
@@ -336,6 +346,11 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
             classes: ir::ClassTable::default(),
             sites: Vec::new(),
         }
+    } else if is_source {
+        // The source says whether it needs `_score`, not the caller.
+        let (script, reads_score) = source::decode(&ir_blob, kind)?;
+        needs_score = reads_score && matches!(kind, 0 | 1 | 3 | 4);
+        script
     } else {
         ir::decode(&ir_blob).map_err(|e| invalid(format!("query tree: painless script: {e}")))?
     };

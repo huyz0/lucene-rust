@@ -3,7 +3,7 @@
 //! as Painless resolves them), and against a class named in the script for
 //! its static members.
 
-use super::expr::Typed;
+use super::expr::{Typed, REGEX_LIMIT_FACTOR};
 use super::ty::{from_table, is_primitive, STRING};
 use super::{compile_error, unsupported, Cx, Res};
 use crate::front::allowlist::{Allowlist, MethodSig};
@@ -78,10 +78,10 @@ pub(super) fn find_method<'a>(
     arity: usize,
     is_static: bool,
 ) -> Option<&'a MethodSig> {
-    Allowlist::get()
-        .methods(class, name)
-        .into_iter()
-        .find(|m| m.params.len() == arity && (m.is_static == is_static || m.augment.is_some()))
+    Allowlist::get().methods(class, name).into_iter().find(|m| {
+        m.params.len() - m.inject.len() == arity
+            && (m.is_static == is_static || m.augment.is_some())
+    })
 }
 
 impl Cx<'_> {
@@ -138,8 +138,16 @@ impl Cx<'_> {
             return unknown(&class);
         };
         let mut lowered = Vec::new();
-        for (a, param) in args.iter().zip(&sig.params) {
-            lowered.push(self.arg(a, param)?);
+        let mut given = args.iter();
+        for (i, param) in sig.params.iter().enumerate() {
+            if sig.inject.contains(&i) {
+                lowered.push(Node::Constant {
+                    ty: "int".into(),
+                    value: ir::Constant::Int(REGEX_LIMIT_FACTOR),
+                });
+            } else if let Some(a) = given.next() {
+                lowered.push(self.arg(a, param)?);
+            }
         }
         let ret = from_table(&sig.ret);
         let method = ir::Method {

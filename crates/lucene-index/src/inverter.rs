@@ -692,8 +692,9 @@ fn invert_state(
 /// The only per-document state that depends on earlier runs is `DOCS`'
 /// "a term new to the segment" flag (its `maxTermFrequency`): it is set
 /// again here, on the first document of each term's first run.
-fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> InvertedField {
+fn merge_runs(index_options: IndexOptions, mut runs: Vec<FieldInverter>) -> InvertedField {
     use rayon::prelude::*;
+    use std::sync::Mutex;
     let with_positions = matches!(
         index_options,
         IndexOptions::DocsAndFreqsAndPositions | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
@@ -702,6 +703,18 @@ fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> Inverted
     let docs_only = index_options == IndexOptions::Docs;
 
     let sorted: Vec<Vec<u32>> = runs.par_iter().map(|run| run.terms.sorted_ids()).collect();
+    // Each term's buffer is taken by the one merge piece that owns the term
+    // and dropped once copied, so a run's postings are freed as the merged
+    // ones are built instead of all living until the merge ends.
+    let buffers: Vec<Vec<Mutex<TermPostingsBuf>>> = runs
+        .iter_mut()
+        .map(|run| {
+            std::mem::take(&mut run.postings)
+                .into_iter()
+                .map(Mutex::new)
+                .collect()
+        })
+        .collect();
     let mut starts = Vec::with_capacity(runs.len());
     let mut next = 0usize;
     for run in &runs {
@@ -761,6 +774,24 @@ fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> Inverted
                 term: term.to_vec(),
                 ..TermPostings::default()
             };
+            // The merged lists are sized once: growing them run by run
+            // would leave up to twice their bytes allocated.
+            let mut doc_total = 0usize;
+            for (r, &(at, end)) in cursors.iter().enumerate() {
+                if at < end && runs[r].terms.term(sorted[r][at]) == term {
+                    let buf = buffers[r][sorted[r][at] as usize]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    doc_total = doc_total.saturating_add(buf.docs.len());
+                }
+            }
+            merged.docs.reserve_exact(doc_total);
+            if with_positions {
+                merged.positions.reserve_exact(doc_total);
+                if with_offsets {
+                    merged.offsets.reserve_exact(doc_total);
+                }
+            }
             let mut first_run = true;
             for (r, cursor) in cursors.iter_mut().enumerate() {
                 let (at, end) = *cursor;
@@ -772,7 +803,11 @@ fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> Inverted
                     continue;
                 }
                 *cursor = (at.saturating_add(1), end);
-                let buf = &runs[r].postings[id as usize];
+                let buf = std::mem::take(
+                    &mut *buffers[r][id as usize]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
                 let base = starts[r];
                 if first_run && docs_only {
                     if let Some(&(doc, _)) = buf.docs.first() {
@@ -818,6 +853,7 @@ fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> Inverted
         ends.extend_from_slice(&run.ends);
     }
     drop(sorted);
+    drop(buffers);
     drop(runs);
     if docs_only {
         for end in &mut ends {

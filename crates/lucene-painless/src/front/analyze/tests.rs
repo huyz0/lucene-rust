@@ -182,10 +182,7 @@ fn a_wrapper_compares_as_an_object_and_widens_as_an_argument() {
         eval("Long b = Long.valueOf(1L); byte u = 1; b.compareTo(u)"),
         Value::Int(0)
     ));
-    assert!(matches!(
-        refusal("Integer a = 5; true ? a : 6"),
-        Refusal::Unsupported(w) if w.contains("conditional")
-    ));
+    assert!(matches!(eval("Integer a = 5; true ? a : 6"), Value::Int(5)));
 }
 
 #[test]
@@ -459,4 +456,199 @@ fn lambdas_and_method_references_implement_the_parameter_interface() {
         message("int k = 1; List l = new ArrayList(); l.removeIf(k -> true)")
             .contains("already defined")
     );
+}
+
+#[test]
+fn regex_literals_and_operators_follow_painless() {
+    assert!(matches!(eval("'foo' ==~ /fo+/"), Value::Bool(true)));
+    assert!(matches!(eval("'a foo b' ==~ /foo/"), Value::Bool(false)));
+    assert!(matches!(eval("'a foo b' =~ /foo/"), Value::Bool(true)));
+    assert!(matches!(eval("'FOO' ==~ /foo/i"), Value::Bool(true)));
+    assert!(matches!(
+        eval("Matcher m = /(f)(o)o/.matcher('foo'); m.find(); m.group(2)"),
+        Value::Str(s) if &*s == "o"
+    ));
+    assert!(matches!(eval("/,/.split('a,b').length"), Value::Int(2)));
+    assert!(message("'a' ==~ 1").contains("cannot cast"));
+}
+
+#[test]
+fn a_conditional_or_elvis_of_two_classes_is_an_object() {
+    assert!(matches!(
+        eval(
+            "boolean b = false; Object o = b ? new HashMap() : new ArrayList(); o instanceof List"
+        ),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("String s = null; Object o = s ?: 5; o"),
+        Value::Int(5)
+    ));
+}
+
+#[test]
+fn locale_constants_name_their_language_and_country() {
+    assert!(matches!(
+        eval("'abc'.toUpperCase(Locale.ROOT)"),
+        Value::Str(s) if &*s == "ABC"
+    ));
+    assert!(matches!(
+        eval("Locale.UK.toLanguageTag()"),
+        Value::Str(s) if &*s == "en-GB"
+    ));
+    assert!(matches!(
+        eval("Locale.GERMANY.toString()"),
+        Value::Str(s) if &*s == "de_DE"
+    ));
+    assert!(matches!(
+        eval("Locale.ROOT.toLanguageTag()"),
+        Value::Str(s) if &*s == "und"
+    ));
+    assert!(matches!(
+        eval("Locale.FRENCH.getLanguage() + Locale.FRANCE.getCountry()"),
+        Value::Str(s) if &*s == "frFR"
+    ));
+    assert!(matches!(eval("Locale.US == Locale.US"), Value::Bool(true)));
+    assert!(matches!(
+        eval("Locale.US.equals(Locale.UK)"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Locale.US.hashCode() == Locale.US.hashCode()"),
+        Value::Bool(true)
+    ));
+}
+
+#[test]
+fn an_optional_holds_a_value_or_none() {
+    assert!(matches!(
+        eval("Optional.empty().isPresent()"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(eval("Optional.of(3).get()"), Value::Int(3)));
+    assert!(matches!(eval("Optional.empty().orElse(4)"), Value::Int(4)));
+    assert!(matches!(
+        eval("Optional.empty().orElseGet(() -> 5)"),
+        Value::Int(5)
+    ));
+    assert!(matches!(
+        eval("int k = 6; Optional.empty().orElseGet(() -> k)"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("!Optional.ofNullable(null).isPresent()"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).map(x -> x + 1).get()"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).filter(x -> x > 5).isPresent()"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).flatMap(x -> Optional.of(x * 2)).get()"),
+        Value::Int(4)
+    ));
+    assert!(matches!(eval("Optional.of(2).toString()"), Value::Str(s) if &*s == "Optional[2]"));
+    assert!(
+        matches!(eval("Optional.empty().toString()"), Value::Str(s) if &*s == "Optional.empty")
+    );
+    assert!(matches!(
+        eval("Optional.of(2).equals(Optional.of(2))"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).equals(Optional.empty())"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).hashCode() == Optional.of(2).hashCode()"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("List l = new ArrayList(); Optional.of(2).ifPresent(x -> l.add(x)); l.size()"),
+        Value::Int(1)
+    ));
+    assert!(matches!(
+        eval("def o = Optional.empty(); try { o.get() } catch (NoSuchElementException e) { return 1 } 0"),
+        Value::Int(1)
+    ));
+    assert!(matches!(
+        eval("try { Optional.of(null) } catch (NullPointerException e) { return 2 } 0"),
+        Value::Int(2)
+    ));
+}
+
+#[test]
+fn a_stream_pipeline_runs_lazily_once() {
+    let int = |src: &str, want: i32| match eval(src) {
+        Value::Int(n) => assert_eq!(n, want, "{src}"),
+        other => panic!("{src}: {other:?}"),
+    };
+    int("[1, 2, 3].stream().mapToInt(x -> x * 2).sum()", 12);
+    int(
+        "[1, 2, 3, 4].stream().filter(x -> x % 2 == 0).collect(Collectors.toList()).size()",
+        2,
+    );
+    int(
+        "[1, 1, 2].stream().distinct().collect(Collectors.toList()).size()",
+        2,
+    );
+    int(
+        "[1, 2, 3, 4].stream().skip(1).limit(2).collect(Collectors.toList()).get(0)",
+        2,
+    );
+    int("[1, 2, 3].stream().toArray().length", 3);
+    int("'abc'.chars().sum()", 294);
+    // `limit` stops the source: the mapper runs only for taken elements.
+    int(
+        "int[] n = new int[1]; [1, 2, 3].stream().peek(x -> n[0]++).limit(2).count(); n[0]",
+        2,
+    );
+    assert!(matches!(
+        eval("[1, 2].stream().anyMatch(x -> x == 2)"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("[1, 2].stream().allMatch(x -> x == 2)"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("[1, 2].stream().noneMatch(x -> x == 3)"),
+        Value::Bool(true)
+    ));
+    assert_eq!(
+        eval("['a', 'b'].stream().collect(Collectors.joining(',', '[', ']'))").java_to_string(),
+        "[a,b]"
+    );
+    assert!(matches!(
+        eval("[7, 8].stream().findFirst().get()"),
+        Value::Int(7)
+    ));
+    // A stream is used once.
+    assert_eq!(
+        eval("def s = [1].stream(); s.count(); try { s.count(); return 'no'; } catch (IllegalStateException e) { return 'used'; }")
+            .java_to_string(),
+        "used"
+    );
+}
+
+#[test]
+fn a_context_supplies_its_variables_as_the_script_classs_getters() {
+    use super::{analyze_in, SCORE};
+    let ast = parse("_score + doc['f'].value + params.x", &Limits::default()).expect("parses");
+    // Without the score context, none of them exists.
+    assert!(matches!(analyze(&ast), Err(Refusal::Unsupported(_))));
+    let script = analyze_in(&ast, SCORE).expect("lowers in the score context");
+    let body = format!("{:?}", script.functions[0].body);
+    for getter in ["get_score", "getDoc", "getParams"] {
+        assert!(body.contains(getter), "{getter} is called");
+    }
+    // `doc['f'].value` reads a member by name, and so is a site.
+    assert!(script
+        .sites
+        .iter()
+        .any(|s| s.name == "value" && s.kind == crate::ir::SiteKind::Getter));
 }

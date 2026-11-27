@@ -2,7 +2,7 @@
   "_comment": "What the plugin's forked and derived code tracks. `scripts/upstream-diff.py` reads this; update it with every OpenSearch bump.",
   "opensearch": {
     "version": "3.9.0",
-    "sources_jar": "https://repo1.maven.org/maven2/org/opensearch/opensearch/3.9.0/opensearch-3.9.0-sources.jar",
+    "sources_jar": "org.opensearch:opensearch:3.9.0:sources",
     "sources_jar_sha256": "eb77911b062935c41513e29b6fb3c9da1aeceab7b33cefc85db864f0a8c42abf",
     "lucene": "10.5.1",
     "derived_by": "opensearch-plugin/tools/derive_engine.py (checked by scripts/check-derived-engine.sh)"

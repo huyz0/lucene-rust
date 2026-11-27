@@ -289,7 +289,7 @@ impl IvfGroupWriter {
         self.writer.stream_vectors_to(out);
     }
 
-    /// [`IvfGroupWriter::finish`] for a writer given
+    /// `finish` for a writer given
     /// [`IvfGroupWriter::stream_vectors_to`]: all three files, the `.ivv` empty when its output is
     /// returned: that output, to close, holds the file.
     pub(crate) fn finish_streamed(self) -> Option<(Files, Option<lucene_store::FsIndexOutput>)> {

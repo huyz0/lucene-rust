@@ -10,13 +10,13 @@
 # SOURCES_DIR, when given, holds the five inputs already (offline); otherwise
 # they are downloaded. Each is checked against its pinned SHA-256 either way:
 # a moved tag or a republished jar is a failure, not a new baseline.
-# Needs python3, unzip, and (without SOURCES_DIR) curl.
+# Needs python3, unzip, and (without SOURCES_DIR) curl and a JDK for deps/gradlew.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION=3.9.0
 SERVER="https://raw.githubusercontent.com/opensearch-project/OpenSearch/${VERSION}/server/src/test/java/org/opensearch/index"
-FRAMEWORK="https://repo1.maven.org/maven2/org/opensearch/test/framework/${VERSION}/framework-${VERSION}-sources.jar"
+FRAMEWORK="deps:org.opensearch.test:framework:${VERSION}:sources"
 # name  sha256  url
 INPUTS=(
     "InternalEngineTests.java 44b0081c2ea7f5c35ad0f97e3ba59032cff5897f4898be1b12b7319417c5197e $SERVER/engine/InternalEngineTests.java"
@@ -45,7 +45,13 @@ for entry in "${INPUTS[@]}"; do
     if [[ $# -ge 1 ]]; then
         cp "$1/$name" "$src/$name"
     else
-        curl -sSfL --retry 4 --retry-delay 2 -o "$src/$name" "$url"
+        if [[ $url == deps:* ]]; then
+            # shellcheck source=scripts/lib-lucene-jars.sh
+            source scripts/lib-lucene-jars.sh
+            deps_fetch "${url#deps:}" "$src"
+        else
+            curl -sSfL --retry 4 --retry-delay 2 -o "$src/$name" "$url"
+        fi
     fi
     echo "$sum  $src/$name" | sha256sum -c --quiet - || {
         echo "check-derived-engine-tests: $name does not match its pinned SHA-256" >&2

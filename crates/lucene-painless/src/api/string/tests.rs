@@ -126,7 +126,7 @@ fn region_matching() {
 
 #[test]
 fn unsupported_and_unknown_methods() {
-    assert!(t(&s("a"), "chars", &[]).contains("chars"));
+    assert!(t(&s("a"), "chars", &[]).contains("IntStream"));
     assert!(t(&s("a"), "matches", &[s("a")]).contains("matches"));
     assert!(t(&s("a"), "nope", &[]).contains("not found"));
     assert!(
