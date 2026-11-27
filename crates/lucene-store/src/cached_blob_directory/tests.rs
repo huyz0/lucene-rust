@@ -700,3 +700,139 @@ fn an_unbounded_heap_budget_reads_whole_files_uncounted_as_before() {
     let stats = d.cache().stats();
     assert_eq!((stats.heap_opens, stats.heap_open_bytes), (0, 0));
 }
+
+fn bundled(n: &str) -> bool {
+    let ext = n.rsplit_once('.').map_or("", |(_, e)| e);
+    crate::page_cache::DEFAULT_PINNED_EXTENSIONS.contains(&ext)
+}
+
+/// A second directory over `store` with an empty cache, as a node that has
+/// just started.
+fn fresh(
+    store: &Counting,
+    tmp: &lucene_util::test_support::TempDir,
+) -> CachedBlobDirectory<Counting> {
+    let cache = Arc::new(
+        PageCache::new(PageCacheConfig {
+            page_size: 64 * 1024,
+            disk_dir: Some(tmp.path().join("cache2")),
+            ..PageCacheConfig::default()
+        })
+        .unwrap(),
+    );
+    CachedBlobDirectory::new(store.clone(), cache, "idx")
+}
+
+fn read_all(d: &CachedBlobDirectory<Counting>, names: &[&str]) {
+    for n in names {
+        let input = d.open(n).unwrap();
+        assert_eq!(input.len() as u64, d.file_length(n).unwrap());
+    }
+}
+
+#[test]
+fn an_open_bundle_serves_the_small_files_without_ranged_reads() {
+    let (writer, store, tmp) = dir("bundle-prime", 64 * 1024);
+    put(&writer, "segments_1", &data(300, 1));
+    put(&writer, "_0.si", &data(200, 2));
+    put(&writer, "_0.fnm", &data(150, 3));
+    put(&writer, "_0.doc", &data(400_000, 4));
+    let written = crate::open_bundle::write_open_bundle(&store, &bundled, 1 << 20).unwrap();
+    assert_eq!(
+        written.files, 3,
+        "segments_N and the pinned small files only"
+    );
+
+    let plain = fresh(&store, &tmp);
+    let before = store.ranges.load(Ordering::Relaxed);
+    read_all(&plain, &["segments_1", "_0.si", "_0.fnm"]);
+    let unprimed = store.ranges.load(Ordering::Relaxed) - before;
+    assert!(unprimed >= 3, "{unprimed}");
+
+    let tmp2 = lucene_util::test_support::TempDir::new("bundle-prime-2");
+    let primed = fresh(&store, &tmp2);
+    let stats = primed.prime_from_open_bundle().unwrap();
+    assert!(stats.found);
+    assert_eq!((stats.primed, stats.stale), (3, 0));
+    let before = store.ranges.load(Ordering::Relaxed);
+    read_all(&primed, &["segments_1", "_0.si", "_0.fnm"]);
+    assert_eq!(
+        store.ranges.load(Ordering::Relaxed),
+        before,
+        "served from the bundle"
+    );
+    let si = primed.open("_0.si").unwrap();
+    assert_eq!(&si[..], &data(200, 2)[..]);
+}
+
+#[test]
+fn a_bundle_entry_whose_file_changed_is_not_used() {
+    let (writer, store, tmp) = dir("bundle-stale", 64 * 1024);
+    put(&writer, "segments_1", &data(300, 1));
+    put(&writer, "_0.si", &data(200, 2));
+    crate::open_bundle::write_open_bundle(&store, &bundled, 1 << 20).unwrap();
+    // The file is replaced by one of another length after the bundle.
+    store.delete("_0.si").unwrap();
+    store.put("_0.si", data(250, 9)).unwrap();
+    let d = fresh(&store, &tmp);
+    let stats = d.prime_from_open_bundle().unwrap();
+    assert_eq!((stats.primed, stats.stale), (1, 1));
+    let si = d.open("_0.si").unwrap();
+    assert_eq!(&si[..], &data(250, 9)[..]);
+}
+
+#[test]
+fn a_missing_or_damaged_bundle_leaves_everything_to_ranged_reads() {
+    let (writer, store, tmp) = dir("bundle-damaged", 64 * 1024);
+    put(&writer, "segments_1", &data(300, 1));
+    let d = fresh(&store, &tmp);
+    let stats = d.prime_from_open_bundle().unwrap();
+    assert!(!stats.found);
+    crate::open_bundle::write_open_bundle(&store, &bundled, 1 << 20).unwrap();
+    let mut bytes = store.get(crate::open_bundle::OPEN_BUNDLE_NAME).unwrap()[..].to_vec();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    store
+        .put(crate::open_bundle::OPEN_BUNDLE_NAME, bytes)
+        .unwrap();
+    let stats = d.prime_from_open_bundle().unwrap();
+    assert!(!stats.found && stats.primed == 0);
+    assert_eq!(&d.open("segments_1").unwrap()[..], &data(300, 1)[..]);
+}
+
+#[test]
+fn opening_a_large_file_fetches_its_header_and_footer_pages_without_the_window() {
+    if !crate::page_cache::demand_paging_available() {
+        return;
+    }
+    let tmp = lucene_util::test_support::TempDir::new("bundle-headfoot");
+    let cache = Arc::new(
+        PageCache::new(PageCacheConfig {
+            page_size: 64 * 1024,
+            download_window: Some(1 << 20),
+            disk_dir: Some(tmp.path().join("cache")),
+            ..PageCacheConfig::default()
+        })
+        .unwrap(),
+    );
+    let store = Counting::default();
+    let d = CachedBlobDirectory::new(store.clone(), Arc::clone(&cache), "idx");
+    put(&d, "_0.fdt", &data(4_000_000, 7));
+    let fresh_cache = Arc::new(
+        PageCache::new(PageCacheConfig {
+            page_size: 64 * 1024,
+            download_window: Some(1 << 20),
+            disk_dir: Some(tmp.path().join("cache2")),
+            ..PageCacheConfig::default()
+        })
+        .unwrap(),
+    );
+    let d = CachedBlobDirectory::new(store.clone(), Arc::clone(&fresh_cache), "idx");
+    let input = d.open("_0.fdt").unwrap();
+    assert_eq!(input.len(), 4_000_000);
+    let held = fresh_cache.disk_bytes();
+    assert!(
+        held <= 2 * 64 * 1024,
+        "only the two end pages, not a window: {held}"
+    );
+}

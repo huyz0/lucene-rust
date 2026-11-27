@@ -16,7 +16,7 @@
 //! before it ends the object.
 
 use crate::blob_directory::BlobStore;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// The sidecar's object name.
 pub const OPEN_BUNDLE_NAME: &str = "accel-open-bundle.bin";
@@ -96,7 +96,7 @@ pub fn write_open_bundle<S: BlobStore>(
         out.extend_from_slice(name_bytes);
         out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         out.extend_from_slice(&bytes);
-        files += 1;
+        files = files.saturating_add(1);
     }
     out[8..12].copy_from_slice(&(files as u32).to_le_bytes());
     let crc = crc32fast::hash(&out);
@@ -108,6 +108,7 @@ pub fn write_open_bundle<S: BlobStore>(
 
 /// The entries of a bundle's bytes, or `None` when they are not a whole,
 /// intact bundle.
+#[allow(clippy::arithmetic_side_effects)] // every offset is bounds-checked by `get`; the lengths come from the CRC-checked body
 pub fn parse_open_bundle(buf: &[u8]) -> Option<Vec<(String, &[u8])>> {
     if buf.len() < 16 || &buf[..8] != MAGIC {
         return None;
@@ -122,7 +123,9 @@ pub fn parse_open_bundle(buf: &[u8]) -> Option<Vec<(String, &[u8])>> {
     for _ in 0..count {
         let nl = u16::from_le_bytes(body.get(pos..pos + 2)?.try_into().ok()?) as usize;
         pos += 2;
-        let name = std::str::from_utf8(body.get(pos..pos + nl)?).ok()?.to_string();
+        let name = std::str::from_utf8(body.get(pos..pos + nl)?)
+            .ok()?
+            .to_string();
         pos += nl;
         let len = u64::from_le_bytes(body.get(pos..pos + 8)?.try_into().ok()?) as usize;
         pos += 8;
@@ -133,5 +136,54 @@ pub fn parse_open_bundle(buf: &[u8]) -> Option<Vec<(String, &[u8])>> {
     (pos == body.len()).then_some(out)
 }
 
-#[allow(dead_code)]
-fn _unused(_: Error) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_directory::InMemoryBlobStore;
+
+    #[test]
+    fn a_bundle_round_trips_and_ignores_the_bundle_itself_and_old_commits() {
+        let store = InMemoryBlobStore::new();
+        store.put("segments_1", vec![1; 10]).unwrap();
+        store.put("segments_2", vec![2; 20]).unwrap();
+        store.put("_0.si", vec![3; 30]).unwrap();
+        store.put("_0.doc", vec![4; 40]).unwrap();
+        let w = write_open_bundle(&store, &|n: &str| n.ends_with(".si"), 1 << 20).unwrap();
+        assert_eq!(w.files, 2);
+        // Writing again, with the bundle now in the listing, adds nothing.
+        let again = write_open_bundle(&store, &|n: &str| n.ends_with(".si"), 1 << 20).unwrap();
+        assert_eq!(again, w);
+        let bytes = store.get(OPEN_BUNDLE_NAME).unwrap();
+        let entries = parse_open_bundle(&bytes).unwrap();
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"segments_2") && names.contains(&"_0.si"));
+        assert!(!names.contains(&"segments_1"));
+    }
+
+    #[test]
+    fn damaged_bundles_are_refused() {
+        let store = InMemoryBlobStore::new();
+        store.put("segments_1", vec![1; 64]).unwrap();
+        write_open_bundle(&store, &|_: &str| false, 1 << 20).unwrap();
+        let good = store.get(OPEN_BUNDLE_NAME).unwrap()[..].to_vec();
+        assert!(parse_open_bundle(&good).is_some());
+        for cut in [0, 5, good.len() - 1] {
+            assert!(parse_open_bundle(&good[..cut]).is_none());
+        }
+        let mut flipped = good.clone();
+        flipped[20] ^= 1;
+        assert!(parse_open_bundle(&flipped).is_none());
+        let mut magic = good;
+        magic[0] = b'X';
+        assert!(parse_open_bundle(&magic).is_none());
+    }
+
+    #[test]
+    fn files_over_the_cap_stay_out() {
+        let store = InMemoryBlobStore::new();
+        store.put("segments_1", vec![1; 10]).unwrap();
+        store.put("_0.si", vec![3; 5000]).unwrap();
+        let w = write_open_bundle(&store, &|_: &str| true, 1000).unwrap();
+        assert_eq!(w.files, 1);
+    }
+}

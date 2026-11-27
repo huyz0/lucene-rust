@@ -689,11 +689,25 @@ impl PageCache {
     /// parallel requests. With a disk tier, a miss also fetches the other
     /// missing pages of its aligned download window, which are cached but
     /// not returned (read-ahead).
+    #[cfg(test)]
     pub(crate) fn stored_pages(
         &self,
         geom: &Geometry,
         pages: &[u64],
         fetch: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync),
+    ) -> Result<Vec<Arc<[u8]>>> {
+        self.stored_pages_with(geom, pages, fetch, true)
+    }
+
+    /// [`Self::stored_pages`] with the read-ahead optional: with it off only
+    /// the asked pages are fetched, for reads whose neighbours nobody wants,
+    /// such as the header and footer pages a file's open checks.
+    pub(crate) fn stored_pages_with(
+        &self,
+        geom: &Geometry,
+        pages: &[u64],
+        fetch: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync),
+        read_ahead: bool,
     ) -> Result<Vec<Arc<[u8]>>> {
         let mut out: Vec<Option<Arc<[u8]>>> = vec![None; pages.len()];
         // Pages this call fetches: (page, where it goes in `out`, slot).
@@ -715,7 +729,9 @@ impl PageCache {
                 mine.push((page, Some(i), slot));
             }
         }
-        self.claim_read_ahead(geom, pages, &mut mine);
+        if read_ahead {
+            self.claim_read_ahead(geom, pages, &mut mine);
+        }
         // A panicking fetch must still release the pages it claimed, or
         // every later reader of them would wait forever.
         let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

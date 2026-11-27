@@ -162,7 +162,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         let page_size = self.cache.config().page_size;
         for (name, bytes) in entries {
             if sizes.get(name.as_str()).copied() != Some(bytes.len() as u64) {
-                stats.stale += 1;
+                stats.stale = stats.stale.saturating_add(1);
                 continue;
             }
             let version = self.current_version(&name)?;
@@ -178,8 +178,8 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
                 self.cache.insert_page(&key, i as u64, page);
             }
             lock_ignoring_poison(&self.sizes).insert(name, bytes.len() as u64);
-            stats.primed += 1;
-            stats.bytes += bytes.len() as u64;
+            stats.primed = stats.primed.saturating_add(1);
+            stats.bytes = stats.bytes.saturating_add(bytes.len() as u64);
         }
         Ok(stats)
     }
@@ -432,7 +432,17 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         match pager {
             Some(pager) => {
                 let name = file.name.clone();
+                let file_pages = file.geom.pages;
+                let head_tail = Arc::clone(&file);
                 let filler: Arc<dyn PageFiller> = file;
+                // The header and footer pages first, without the window's
+                // read-ahead: the open checks only those bytes, and a window
+                // of megabytes around each, for every file of every segment,
+                // is what a cold open of a many-segment shard waits for.
+                // A failure is only a missed hint: the fault retries.
+                if file_pages > 2 && self.cache.has_disk() {
+                    let _ = head_tail.pages_with(&[0, file_pages.saturating_sub(1)], false);
+                }
                 let paged = pager.open(len, page, filler, &name)?;
                 self.cache.note_demand_paged_open();
                 // Lucene's readers check a file's header and footer as they
@@ -468,6 +478,11 @@ struct CachedFile<S: BlobStore + 'static> {
 impl<S: BlobStore + 'static> CachedFile<S> {
     /// The decoded bytes of `pages`.
     fn pages(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
+        self.pages_with(pages, true)
+    }
+
+    /// [`Self::pages`], with the read-ahead of the download window on or off.
+    fn pages_with(&self, pages: &[u64], read_ahead: bool) -> Result<Vec<Arc<[u8]>>> {
         // The buffer is allocated inside the request's in-flight permit
         // ([`PageCacheConfig::max_inflight_bytes`]) and the store reads
         // into it, so fetching holds no heap the bound does not count.
@@ -477,7 +492,9 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             buf.truncate(n);
             Ok(buf)
         };
-        let stored = self.cache.stored_pages(&self.geom, pages, &fetch)?;
+        let stored = self
+            .cache
+            .stored_pages_with(&self.geom, pages, &fetch, read_ahead)?;
         pages
             .iter()
             .zip(stored)
