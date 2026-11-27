@@ -70,6 +70,11 @@ pub struct CachedBlobDirectory<S: BlobStore + 'static> {
     /// Bumped by every [`Self::forget`]: a listing that started before one
     /// does not put back the lengths it read.
     forgets: AtomicU64,
+    /// Whether a listing that shows a commit not yet seen primes the cache from
+    /// the open bundle ([`crate::open_bundle`]).
+    open_bundle: bool,
+    /// The commit generation the cache was last primed for.
+    primed_generation: Mutex<Option<u64>>,
 }
 
 /// A codec and the stored length it was built for.
@@ -121,7 +126,20 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             versions: Mutex::new(HashMap::new()),
             codecs: Mutex::new(HashMap::new()),
             forgets: AtomicU64::new(0),
+            open_bundle: true,
+            primed_generation: Mutex::new(None),
         }
+    }
+
+    /// Switches the open bundle on or off (on by default). On, the directory
+    /// writes it with every published commit and merge, and fills the cache
+    /// from it the first time a listing shows a commit, so a shard opens with
+    /// one request for its small files instead of several per segment. A
+    /// missing, stale or damaged bundle only means the ordinary ranged reads.
+    pub fn with_open_bundle(mut self, enabled: bool) -> Self {
+        self.open_bundle = enabled;
+        self.blob.set_open_bundle(enabled);
+        self
     }
 
     /// The store underneath.
@@ -140,15 +158,24 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
     /// confirm (same name and length) are skipped, and a missing or damaged
     /// bundle leaves everything to the ordinary ranged reads.
     pub fn prime_from_open_bundle(&self) -> Result<crate::open_bundle::BundlePrimed> {
+        if !self.cache.has_disk() {
+            return Ok(Default::default());
+        }
+        match self.store.list_with_sizes()? {
+            Some(listing) => self.prime_with_listing(&listing),
+            None => Ok(Default::default()),
+        }
+    }
+
+    fn prime_with_listing(
+        &self,
+        listing: &[(String, u64)],
+    ) -> Result<crate::open_bundle::BundlePrimed> {
         use crate::open_bundle::{parse_open_bundle, BundlePrimed, OPEN_BUNDLE_NAME};
         let mut stats = BundlePrimed::default();
         if !self.cache.has_disk() {
             return Ok(stats);
         }
-        let listing = match self.store.list_with_sizes()? {
-            Some(l) => l,
-            None => return Ok(stats),
-        };
         let bundle = match self.store.get(OPEN_BUNDLE_NAME) {
             Ok(b) => b,
             Err(e) if e.is_no_such_file() => return Ok(stats),
@@ -182,6 +209,28 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             stats.bytes = stats.bytes.saturating_add(bytes.len() as u64);
         }
         Ok(stats)
+    }
+
+    /// Primes the cache from the open bundle when `listed` shows a commit the
+    /// cache was not primed for: the first listing of a shard, and each commit
+    /// a reopen sees. Best-effort: any failure leaves the ranged reads.
+    fn prime_for_new_commit(&self, listed: &[(String, u64)]) {
+        if !self.open_bundle {
+            return;
+        }
+        let newest = listed
+            .iter()
+            .filter_map(|(n, _)| u64::from_str_radix(n.strip_prefix("segments_")?, 36).ok())
+            .max();
+        let Some(newest) = newest else { return };
+        {
+            let mut primed = lock_ignoring_poison(&self.primed_generation);
+            if *primed == Some(newest) {
+                return;
+            }
+            *primed = Some(newest);
+        }
+        let _ = self.prime_with_listing(listed);
     }
 
     fn key_prefix(&self, name: &str) -> String {
@@ -678,6 +727,7 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
         let forgets = self.forgets.load(Ordering::Acquire);
         let mut names = match self.store.list_with_sizes()? {
             Some(listed) => {
+                self.prime_for_new_commit(&listed);
                 let mut sizes = lock_ignoring_poison(&self.sizes);
                 let current = self.forgets.load(Ordering::Acquire) == forgets;
                 let mut names = Vec::with_capacity(listed.len());
@@ -757,7 +807,10 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
         self.delete_pending()?;
         self.forget(dest);
         self.blob.store().copy(source, dest)?;
-        self.delete_file(source)
+        self.blob.bundle_move(source, dest);
+        self.delete_file(source)?;
+        self.blob.bundle_publish(dest);
+        Ok(())
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {

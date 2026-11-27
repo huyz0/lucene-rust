@@ -15,13 +15,35 @@
 //! UTF-8), the stored length (u64) and the bytes; a CRC-32 of everything
 //! before it ends the object.
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use crate::blob_directory::BlobStore;
 use crate::error::Result;
+use crate::index_output::OutputSink;
+use crate::lock::lock_ignoring_poison;
 
 /// The sidecar's object name.
 pub const OPEN_BUNDLE_NAME: &str = "accel-open-bundle.bin";
 
 const MAGIC: &[u8; 8] = b"ACCLOPN1";
+
+/// The largest file a bundle holds: bigger ones are read by range, as the
+/// bundle's saving is in the many small files.
+pub const MAX_BUNDLED_FILE: u64 = 1 << 20;
+
+/// The most bytes a bundle holds in all.
+pub const MAX_BUNDLE_BYTES: u64 = 8 << 20;
+
+/// Whether `name` is a file a reader opens whole or nearly so: the commit
+/// point and the segment files the page cache pins.
+pub fn is_bundled_name(name: &str) -> bool {
+    if name.starts_with("segments_") {
+        return true;
+    }
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
+    crate::page_cache::DEFAULT_PINNED_EXTENSIONS.contains(&ext)
+}
 
 /// What [`write_open_bundle`] stored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,34 +72,51 @@ fn generation(name: &str) -> Option<u64> {
     u64::from_str_radix(name.strip_prefix("segments_")?, 36).ok()
 }
 
-/// Writes the bundle for the store's current newest commit: its
-/// `segments_N` and every file `is_bundled` accepts (of at most `max_file`
-/// bytes) that the listing shows.
-pub fn write_open_bundle<S: BlobStore>(
-    store: &S,
-    is_bundled: &dyn Fn(&str) -> bool,
-    max_file: u64,
-) -> Result<BundleWritten> {
-    let listing: Vec<(String, u64)> = match store.list_with_sizes()? {
-        Some(l) => l,
+fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (name, bytes) in entries {
+        let name_bytes = name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        out.extend_from_slice(bytes);
+    }
+    let crc = crc32fast::hash(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out
+}
+
+fn listing<S: BlobStore>(store: &S) -> Result<Vec<(String, u64)>> {
+    match store.list_with_sizes()? {
+        Some(l) => Ok(l),
         None => {
             let mut v = Vec::new();
             for n in store.list()? {
                 let len = store.size(&n)?;
                 v.push((n, len));
             }
-            v
+            Ok(v)
         }
-    };
+    }
+}
+
+/// The files a bundle for the store's current newest commit holds, read
+/// from the store: its `segments_N` and every file `is_bundled` accepts (of
+/// at most `max_file` bytes) that the listing shows.
+fn collect<S: BlobStore>(
+    store: &S,
+    is_bundled: &dyn Fn(&str) -> bool,
+    max_file: u64,
+) -> Result<BTreeMap<String, Arc<[u8]>>> {
+    let listing = listing(store)?;
     let newest = listing
         .iter()
         .filter_map(|(n, _)| generation(n).map(|g| (g, n.clone())))
         .max()
         .map(|(_, n)| n);
-    let mut out = Vec::new();
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&0u32.to_le_bytes());
-    let mut files = 0usize;
+    let mut out = BTreeMap::new();
     for (name, len) in &listing {
         if name == OPEN_BUNDLE_NAME || *len > max_file {
             continue;
@@ -87,23 +126,166 @@ pub fn write_open_bundle<S: BlobStore>(
         } else {
             is_bundled(name)
         };
-        if !take {
-            continue;
+        if take {
+            out.insert(name.clone(), Arc::from(&store.get(name)?[..]));
         }
-        let bytes = store.get(name)?;
-        let name_bytes = name.as_bytes();
-        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        out.extend_from_slice(name_bytes);
-        out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-        out.extend_from_slice(&bytes);
-        files = files.saturating_add(1);
     }
-    out[8..12].copy_from_slice(&(files as u32).to_le_bytes());
-    let crc = crc32fast::hash(&out);
-    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(out)
+}
+
+/// Writes the bundle for the store's current newest commit: its
+/// `segments_N` and every file `is_bundled` accepts (of at most `max_file`
+/// bytes) that the listing shows.
+pub fn write_open_bundle<S: BlobStore>(
+    store: &S,
+    is_bundled: &dyn Fn(&str) -> bool,
+    max_file: u64,
+) -> Result<BundleWritten> {
+    let files = collect(store, is_bundled, max_file)?;
+    let entries: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), &b[..])).collect();
+    let out = encode(&entries);
     let bytes = out.len() as u64;
     store.put(OPEN_BUNDLE_NAME, out)?;
-    Ok(BundleWritten { files, bytes })
+    Ok(BundleWritten {
+        files: entries.len(),
+        bytes,
+    })
+}
+
+/// What a directory that writes an index keeps to publish the bundle after
+/// each commit without reading anything back: the bytes of the small files
+/// it wrote, kept as they are written, and dropped as they are deleted.
+pub(crate) struct BundleWriter {
+    files: Mutex<BTreeMap<String, Arc<[u8]>>>,
+    seeded: Mutex<bool>,
+}
+
+impl BundleWriter {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            files: Mutex::new(BTreeMap::new()),
+            seeded: Mutex::new(false),
+        })
+    }
+
+    /// Whether the bytes of the output `name` are worth keeping: it is a
+    /// bundled name, or the commit point while it is still pending.
+    pub(crate) fn wants(name: &str) -> bool {
+        is_bundled_name(name) || name.starts_with("pending_segments_")
+    }
+
+    /// Wraps an output so its bytes are kept (up to [`MAX_BUNDLED_FILE`]) once
+    /// it closes.
+    pub(crate) fn tee(
+        self: &Arc<Self>,
+        name: &str,
+        inner: Box<dyn OutputSink>,
+    ) -> Box<dyn OutputSink> {
+        Box::new(Tee {
+            inner,
+            writer: Arc::clone(self),
+            name: name.to_string(),
+            buf: Some(Vec::new()),
+        })
+    }
+
+    pub(crate) fn forget(&self, name: &str) {
+        lock_ignoring_poison(&self.files).remove(name);
+    }
+
+    pub(crate) fn rename(&self, source: &str, dest: &str) {
+        let mut files = lock_ignoring_poison(&self.files);
+        if let Some(bytes) = files.remove(source) {
+            files.insert(dest.to_string(), bytes);
+        }
+    }
+
+    /// Writes the bundle for the commit just published as `segments_N`. The
+    /// first time, the files the directory did not write itself (an index
+    /// that existed before it) come from the bundle already in the store, or
+    /// from the files themselves. It is best-effort: the sidecar is optional,
+    /// so a failure never fails the commit.
+    pub(crate) fn publish<S: BlobStore>(&self, store: &S, commit: &str) {
+        let _ = self.try_publish(store, commit);
+    }
+
+    fn try_publish<S: BlobStore>(&self, store: &S, commit: &str) -> Result<()> {
+        {
+            let mut seeded = lock_ignoring_poison(&self.seeded);
+            if !*seeded {
+                let listed = listing(store)?;
+                let live: std::collections::HashSet<&str> =
+                    listed.iter().map(|(n, _)| n.as_str()).collect();
+                let mut seed = match store.get(OPEN_BUNDLE_NAME) {
+                    Ok(b) => parse_open_bundle(&b).map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|(n, bytes)| (n, Arc::<[u8]>::from(bytes)))
+                            .collect::<BTreeMap<_, _>>()
+                    }),
+                    Err(_) => None,
+                };
+                if seed.is_none() {
+                    seed = Some(collect(store, &is_bundled_name, MAX_BUNDLED_FILE)?);
+                }
+                let mut files = lock_ignoring_poison(&self.files);
+                for (name, bytes) in seed.unwrap_or_default() {
+                    if live.contains(name.as_str()) {
+                        files.entry(name).or_insert(bytes);
+                    }
+                }
+                *seeded = true;
+            }
+        }
+        let mut files = lock_ignoring_poison(&self.files);
+        let newest = generation(commit);
+        files.retain(|n, _| !n.starts_with("segments_") || generation(n) == newest);
+        let mut entries: Vec<(&str, &[u8])> = Vec::new();
+        let mut total = 0u64;
+        for (name, bytes) in files.iter() {
+            total = total.saturating_add(bytes.len() as u64);
+            if total > MAX_BUNDLE_BYTES {
+                break;
+            }
+            entries.push((name.as_str(), &bytes[..]));
+        }
+        store.put(OPEN_BUNDLE_NAME, encode(&entries))
+    }
+}
+
+/// An output that keeps what it writes while it is small enough to bundle.
+struct Tee {
+    inner: Box<dyn OutputSink>,
+    writer: Arc<BundleWriter>,
+    name: String,
+    buf: Option<Vec<u8>>,
+}
+
+impl OutputSink for Tee {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(buf) = self.buf.as_mut() {
+            if (buf.len() as u64).saturating_add(bytes.len() as u64) > MAX_BUNDLED_FILE {
+                self.buf = None;
+            } else {
+                buf.extend_from_slice(bytes);
+            }
+        }
+        self.inner.write_all(bytes)
+    }
+
+    fn finish(self: Box<Self>) -> std::io::Result<()> {
+        let Tee {
+            inner,
+            writer,
+            name,
+            buf,
+        } = *self;
+        inner.finish()?;
+        if let Some(buf) = buf {
+            lock_ignoring_poison(&writer.files).insert(name, Arc::from(buf));
+        }
+        Ok(())
+    }
 }
 
 /// The entries of a bundle's bytes, or `None` when they are not a whole,
