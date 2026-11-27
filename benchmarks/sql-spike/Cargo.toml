@@ -1,0 +1,28 @@
+[package]
+name = "sql-spike"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+lucene-store = { path = "../../crates/lucene-store" }
+lucene-search = { path = "../../crates/lucene-search" }
+lucene-codecs = { path = "../../crates/lucene-codecs" }
+lucene-index = { path = "../../crates/lucene-index" }
+lucene-util = { path = "../../crates/lucene-util" }
+lucene-aggs = { path = "../../crates/lucene-aggs" }
+mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
+# See benchmarks/rust-runner: zstd-safe 7.4 needs zstd-sys 2.1.
+zstd-sys = "=2.1.3"
+datafusion = "56.0.0"
+futures = "0.3"
+async-trait = "0.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+
+[workspace]
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4

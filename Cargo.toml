@@ -4,7 +4,7 @@ resolver = "2"
 # it would drag the workspace coverage gate down for a measurement tool.
 # lucene-script-js is out so `--workspace` builds never build V8 (whose build
 # script downloads its library); lucene-ffi's `js` feature builds it.
-exclude = ["benchmarks/rust-runner", "crates/lucene-ffi/fuzz", "crates/lucene-script-js"]
+exclude = ["benchmarks/rust-runner", "benchmarks/sql-spike", "crates/lucene-ffi/fuzz", "crates/lucene-script-js"]
 members = [
     "crates/lucene-util",
     "crates/lucene-painless",
