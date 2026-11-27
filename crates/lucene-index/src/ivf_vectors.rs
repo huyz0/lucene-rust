@@ -159,6 +159,38 @@ impl IvfGroupWriter {
     /// when every value fits them, so a field with larger values keeps
     /// exact ones rather than failing.
     pub(crate) fn add(&mut self, field: &IvfField<'_>, sources: &[IvfSource<'_>]) -> Result<()> {
+        let fit = self.fits_half(field.vectors);
+        self.add_vectors(field, sources, false, fit)
+    }
+
+    /// [`IvfGroupWriter::add`] for `field.vectors` the caller has already
+    /// normalized for a cosine field (`lucene_ivf::prepare_vectors`), so the
+    /// writer reads them as they are instead of normalizing a copy.
+    /// `fits_half` is [`IvfGroupWriter::fits_half`] of the vectors as they
+    /// were before that. The files are those `add` writes for them.
+    pub(crate) fn add_prepared(
+        &mut self,
+        field: &IvfField<'_>,
+        sources: &[IvfSource<'_>],
+        fits_half: bool,
+    ) -> Result<()> {
+        self.add_vectors(field, sources, true, fits_half)
+    }
+
+    /// Whether every value fits a half float, which is when a field asking
+    /// for half-float rerank vectors can have them.
+    pub(crate) fn fits_half(&self, vectors: &[f32]) -> bool {
+        self.params.rerank_encoding != VectorEncoding::F16
+            || vectors.iter().all(|v| v.abs() <= 65_504.0)
+    }
+
+    fn add_vectors(
+        &mut self,
+        field: &IvfField<'_>,
+        sources: &[IvfSource<'_>],
+        prepared: bool,
+        fits_half: bool,
+    ) -> Result<()> {
         // A merge decodes the vectors once and its writer holds a second
         // copy besides its codes: about 2.5 times the vectors.
         let _admitted = (!sources.is_empty()).then(|| {
@@ -167,10 +199,7 @@ impl IvfGroupWriter {
                 lucene_util::memory::ADMIT_WAIT,
             )
         });
-        let fits = |v: &f32| v.abs() <= 65_504.0;
-        let params = if self.params.rerank_encoding == VectorEncoding::F16
-            && !field.vectors.iter().all(fits)
-        {
+        let params = if self.params.rerank_encoding == VectorEncoding::F16 && !fits_half {
             IvfParams {
                 rerank_encoding: VectorEncoding::F32,
                 ..self.params
@@ -209,14 +238,33 @@ impl IvfGroupWriter {
         // Partitions are clustered afresh: a source's clusters mix the
         // partitions a merge brings together.
         match field.partitions {
-            Some(partitions) => self.writer.add_partitioned_field(
-                &vectors,
-                partitions.starts,
-                self.factory.as_ref(),
-                &IvfParams {
+            Some(partitions) => {
+                let params = IvfParams {
                     partition_min_vectors: partitions.min_vectors,
                     ..params
-                },
+                };
+                if prepared {
+                    self.writer.add_partitioned_prepared_field(
+                        &vectors,
+                        partitions.starts,
+                        self.factory.as_ref(),
+                        &params,
+                    )?;
+                } else {
+                    self.writer.add_partitioned_field(
+                        &vectors,
+                        partitions.starts,
+                        self.factory.as_ref(),
+                        &params,
+                    )?;
+                }
+            }
+            None if prepared => lucene_ivf::merge_field_with_prepared_vectors(
+                &mut self.writer,
+                &vectors,
+                &merge_sources,
+                self.factory.as_ref(),
+                &params,
             )?,
             None => lucene_ivf::merge_field_with_vectors(
                 &mut self.writer,
@@ -235,7 +283,31 @@ impl IvfGroupWriter {
         self.writer.clusters()
     }
 
+    /// Writes the `.ivv` file to `out` as it is built:
+    /// [`IvfGroupWriter::finish_streamed`] hands it back.
+    pub(crate) fn stream_vectors_to(&mut self, out: lucene_store::FsIndexOutput) {
+        self.writer.stream_vectors_to(out);
+    }
+
+    /// `finish` for a writer given
+    /// [`IvfGroupWriter::stream_vectors_to`]: all three files, the `.ivv` empty when its output is
+    /// returned: that output, to close, holds the file.
+    pub(crate) fn finish_streamed(self) -> Option<(Files, Option<lucene_store::FsIndexOutput>)> {
+        self.any.then(|| {
+            let (files, out) = self.writer.finish_streamed();
+            // A streamed `.ivv` keeps its place with no bytes: the output
+            // holds them.
+            let written = vec![
+                (EXTENSIONS[0], files.meta),
+                (EXTENSIONS[1], files.postings),
+                (EXTENSIONS[2], files.vectors),
+            ];
+            (written, out)
+        })
+    }
+
     /// The three files, `None` when no float field was written.
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Option<Files> {
         self.any.then(|| {
             let files = self.writer.finish();
@@ -400,7 +472,9 @@ pub fn open(
 mod tests {
     use lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS;
 
-    use super::quantizer_factory;
+    use super::{quantizer_factory, IvfField, IvfGroupWriter};
+    use lucene_codecs::field_infos::VectorSimilarityFunction;
+    use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
 
     #[test]
     fn every_ivf_quantizer_number_has_its_factory() {
@@ -418,5 +492,62 @@ mod tests {
             assert_eq!(factory.name(), want, "{name}");
         }
         assert!(quantizer_factory(IVF_QUANTIZERS.len() as u8).is_none());
+    }
+
+    #[test]
+    fn a_prepared_field_writes_the_files_add_writes() {
+        let n = 700usize;
+        let dim = 16usize;
+        let docs: Vec<i32> = (0..n as i32).collect();
+        let mut state = 0x2545_f491_u32;
+        let vectors: Vec<f32> = (0..n * dim)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                ((state >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 90_000.0
+            })
+            .collect();
+        // Values beyond a half float, so the rerank encoding falls back
+        // to exact ones from the unnormalized values.
+        for format in [
+            KnnVectorsFormat::ivf_quantized(64, 0, 0).unwrap(),
+            KnnVectorsFormat::ivf_quantized(64, 1, 0).unwrap(),
+        ] {
+            let id = [3u8; 16];
+            let mut by_copy = IvfGroupWriter::new(format, &id, "").unwrap().unwrap();
+            by_copy
+                .add(
+                    &IvfField {
+                        number: 0,
+                        similarity: VectorSimilarityFunction::Cosine,
+                        dimension: dim,
+                        docs: &docs,
+                        vectors: &vectors,
+                        partitions: None,
+                    },
+                    &[],
+                )
+                .unwrap();
+            let mut in_place = IvfGroupWriter::new(format, &id, "").unwrap().unwrap();
+            let fit = in_place.fits_half(&vectors);
+            let mut owned = vectors.clone();
+            lucene_ivf::prepare_vectors(lucene_ivf::Similarity::Cosine, dim, &mut owned);
+            in_place
+                .add_prepared(
+                    &IvfField {
+                        number: 0,
+                        similarity: VectorSimilarityFunction::Cosine,
+                        dimension: dim,
+                        docs: &docs,
+                        vectors: &owned,
+                        partitions: None,
+                    },
+                    &[],
+                    fit,
+                )
+                .unwrap();
+            assert_eq!(by_copy.finish(), in_place.finish());
+        }
     }
 }

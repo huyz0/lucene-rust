@@ -9,7 +9,16 @@
 # `lucene_classpath <module>...` to get a ready `:`-joined classpath.
 
 LUCENE_VERSION="${LUCENE_VERSION:-10.6.0}"
-MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
+
+# deps_fetch <group:artifact:version> <dir>: the `deps` Gradle project downloads
+# the jar (Maven Central mirror, then Central) and checks it against its
+# verification file.
+deps_fetch() {
+  local deps
+  deps="$(cd "$(dirname "${BASH_SOURCE[0]}")/../deps" && pwd)"
+  echo "lucene-jars: fetching $1 with deps/gradlew" >&2
+  (cd "$deps" && ./gradlew -q fetch "-Pcoordinates=$1" "-PoutDir=$2" >&2)
+}
 
 # JVM flags every fixture-writing `java` passes. Lucene's scalar float kernels
 # (DefaultVectorUtilSupport: dotProduct, squareDistance, cosine) fuse
@@ -31,8 +40,7 @@ lucene_resolve_jar() {
   found=$(find "$HOME/.gradle/caches" -name "$jar" ! -name '*sources*' ! -name '*javadoc*' 2>/dev/null | head -1 || true)
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
-  echo "lucene-jars: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" "$MAVEN_BASE/$module/$LUCENE_VERSION/$jar"
+  deps_fetch "org.apache.lucene:$module:$LUCENE_VERSION" "$JARS"
   echo "$JARS/$jar"
 }
 
@@ -90,9 +98,7 @@ thirdparty_resolve_jar() {
   found=$(find "$HOME/.gradle/caches" -name "$jar" 2>/dev/null | head -1 || true)
   if [ -n "$found" ]; then echo "$found"; return; fi
   mkdir -p "$JARS"
-  echo "lucene-jars: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" \
-    "https://repo1.maven.org/maven2/${group//.//}/$artifact/$version/$jar"
+  deps_fetch "$coord" "$JARS"
   echo "$JARS/$jar"
 }
 
@@ -100,4 +106,15 @@ thirdparty_classpath() {
   local cp="" c
   for c in "$@"; do cp="$cp${cp:+:}$(thirdparty_resolve_jar "$c")"; done
   echo "$cp"
+}
+
+# bwc_jar <module> <version> <dest>: an older Lucene release's jar (the versions
+# pinned in deps/ as `bwc-<version>` and `bwc-completion-<version>`), checked
+# against deps/gradle/verification-metadata.xml.
+bwc_jar() {
+  local dir
+  dir="$(dirname "$3")"
+  mkdir -p "$dir"
+  [ -s "$dir/$1-$2.jar" ] || deps_fetch "org.apache.lucene:$1:$2" "$dir"
+  [ "$dir/$1-$2.jar" = "$3" ] || cp "$dir/$1-$2.jar" "$3"
 }

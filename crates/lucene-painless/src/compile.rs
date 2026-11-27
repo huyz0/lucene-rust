@@ -22,7 +22,7 @@ use crate::{Error, Result};
 
 /// The class Painless compiles a script into: a reference whose delegate
 /// is this class names one of the script's functions.
-const SCRIPT_CLASS: &str = "org.opensearch.painless.PainlessScript$Script";
+pub(crate) const SCRIPT_CLASS: &str = "org.opensearch.painless.PainlessScript$Script";
 
 fn unsupported(what: impl Into<String>) -> Error {
     Error::Unsupported(what.into())
@@ -1138,6 +1138,19 @@ impl Fx<'_> {
                 if boxed.as_deref().is_some_and(|b| prim(b).is_some()) {
                     if let Some(e) = self.stack.last_mut() {
                         e.words = 1;
+                    }
+                }
+                if m.is_static && m.target == "java.time.ZoneId" && m.name == "of" {
+                    // A region id needs the tz database, which the runtime
+                    // lacks: refuse it where it is known, at compile time.
+                    if let [Node::Constant {
+                        value: Constant::Str(id),
+                        ..
+                    }] = args.as_slice()
+                    {
+                        if !api::time::is_fixed_offset_id(id) {
+                            return Err(unsupported(format!("ZoneId.of({id})")));
+                        }
                     }
                 }
                 let mut a = self.exprs(args)?;

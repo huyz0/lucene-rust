@@ -42,6 +42,7 @@ use crate::directory::{temp_file_name, BaseDirectory, Directory, Input};
 use crate::error::{Error, Result};
 use crate::index_output::{FsIndexOutput, OutputSink};
 use crate::lock::{lock_ignoring_poison, Lock, LockFactory, SingleInstanceLockFactory};
+use crate::open_bundle::BundleWriter;
 
 /// The operations [`BlobDirectory`] needs from an object store. Names are
 /// Lucene file names (`_0.cfs`, `segments_3`); mapping them under a bucket
@@ -201,6 +202,10 @@ pub struct BlobDirectory<S: BlobStore + 'static> {
     store: Arc<S>,
     base: BaseDirectory,
     temp_counter: AtomicU64,
+    /// Keeps the small files this directory writes so each commit can publish
+    /// the open bundle ([`crate::open_bundle`]) without reading them back:
+    /// one extra small object per commit. `None` when switched off.
+    bundle: Option<Arc<BundleWriter>>,
 }
 
 impl<S: BlobStore + 'static> std::fmt::Debug for BlobDirectory<S> {
@@ -225,7 +230,17 @@ impl<S: BlobStore + 'static> BlobDirectory<S> {
             store: Arc::new(store),
             base: BaseDirectory::new(lock_factory),
             temp_counter: AtomicU64::new(0),
+            bundle: Some(BundleWriter::new()),
         }
+    }
+
+    /// Switches the open bundle on or off (on by default): with it on, every
+    /// published commit, a merge's included, also writes the one extra
+    /// `accel-open-bundle.bin` object that lets a reader open the index with
+    /// a single request for its small files. No Lucene file changes either way.
+    pub fn with_open_bundle(mut self, enabled: bool) -> Self {
+        self.bundle = enabled.then(BundleWriter::new);
+        self
     }
 
     /// A directory over a store already shared with another owner
@@ -235,7 +250,30 @@ impl<S: BlobStore + 'static> BlobDirectory<S> {
             store,
             base: BaseDirectory::new(lock_factory),
             temp_counter: AtomicU64::new(0),
+            bundle: Some(BundleWriter::new()),
         }
+    }
+
+    /// Moves what the open bundle kept of `source` to `dest`, before the
+    /// rename deletes `source`.
+    pub(crate) fn bundle_move(&self, source: &str, dest: &str) {
+        if let Some(b) = &self.bundle {
+            b.rename(source, dest);
+        }
+    }
+
+    /// Publishes the open bundle for the commit just published as `dest`, when
+    /// that is a `segments_N`.
+    pub(crate) fn bundle_publish(&self, dest: &str) {
+        if let (Some(b), true) = (&self.bundle, dest.starts_with("segments_")) {
+            b.publish(&*self.store, dest);
+        }
+    }
+
+    /// Switches the open bundle off in a directory built by
+    /// [`crate::CachedBlobDirectory`].
+    pub(crate) fn set_open_bundle(&mut self, enabled: bool) {
+        self.bundle = enabled.then(BundleWriter::new);
     }
 
     /// The store underneath.
@@ -270,7 +308,10 @@ impl<S: BlobStore + 'static> Directory for BlobDirectory<S> {
                 "File already exists: {name}"
             )));
         }
-        let sink = Arc::clone(&self.store).writer(name)?;
+        let mut sink = Arc::clone(&self.store).writer(name)?;
+        if let (Some(b), true) = (&self.bundle, BundleWriter::wants(name)) {
+            sink = b.tee(name, sink);
+        }
         Ok(FsIndexOutput::from_sink(name, sink))
     }
 
@@ -291,10 +332,16 @@ impl<S: BlobStore + 'static> Directory for BlobDirectory<S> {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.store.copy(source, dest)?;
-        self.store.delete(source)
+        self.bundle_move(source, dest);
+        self.store.delete(source)?;
+        self.bundle_publish(dest);
+        Ok(())
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
+        if let Some(b) = &self.bundle {
+            b.forget(name);
+        }
         self.store.delete(name)
     }
 
@@ -431,7 +478,7 @@ mod tests {
 
     #[test]
     fn rename_copies_then_deletes_and_missing_files_are_not_found() {
-        let dir = BlobDirectory::new(InMemoryBlobStore::new());
+        let dir = BlobDirectory::new(InMemoryBlobStore::new()).with_open_bundle(false);
         let mut out = dir.create_output("pending_segments_1").unwrap();
         out.write_bytes(b"commit");
         out.close().unwrap();

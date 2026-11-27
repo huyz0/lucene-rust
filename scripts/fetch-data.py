@@ -38,43 +38,18 @@ import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CACHE = pathlib.Path(os.environ.get("LUCENE_RUST_DATA_CACHE", ROOT / "fixtures/.jars"))
-MAVEN = "https://repo1.maven.org/maven2"
 ML_COMMONS = "https://raw.githubusercontent.com/opensearch-project/ml-commons/3.9/ml-algorithms/src/main/resources/analysis"
 
 # name -> (url, sha256)
 JARS = {
-    "lucene-analysis-kuromoji-10.5.0.jar": (
-        f"{MAVEN}/org/apache/lucene/lucene-analysis-kuromoji/10.5.0/lucene-analysis-kuromoji-10.5.0.jar",
-        "1a6f68328268df5d6854921121327edad2227a6b6b78fc40abe54c29c3a5b28c",
-    ),
-    "lucene-analysis-nori-10.5.0.jar": (
-        f"{MAVEN}/org/apache/lucene/lucene-analysis-nori/10.5.0/lucene-analysis-nori-10.5.0.jar",
-        "01c3052bd62f7bfaece34aef36af527951fa30e3010c79fd6f61a813ed0277b9",
-    ),
-    "lucene-analysis-smartcn-10.5.0.jar": (
-        f"{MAVEN}/org/apache/lucene/lucene-analysis-smartcn/10.5.0/lucene-analysis-smartcn-10.5.0.jar",
-        "0660dfaf2d8e9966116ab0fc805c409a78cc67ac5515676b8bd1887a2dfbbcc1",
-    ),
-    "lucene-analysis-stempel-10.5.0.jar": (
-        f"{MAVEN}/org/apache/lucene/lucene-analysis-stempel/10.5.0/lucene-analysis-stempel-10.5.0.jar",
-        "f46699a4457e1cec1035737c37be1f061eaf32d96b6679968bbda19d1b12ed2b",
-    ),
-    "lucene-analysis-icu-10.5.0.jar": (
-        f"{MAVEN}/org/apache/lucene/lucene-analysis-icu/10.5.0/lucene-analysis-icu-10.5.0.jar",
-        "53d7f2e28016022a9bffe6435c716471b902e972551067ca2d761c587892608e",
-    ),
-    "icu4j-77.1.jar": (
-        f"{MAVEN}/com/ibm/icu/icu4j/77.1/icu4j-77.1.jar",
-        "b3640b9f416a4411fd33c59abbeea8fd57d024c23e1819bf9673220a97499fe3",
-    ),
-    "morfologik-polish-2.1.9.jar": (
-        f"{MAVEN}/org/carrot2/morfologik-polish/2.1.9/morfologik-polish-2.1.9.jar",
-        "e503682b3f4e8bb7a5d05820b0e2a4a19d4bad43dae20f64741786658a9cf478",
-    ),
-    "morfologik-ukrainian-search-4.9.1.jar": (
-        f"{MAVEN}/ua/net/nlp/morfologik-ukrainian-search/4.9.1/morfologik-ukrainian-search-4.9.1.jar",
-        "463d9054b8d4cfacb9cd69566395826a6fe32fb6e7da91dbf79d37ddf7d56ba0",
-    ),
+    "lucene-analysis-kuromoji-10.5.0.jar": "1a6f68328268df5d6854921121327edad2227a6b6b78fc40abe54c29c3a5b28c",
+    "lucene-analysis-nori-10.5.0.jar": "01c3052bd62f7bfaece34aef36af527951fa30e3010c79fd6f61a813ed0277b9",
+    "lucene-analysis-smartcn-10.5.0.jar": "0660dfaf2d8e9966116ab0fc805c409a78cc67ac5515676b8bd1887a2dfbbcc1",
+    "lucene-analysis-stempel-10.5.0.jar": "f46699a4457e1cec1035737c37be1f061eaf32d96b6679968bbda19d1b12ed2b",
+    "lucene-analysis-icu-10.5.0.jar": "53d7f2e28016022a9bffe6435c716471b902e972551067ca2d761c587892608e",
+    "icu4j-77.1.jar": "b3640b9f416a4411fd33c59abbeea8fd57d024c23e1819bf9673220a97499fe3",
+    "morfologik-polish-2.1.9.jar": "e503682b3f4e8bb7a5d05820b0e2a4a19d4bad43dae20f64741786658a9cf478",
+    "morfologik-ukrainian-search-4.9.1.jar": "463d9054b8d4cfacb9cd69566395826a6fe32fb6e7da91dbf79d37ddf7d56ba0",
 }
 FILES = {
     "bert-uncased.zip": (f"{ML_COMMONS}/bert-uncased.zip", "e981ea0951b3d7572cf914f565ad016c148eda17a846e7a893d3f5d7c7314f72"),
@@ -214,8 +189,25 @@ def download(url, sha, dest):
 
 
 def jar_path(name):
-    url, sha = JARS[name]
-    return download(url, sha, CACHE / name)
+    """A pinned jar, fetched by the `deps` Gradle project (group `data`), which
+    tries the Maven Central mirror and Central and checks the jar against its
+    own verification file; the SHA-256 here is checked again."""
+    sha = JARS[name]
+    dest = CACHE / name
+    if dest.exists() and sha256_file(dest) == sha:
+        return dest
+    if os.environ.get("LUCENE_RUST_DATA_OFFLINE"):
+        sys.exit(f"fetch-data: {name} is not cached and LUCENE_RUST_DATA_OFFLINE is set")
+    print(f"fetch-data: fetching {name} with deps/gradlew", file=sys.stderr)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [str(ROOT / "deps/gradlew"), "-q", "fetch", "-Pgroups=data", f"-PoutDir={CACHE}"],
+        cwd=ROOT / "deps",
+        check=True,
+    )
+    if not dest.exists() or sha256_file(dest) != sha:
+        sys.exit(f"fetch-data: {name} fetched by deps/gradlew does not match the pinned sha256 {sha}")
+    return dest
 
 
 def produce(recipe, tmp_dir):

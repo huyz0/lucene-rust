@@ -137,6 +137,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 mod open_postings;
 use open_postings::open_per_field_postings;
+mod vector_files;
 
 /// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
 type FieldStats = HashMap<String, (i64, i64, i32)>;
@@ -1216,51 +1217,6 @@ impl SegmentReader {
             }
         };
         Ok(Some(meta.rebind(&f.data, index)))
-    }
-
-    /// One instance's flat vectors, each field's similarity taken from this
-    /// segment's `FieldInfos` where its `.vemf` records none.
-    fn open_flat_vectors<'s>(
-        &'s self,
-        f: &'s CodecFiles,
-    ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
-        if let Some(flat) = f.flat_reader.get() {
-            return Ok(flat.attach(&f.data));
-        }
-        // A failed open is not kept: the next read tries again.
-        let mut flat = lucene_codecs::vectors::FlatVectorsReader::open(
-            &f.meta,
-            &f.data,
-            &self.segment_id,
-            &f.suffix,
-        )?;
-        flat.resolve_similarities_from(&self.field_infos.fields)?;
-        Ok(f.flat_reader
-            .get_or_init(|| flat.detached())
-            .attach(&f.data))
-    }
-
-    /// `f`'s HNSW graph reader, opened once; `None` without a graph.
-    fn graph_reader<'s>(
-        &self,
-        f: &'s CodecFiles,
-    ) -> crate::Result<Option<&'s lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>> {
-        if let Some(graph) = f.graph_reader.get() {
-            return Ok(graph.as_ref());
-        }
-        let graph = match (&f.graph_meta, &f.index) {
-            (Some(meta), Some(index)) => Some(
-                lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
-                    meta,
-                    index,
-                    &self.segment_id,
-                    &f.suffix,
-                )?
-                .detached(),
-            ),
-            _ => None,
-        };
-        Ok(f.graph_reader.get_or_init(|| graph).as_ref())
     }
 
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this

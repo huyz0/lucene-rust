@@ -32,40 +32,16 @@ RUN curl -fsSL https://sh.rustup.rs \
 
 # Bake the pinned Lucene jars in, so a fixture or verification run is
 # reproducible and offline. `lib-lucene-jars.sh` checks $JARS first, so these
-# are found without touching Maven Central.
-ARG LUCENE_VERSION=10.6.0
+# are found without touching Maven Central. The `deps` Gradle project downloads
+# them (Maven Central mirror, then Central) and checks each against its pinned
+# SHA-256.
 ENV LUCENE_JARS=/opt/lucene-jars
-RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
-    && base=https://repo1.maven.org/maven2/org/apache/lucene \
-    && for m in lucene-core lucene-analysis-common lucene-queryparser \
-                lucene-facet lucene-highlighter lucene-suggest lucene-codecs \
-                lucene-monitor lucene-memory lucene-expressions lucene-classification \
-                lucene-backward-codecs lucene-misc lucene-replicator lucene-sandbox lucene-queries lucene-spatial3d \
-                lucene-spatial-extras lucene-join lucene-grouping \
-                lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \
-                lucene-analysis-smartcn lucene-analysis-stempel \
-                lucene-analysis-morfologik lucene-analysis-phonetic \
-                lucene-analysis-opennlp lucene-demo lucene-luke lucene-benchmark lucene-test-framework; do \
-         curl -fsSL -O "$base/$m/$LUCENE_VERSION/$m-$LUCENE_VERSION.jar" || \
-           echo "note: $m not published for $LUCENE_VERSION, skipping"; \
-       done \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/locationtech/spatial4j/spatial4j/0.8/spatial4j-0.8.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/io/sgr/s2-geometry-library-java/1.0.0/s2-geometry-library-java-1.0.0.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/commons-codec/commons-codec/1.17.2/commons-codec-1.17.2.jar \
-    && for a in morfologik-fsa morfologik-stemming morfologik-polish morfologik-fsa-builders; do \
-         curl -fsSL -O "https://repo1.maven.org/maven2/org/carrot2/$a/2.1.9/$a-2.1.9.jar"; \
-       done \
-    && curl -fsSL -O https://repo1.maven.org/maven2/ua/net/nlp/morfologik-ukrainian-search/4.9.1/morfologik-ukrainian-search-4.9.1.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/hppc/0.7.2/hppc-0.7.2.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/com/ibm/icu/icu4j/77.1/icu4j-77.1.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/apache/opennlp/opennlp-tools/2.5.3/opennlp-tools-2.5.3.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/4.13.2/antlr4-runtime-4.13.2.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm/9.6/asm-9.6.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm-commons/9.6/asm-commons-9.6.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/junit/junit/4.13.1/junit-4.13.1.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/hamcrest/hamcrest/2.2/hamcrest-2.2.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/randomizedtesting/randomizedtesting-runner/2.8.1/randomizedtesting-runner-2.8.1.jar
+COPY deps /tmp/deps
+RUN cd /tmp/deps \
+    && ./gradlew -q fetch \
+         -Pgroups=lucene,spatial,phonetic,morfologik,icu,opennlp,expressions,testframework \
+         -PoutDir="$LUCENE_JARS" \
+    && rm -rf /tmp/deps ~/.gradle
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

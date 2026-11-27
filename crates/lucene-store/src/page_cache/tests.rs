@@ -497,3 +497,25 @@ fn a_store_profile_fixes_the_window_whatever_the_requests_take() {
         300
     );
 }
+
+#[test]
+fn a_cache_lists_what_it_holds_and_takes_a_page_it_was_handed() {
+    let tmp = lucene_util::test_support::TempDir::new("cache-resident");
+    let config = PageCacheConfig {
+        disk_dir: Some(tmp.path().join("d")),
+        ..PageCacheConfig::default()
+    };
+    let cache = PageCache::new(config).unwrap();
+    assert!(cache.resident_pages(&["f"], 10)[0].is_empty());
+    assert!(cache.peek_page("f", 0).is_none());
+    cache.insert_page("f/1", 0, &[7; 100]);
+    cache.insert_page("f/1", 1, &[8; 50]);
+    assert_eq!(&cache.peek_page("f/1", 1).unwrap()[..], &[8; 50][..]);
+    let held = cache.resident_pages(&["f/"], 10).remove(0);
+    assert_eq!(held.len(), 2);
+    assert!(held.iter().all(|p| p.hits == 0), "neither was read");
+    assert_eq!(cache.stats().disk_hits, 0, "a peek is not a hit");
+    let bare = PageCache::new(PageCacheConfig::default()).unwrap();
+    bare.insert_page("f/1", 0, &[7; 100]);
+    assert!(bare.peek_page("f/1", 0).is_none() && bare.resident_pages(&["f"], 10)[0].is_empty());
+}

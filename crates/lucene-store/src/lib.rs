@@ -22,6 +22,7 @@ pub mod index_output;
 pub mod lock;
 pub mod lock_wrappers;
 pub mod nrt_caching_directory;
+pub mod open_bundle;
 pub mod page_cache;
 mod page_disk;
 pub mod paged_fs_directory;

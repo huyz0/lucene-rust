@@ -181,3 +181,17 @@ fn enums_by_number_name_and_values() {
     assert!(static_field("java.time.Nope", "X").is_none());
     let _ = (call, t);
 }
+
+#[test]
+fn a_zone_id_naming_an_offset_is_that_offset() {
+    let zone = |id: &str| st("java.time.ZoneId", "of", &[Value::str(id)]);
+    assert_eq!(zone("Z"), "Z");
+    assert_eq!(zone("+01:00"), "+01:00");
+    assert_eq!(zone("-0530"), "-05:30");
+    assert_eq!(zone("+02"), "+02:00");
+    assert_eq!(zone("+01:02:03"), "+01:02:03");
+    // A region, a prefixed id and a malformed one are left to Java.
+    for id in ["America/Los_Angeles", "UTC+1", "+1", "+25:00", ""] {
+        assert!(!is_fixed_offset_id(id), "{id}");
+    }
+}

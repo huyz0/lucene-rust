@@ -900,11 +900,28 @@ impl SegmentWriter<'_> {
         vector_files: &MergedVectorFiles,
         files: &mut Vec<String>,
     ) -> Result<()> {
-        files.extend(vector_files.written_early.iter().cloned());
+        // A group file the merge already wrote (an `.ivv`, streamed as it was
+        // built) keeps its place among its group's files.
+        let in_group = |name: &String| {
+            vector_files.groups.iter().any(|(suffix, group_files)| {
+                group_files.iter().any(|(ext, _)| {
+                    *name == crate::index_writer::segment_file_name(self.segment_name, suffix, ext)
+                })
+            })
+        };
+        files.extend(
+            vector_files
+                .written_early
+                .iter()
+                .filter(|name| !in_group(name))
+                .cloned(),
+        );
         for (suffix, group_files) in &vector_files.groups {
             for (ext, bytes) in group_files {
                 let name = crate::index_writer::segment_file_name(self.segment_name, suffix, ext);
-                write_file(self.dir, &name, bytes)?;
+                if !vector_files.written_early.contains(&name) {
+                    write_file(self.dir, &name, bytes)?;
+                }
                 files.push(name);
             }
         }

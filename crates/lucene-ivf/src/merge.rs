@@ -222,6 +222,35 @@ pub fn merge_field_with_vectors(
     factory: &dyn QuantizerFactory,
     params: &IvfParams,
 ) -> Result<()> {
+    merge_with_vectors(writer, field, false, sources, factory, params)
+}
+
+/// [`merge_field_with_vectors`] for `field` vectors the caller has already
+/// passed through [`crate::prepare_vectors`], which are written as they are:
+/// a cosine field is not copied to be normalized. The output is the same
+/// as [`merge_field_with_vectors`] gives for the unnormalized vectors.
+///
+/// # Errors
+///
+/// As [`merge_field_with_vectors`].
+pub fn merge_field_with_prepared_vectors(
+    writer: &mut IvfWriter,
+    field: &FieldVectors<'_>,
+    sources: &[MergeSource<'_>],
+    factory: &dyn QuantizerFactory,
+    params: &IvfParams,
+) -> Result<()> {
+    merge_with_vectors(writer, field, true, sources, factory, params)
+}
+
+fn merge_with_vectors(
+    writer: &mut IvfWriter,
+    field: &FieldVectors<'_>,
+    prepared: bool,
+    sources: &[MergeSource<'_>],
+    factory: &dyn QuantizerFactory,
+    params: &IvfParams,
+) -> Result<()> {
     let number = field.number;
     let mut live: Vec<(i32, usize, u32)> = Vec::new();
     for (i, source) in sources.iter().enumerate() {
@@ -250,7 +279,15 @@ pub fn merge_field_with_vectors(
         &live,
         field.docs.len(),
     ) else {
-        return writer.add_field(field, factory, params);
+        return writer.add_prepared(field, prepared, factory, params, false, &mut |v, metric| {
+            kmeans::cluster(
+                v,
+                field.dimension,
+                params.target_cluster_size,
+                &params.kmeans,
+                metric,
+            )
+        });
     };
     let slots = sources[base].reader.slot_clusters(number)?;
     let mut hints = vec![[NO_CLUSTER; 2]; field.docs.len()];
@@ -269,16 +306,23 @@ pub fn merge_field_with_vectors(
     }
     let centroids = base_field.centroids();
     let dimension = field.dimension;
-    writer.add_clustered(field, factory, params, false, &mut |prepared, metric| {
-        kmeans::reuse(
-            prepared,
-            dimension,
-            centroids,
-            &hints,
-            params.target_cluster_size,
-            &params.kmeans,
-            refine_rounds,
-            metric,
-        )
-    })
+    writer.add_prepared(
+        field,
+        prepared,
+        factory,
+        params,
+        false,
+        &mut |vectors, metric| {
+            kmeans::reuse(
+                vectors,
+                dimension,
+                centroids,
+                &hints,
+                params.target_cluster_size,
+                &params.kmeans,
+                refine_rounds,
+                metric,
+            )
+        },
+    )
 }

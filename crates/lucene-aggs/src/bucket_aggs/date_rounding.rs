@@ -1,4 +1,7 @@
-//! `Rounding.Prepared` for a `date_histogram` in a fixed-offset zone.
+//! `Rounding.Prepared` for a `date_histogram` in a fixed-offset or region zone.
+
+mod region_zone;
+pub use region_zone::RegionZone;
 
 /// A calendar unit of `Rounding.DateTimeUnit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +31,10 @@ pub enum RoundingKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateRounding {
     pub kind: RoundingKind,
-    /// The zone's offset from UTC, in milliseconds.
+    /// The zone's offset from UTC, in milliseconds; 0 when `region` is set.
     pub zone_ms: i64,
+    /// An IANA region zone, whose offset changes: it replaces `zone_ms`.
+    pub region: Option<RegionZone>,
     /// `OffsetRounding`'s offset, in milliseconds.
     pub offset: i64,
 }
@@ -205,10 +210,41 @@ impl DateUnit {
 }
 
 impl DateRounding {
+    /// The rounding of `kind` in a region zone, with `offset`.
+    pub fn in_region(kind: RoundingKind, region: RegionZone, offset: i64) -> Self {
+        DateRounding {
+            kind,
+            zone_ms: 0,
+            region: Some(region),
+            offset,
+        }
+    }
+
+    /// The shift of the zone's calendar days from the rounding's: none for a
+    /// region zone, whose days differ in width.
+    pub(super) fn calendar_shift(&self) -> Option<i64> {
+        self.region
+            .is_none()
+            .then(|| self.zone_ms.checked_sub(self.offset))?
+    }
+
     /// `utc`'s bucket: its rounded value and the first value past it that
     /// rounds elsewhere (every value in between rounds the same); `None`
     /// where that bound would overflow.
     pub fn bucket(&self, utc: i64) -> Option<(i64, i64)> {
+        if let Some(region) = self.region {
+            // `OffsetRounding`: the zone's rounding of `utc - offset`, shifted back.
+            let inner = utc.checked_sub(self.offset)?;
+            let floor = region.round(self.kind, inner);
+            let next = region.next(self.kind, inner)?;
+            if floor > inner || next <= inner {
+                return None;
+            }
+            return Some((
+                floor.checked_add(self.offset)?,
+                next.checked_add(self.offset)?,
+            ));
+        }
         let shift = self.zone_ms.checked_sub(self.offset)?;
         let local = utc.checked_add(shift)?;
         let (floor, next) = match self.kind {
@@ -227,6 +263,11 @@ impl DateRounding {
     /// `Prepared.round`: `offset.localToUtcInThisOffset(roundFloor(
     /// offset.utcToLocalTime(utc - offset))) + offset`.
     pub fn round(&self, utc: i64) -> i64 {
+        if let Some(region) = self.region {
+            return region
+                .round(self.kind, utc.wrapping_sub(self.offset))
+                .wrapping_add(self.offset);
+        }
         let local = utc.wrapping_sub(self.offset).wrapping_add(self.zone_ms);
         let rounded = match self.kind {
             RoundingKind::Unit(u) => u.round_floor(local),

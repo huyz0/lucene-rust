@@ -416,7 +416,7 @@ impl ScalarQuantizedVectorsWriter {
             }
             meta.write_i32(centroid_dp.to_bits() as i32);
         }
-        write_stored_meta(meta, &mut self.data, docs, self.max_doc);
+        write_stored_meta(meta, &mut self.data, 0, docs, self.max_doc);
     }
 
     /// `finish()`: the end-of-fields marker and both footers. Returns

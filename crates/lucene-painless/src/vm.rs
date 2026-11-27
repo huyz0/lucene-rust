@@ -651,6 +651,16 @@ impl<'a> Vm<'a> {
     }
 
     /// Calls function `func` of the script.
+    /// The number of parameters of the script function `func`.
+    pub fn function_arity(&self, func: u32) -> usize {
+        self.prog.funcs[func as usize].arity
+    }
+
+    /// The name of the script function `func`.
+    pub fn function_name(&self, func: u32) -> &str {
+        &self.prog.funcs[func as usize].name
+    }
+
     pub fn call_local(&mut self, func: u32, args: &[Value]) -> Result<Value, Throw> {
         if self.depth >= MAX_CALL_DEPTH {
             return Err(Throw::no_message("java.lang.StackOverflowError"));

@@ -116,7 +116,7 @@ type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 type FastSet<K> = HashSet<K, BuildHasherDefault<Fx>>;
 
 mod date_rounding;
-pub use date_rounding::{DateRounding, DateUnit, RoundingKind};
+pub use date_rounding::{DateRounding, DateUnit, RegionZone, RoundingKind};
 
 /// What a `cardinality` counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2638,7 +2638,7 @@ fn collect_window(
             let mut grid = leaf.date_grid.take();
             let mut grid_tried = leaf.grid_tried;
             let mut calendar = std::mem::take(&mut leaf.calendar_buckets);
-            let calendar_shift = rounding.zone_ms.checked_sub(rounding.offset);
+            let calendar_shift = rounding.calendar_shift();
             let calendar_unit = matches!(
                 rounding.kind,
                 RoundingKind::Unit(DateUnit::Month | DateUnit::Quarter | DateUnit::Year)

@@ -1215,6 +1215,8 @@ impl IndexingConfig {
                 } else {
                     let partition_starts = self.ivf_partition_starts(buf)?;
                     IndexWriter::build_vectors_output(
+                        dir,
+                        segment_name,
                         self.ivf_partitions(partition_starts.as_deref()),
                         buf.vectors,
                         &vector_configs,
@@ -2048,8 +2050,9 @@ impl<'d> IndexWriter<'d> {
 
     /// Adds explicit documents with their KNN vectors (one list per
     /// document, aligned with `docs`) -- the document API's entry point, where
-    /// a vector is one of the document's fields.
-    pub(crate) fn add_explicit_documents_with_vectors(
+    /// a vector is one of the document's fields, and a caller that builds its
+    /// explicit documents itself.
+    pub fn add_explicit_documents_with_vectors(
         &mut self,
         delete: Option<super::Term>,
         docs: Vec<ExplicitDocument>,
@@ -2089,7 +2092,7 @@ impl<'d> IndexWriter<'d> {
 
     /// [`Self::soft_update_explicit_documents`] for the document API, with
     /// each document's KNN vectors.
-    pub(crate) fn soft_update_explicit_documents_with_vectors(
+    pub fn soft_update_explicit_documents_with_vectors(
         &mut self,
         term: super::Term,
         docs: Vec<ExplicitDocument>,

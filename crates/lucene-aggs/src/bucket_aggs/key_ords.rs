@@ -29,6 +29,9 @@ impl DateGrid {
     /// The grid of `rounding`, through the bucket of `v`; `None` for a
     /// rounding whose buckets differ in width.
     pub(super) fn new(rounding: &DateRounding, v: i64) -> Option<Box<Self>> {
+        if rounding.region.is_some() {
+            return None;
+        }
         match rounding.kind {
             RoundingKind::Interval(_)
             | RoundingKind::Unit(

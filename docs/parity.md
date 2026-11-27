@@ -51,7 +51,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [matrix.md](parity/matrix.md) | The supported matrix: formats read and written, search and write features, what is out of scope | 14 |
 | [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 37 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 11 |
-| [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums, pluggable stores and encryption, page cache | 31 |
+| [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums, pluggable stores and encryption, page cache | 32 |
 | [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written, and OpenSearch custom-codecs' zstd stored fields | 89 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 19 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 19 |
@@ -65,7 +65,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 29 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
 | [expressions.md](parity/expressions.md) | `lucene-expressions`: JavaScript expressions as `DoubleValuesSource`s (M14 T14.2) | 6 |
-| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 15 |
+| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 16 |
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 20 |
