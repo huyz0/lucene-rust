@@ -9,6 +9,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::error::{Error, Result};
+use crate::group_rule::{is_inexact, GroupByKernelRule};
 use crate::plan_cache::PlanCache;
 use crate::pred::{knn_udf, match_text_udf};
 use crate::provider::LuceneTable;
@@ -49,6 +50,9 @@ pub struct SqlEngine {
     snapshot: Arc<Snapshot>,
     router: Router,
     ctx: SessionContext,
+    /// The same tables without the aggregation-kernel rule, for statements
+    /// the kernels cannot answer exactly.
+    plain: SessionContext,
     runtime: tokio::runtime::Runtime,
     plans: Option<PlanCache>,
 }
@@ -66,23 +70,8 @@ impl SqlEngine {
     /// # Errors
     /// DataFusion could not register the table or start its runtime.
     pub fn new(snapshot: Arc<Snapshot>, config: &SqlConfig) -> Result<Self> {
-        let env = RuntimeEnvBuilder::new()
-            .with_memory_limit(config.memory_limit, 1.0)
-            .build_arc()?;
-        let session = SessionConfig::new().with_target_partitions(config.target_partitions.max(1));
-        let state = SessionStateBuilder::new()
-            .with_config(session)
-            .with_runtime_env(env)
-            .with_default_features()
-            .with_optimizer_rule(Arc::new(ScoreTopKRule))
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-        ctx.register_udf(match_text_udf());
-        ctx.register_udf(knn_udf());
-        ctx.register_table(
-            snapshot.spec().name(),
-            Arc::new(LuceneTable::new(snapshot.clone())),
-        )?;
+        let ctx = Self::context_for(&snapshot, config, true)?;
+        let plain = Self::context_for(&snapshot, config, false)?;
         let runtime = if config.worker_threads == 0 {
             tokio::runtime::Builder::new_current_thread().build()
         } else {
@@ -95,9 +84,37 @@ impl SqlEngine {
             router: Router::new(snapshot.clone()),
             snapshot,
             ctx,
+            plain,
             runtime,
             plans: config.plan_cache.then(PlanCache::default),
         })
+    }
+
+    fn context_for(
+        snapshot: &Arc<Snapshot>,
+        config: &SqlConfig,
+        kernels: bool,
+    ) -> Result<SessionContext> {
+        let env = RuntimeEnvBuilder::new()
+            .with_memory_limit(config.memory_limit, 1.0)
+            .build_arc()?;
+        let session = SessionConfig::new().with_target_partitions(config.target_partitions.max(1));
+        let mut builder = SessionStateBuilder::new()
+            .with_config(session)
+            .with_runtime_env(env)
+            .with_default_features()
+            .with_optimizer_rule(Arc::new(ScoreTopKRule));
+        if kernels {
+            builder = builder.with_optimizer_rule(Arc::new(GroupByKernelRule));
+        }
+        let ctx = SessionContext::new_with_state(builder.build());
+        ctx.register_udf(match_text_udf());
+        ctx.register_udf(knn_udf());
+        ctx.register_table(
+            snapshot.spec().name(),
+            Arc::new(LuceneTable::new(snapshot.clone())),
+        )?;
+        Ok(ctx)
     }
 
     /// The snapshot queried.
@@ -140,8 +157,11 @@ impl SqlEngine {
     /// As [`Self::query`].
     pub async fn standard(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         if let Some(plans) = &self.plans {
-            if let Some(batches) = plans.run(&self.ctx, read_only(), sql).await? {
-                return Ok(batches);
+            match plans.run(&self.ctx, read_only(), sql).await {
+                Ok(Some(batches)) => return Ok(batches),
+                Ok(None) => {}
+                Err(Error::DataFusion(e)) if is_inexact(&e) => return self.plain_run(sql).await,
+                Err(e) => return Err(e),
             }
         }
         self.uncached(sql).await
@@ -152,7 +172,19 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn uncached(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        let df = self.ctx.sql_with_options(sql, read_only()).await?;
+        let run = async {
+            let df = self.ctx.sql_with_options(sql, read_only()).await?;
+            df.collect().await
+        };
+        match run.await {
+            Ok(batches) => Ok(batches),
+            Err(e) if is_inexact(&e) => self.plain_run(sql).await,
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn plain_run(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        let df = self.plain.sql_with_options(sql, read_only()).await?;
         Ok(df.collect().await?)
     }
 
