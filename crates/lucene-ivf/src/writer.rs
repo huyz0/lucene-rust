@@ -218,8 +218,63 @@ pub struct IvfWriter {
     field_numbers: Vec<i32>,
     clusters: Vec<FieldClusters>,
     postings: Vec<u8>,
-    vectors: Vec<u8>,
+    vectors: VectorsBuf,
     meta: Vec<u8>,
+}
+
+/// The bytes written so far to the `.ivv` file: held in memory, or, once the
+/// writer is given an output with [`IvfWriter::stream_vectors_to`], passed on
+/// to it whenever a few megabytes have gathered. Offsets and alignment count
+/// every byte either way.
+#[derive(Debug)]
+struct VectorsBuf {
+    mem: Vec<u8>,
+    out: Option<lucene_store::FsIndexOutput>,
+    spilled: u64,
+}
+
+/// The most a streaming [`VectorsBuf`] holds before passing it on.
+const VECTORS_SPILL_BYTES: usize = 4 << 20;
+
+impl VectorsBuf {
+    fn new(mem: Vec<u8>) -> Self {
+        VectorsBuf {
+            mem,
+            out: None,
+            spilled: 0,
+        }
+    }
+
+    /// The file's length so far.
+    fn len(&self) -> usize {
+        usize::try_from(self.spilled)
+            .unwrap_or(usize::MAX)
+            .saturating_add(self.mem.len())
+    }
+
+    /// Pads the file with zeros to the next [`crate::VECTORS_ALIGNMENT`].
+    fn align(&mut self) {
+        let aligned = self.len().next_multiple_of(crate::VECTORS_ALIGNMENT);
+        let pad = aligned.saturating_sub(self.len());
+        self.mem.resize(self.mem.len().saturating_add(pad), 0);
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        self.mem.write_bytes(bytes);
+        if self.out.is_some() && self.mem.len() >= VECTORS_SPILL_BYTES {
+            self.spill();
+        }
+    }
+
+    fn spill(&mut self) {
+        if let Some(out) = self.out.as_mut() {
+            DataOutput::write_bytes(out, &self.mem);
+            self.spilled = self
+                .spilled
+                .saturating_add(u64::try_from(self.mem.len()).unwrap_or(u64::MAX));
+            self.mem.clear();
+        }
+    }
 }
 
 /// Spare bytes a buffer sized for a field keeps for the file's footer.
@@ -335,11 +390,6 @@ fn checked_clustering(
 /// Where a field's rerank vectors start in `.ivv`: a page boundary
 /// ([`crate::VECTORS_ALIGNMENT`]), so a vector that divides a page never
 /// straddles two.
-fn align_vectors(out: &mut Vec<u8>) {
-    let aligned = out.len().next_multiple_of(crate::VECTORS_ALIGNMENT);
-    out.resize(aligned, 0);
-}
-
 fn write_len(out: &mut Vec<u8>, v: usize) {
     // In-memory lengths fit an i64.
     out.write_vlong(i64::try_from(v).unwrap_or(i64::MAX));
@@ -437,9 +487,17 @@ impl IvfWriter {
             field_numbers: Vec::new(),
             clusters: Vec::new(),
             postings,
-            vectors,
+            vectors: VectorsBuf::new(vectors),
             meta,
         }
+    }
+
+    /// Writes the `.ivv` file to `out` as it is built instead of holding it,
+    /// which for a large field is its biggest buffer. Call before the first
+    /// field is added and finish with [`IvfWriter::finish_streamed`]; the
+    /// bytes are the same as [`IvfWriter::finish`] returns.
+    pub fn stream_vectors_to(&mut self, out: lucene_store::FsIndexOutput) {
+        self.vectors.out = Some(out);
     }
 
     fn check(&self, field: &FieldVectors<'_>) -> Result<()> {
@@ -858,16 +916,18 @@ impl IvfWriter {
         self.postings.extend_from_slice(&postings);
         drop(postings);
 
-        align_vectors(&mut self.vectors);
+        self.vectors.align();
         let vectors_offset = self.vectors.len();
         // Sized once: growing a buffer of this field's vectors by doubling
         // holds up to twice their bytes, plus the old copy while it moves.
         // The slack covers the footer, which would otherwise double it.
-        self.vectors.reserve_exact(
-            n.saturating_mul(vector_bytes)
-                .saturating_add(n.saturating_mul(8))
-                .saturating_add(FOOTER_SLACK),
-        );
+        if self.vectors.out.is_none() {
+            self.vectors.mem.reserve_exact(
+                n.saturating_mul(vector_bytes)
+                    .saturating_add(n.saturating_mul(8))
+                    .saturating_add(FOOTER_SLACK),
+            );
+        }
         for &i in &order {
             let i = i as usize;
             if encoding == VectorEncoding::F32 {
@@ -1018,12 +1078,40 @@ impl IvfWriter {
         self.meta.write_bytes(&self.fields);
         codec_util::write_footer(&mut self.meta);
         codec_util::write_footer(&mut self.postings);
-        codec_util::write_footer(&mut self.vectors);
+        codec_util::write_footer(&mut self.vectors.mem);
         IvfFiles {
             meta: self.meta,
             postings: self.postings,
-            vectors: self.vectors,
+            vectors: self.vectors.mem,
         }
+    }
+
+    /// [`IvfWriter::finish`] for a writer given [`IvfWriter::stream_vectors_to`]:
+    /// the `.ivv` is complete in the output, which is handed back for the
+    /// caller to close, and the files' `vectors` is empty.
+    pub fn finish_streamed(mut self) -> (IvfFiles, Option<lucene_store::FsIndexOutput>) {
+        self.meta
+            .write_vint(i32::try_from(self.field_numbers.len()).unwrap_or(i32::MAX));
+        self.meta.write_bytes(&self.fields);
+        codec_util::write_footer(&mut self.meta);
+        codec_util::write_footer(&mut self.postings);
+        let Some(mut out) = self.vectors.out.take() else {
+            codec_util::write_footer(&mut self.vectors.mem);
+            let files = IvfFiles {
+                meta: self.meta,
+                postings: self.postings,
+                vectors: self.vectors.mem,
+            };
+            return (files, None);
+        };
+        DataOutput::write_bytes(&mut out, &self.vectors.mem);
+        codec_util::write_footer_to(&mut out);
+        let files = IvfFiles {
+            meta: self.meta,
+            postings: self.postings,
+            vectors: Vec::new(),
+        };
+        (files, Some(out))
     }
 }
 

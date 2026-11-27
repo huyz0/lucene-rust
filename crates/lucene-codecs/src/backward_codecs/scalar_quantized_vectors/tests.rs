@@ -120,7 +120,7 @@ fn write(version: i32, fields: &[TestField]) -> (Vec<u8>, Vec<u8>) {
             meta.write_i32(quantizer.lower_quantile().to_bits() as i32);
             meta.write_i32(quantizer.upper_quantile().to_bits() as i32);
         }
-        crate::vectors::write_stored_meta(&mut meta, &mut data, &f.docs, f.max_doc);
+        crate::vectors::write_stored_meta(&mut meta, &mut data, 0, &f.docs, f.max_doc);
     }
     meta.write_i32(-1);
     codec_util::write_footer(&mut meta);

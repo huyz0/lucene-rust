@@ -309,6 +309,29 @@ impl IvfGroupWriter {
         self.writer.clusters()
     }
 
+    /// Writes the `.ivv` file to `out` as it is built:
+    /// [`IvfGroupWriter::finish_streamed`] hands it back.
+    pub(crate) fn stream_vectors_to(&mut self, out: lucene_store::FsIndexOutput) {
+        self.writer.stream_vectors_to(out);
+    }
+
+    /// [`IvfGroupWriter::finish`] for a writer given
+    /// [`IvfGroupWriter::stream_vectors_to`]: all three files, the `.ivv` empty when its output is
+    /// returned: that output, to close, holds the file.
+    pub(crate) fn finish_streamed(self) -> Option<(Files, Option<lucene_store::FsIndexOutput>)> {
+        self.any.then(|| {
+            let (files, out) = self.writer.finish_streamed();
+            // A streamed `.ivv` keeps its place with no bytes: the output
+            // holds them.
+            let written = vec![
+                (EXTENSIONS[0], files.meta),
+                (EXTENSIONS[1], files.postings),
+                (EXTENSIONS[2], files.vectors),
+            ];
+            (written, out)
+        })
+    }
+
     /// The three files, `None` when no float field was written.
     pub(crate) fn finish(self) -> Option<Files> {
         self.any.then(|| {

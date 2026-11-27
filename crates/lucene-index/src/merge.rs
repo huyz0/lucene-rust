@@ -4046,8 +4046,8 @@ fn merge_vectors(
                 (!group.direct).then_some((group.format.name(), group.suffix)),
             ));
         }
-        let (files, vec_name) = files;
-        out.written_early.push(vec_name);
+        let (files, early) = files;
+        out.written_early.extend(early);
         out.groups.push((suffix, files));
     }
     Ok(Some(out))
@@ -4100,9 +4100,13 @@ fn merge_vector_group(
     merged_segment_id: &[u8; ID_LENGTH],
     suffix: &str,
     partitions: Option<crate::ivf_vectors::Partitions<'_>>,
-) -> Result<(GroupFiles, String)> {
+) -> Result<(GroupFiles, Vec<String>)> {
     let mut flat_writer =
         vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
+    // The merged vectors go to their file as they are copied: the merge
+    // never holds the file whole.
+    let vec_name = crate::index_writer::segment_file_name(merged_segment_name, suffix, "vec");
+    flat_writer.stream_to(dir.create_output(&vec_name)?);
     for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
         let encoding = merged_field.vector_encoding;
         let mut flat_sources: Vec<vectors::FlatVectorMergeSource<'_>> =
@@ -4133,12 +4137,12 @@ fn merge_vector_group(
             sources: &flat_sources,
         })?;
     }
-    let (vec_bytes, vemf_bytes) = flat_writer.finish();
-    // The merged vectors go to their file now and everything built over them
-    // reads that file: the merge holds no in-memory copy of every vector.
-    let vec_name = crate::index_writer::segment_file_name(merged_segment_name, suffix, "vec");
-    write_file(dir, &vec_name, &vec_bytes)?;
-    drop(vec_bytes);
+    let (vec_out, vemf_bytes) = flat_writer.finish_streamed();
+    // Everything built over the vectors reads their file: the merge holds
+    // no in-memory copy of every vector.
+    if let Some(out) = vec_out {
+        out.close()?;
+    }
     let vec_input = dir.open(&vec_name)?;
     let vec_bytes: &[u8] = &vec_input;
 
@@ -4153,6 +4157,7 @@ fn merge_vector_group(
             .map(|p| p.0.vector_similarity_function)
     })?;
     let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    let mut ivv_name: Option<String> = None;
 
     if let Some(encoding) = format.quantization() {
         let mut writer = scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
@@ -4233,6 +4238,20 @@ fn merge_vector_group(
     if let Some(mut ivf) =
         crate::ivf_vectors::IvfGroupWriter::new(format, merged_segment_id, suffix)?
     {
+        // The `.ivv` goes to its file as it is built rather than being held
+        // whole beside the vectors it is built from.
+        if plan
+            .iter()
+            .any(|p| p.0.vector_encoding == VectorEncoding::Float32)
+        {
+            let name = crate::index_writer::segment_file_name(
+                merged_segment_name,
+                suffix,
+                crate::ivf_vectors::EXTENSIONS[2],
+            );
+            ivf.stream_vectors_to(dir.create_output(&name)?);
+            ivv_name = Some(name);
+        }
         // Each source group's IVF index, opened once for every field it
         // serves.
         let mut readers: Vec<(*const crate::ivf_vectors::IvfInputs, lucene_ivf::IvfReader)> =
@@ -4288,7 +4307,22 @@ fn merge_vector_group(
                 &ivf_sources,
             )?;
         }
-        files.extend(ivf.finish().into_iter().flatten());
+        match ivf.finish_streamed() {
+            Some((written, out)) => {
+                files.extend(written);
+                match out {
+                    Some(out) => {
+                        out.close()?;
+                    }
+                    None => ivv_name = None,
+                }
+            }
+            None => {
+                if let Some(name) = ivv_name.take() {
+                    dir.delete_file(&name)?;
+                }
+            }
+        }
     }
 
     if format.hnsw_quantizer().is_some() {
@@ -4501,7 +4535,9 @@ fn merge_vector_group(
         }
     }
     files.insert(0, ("vemf", vemf_bytes));
-    Ok((files, vec_name))
+    let mut early = vec![vec_name];
+    early.extend(ivv_name);
+    Ok((files, early))
 }
 
 /// One source field's ordinal -> its own doc id, materialised from the flat

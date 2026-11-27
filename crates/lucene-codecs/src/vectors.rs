@@ -568,6 +568,7 @@ impl OrdToDoc {
 pub(crate) fn write_stored_meta(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
+    data_before: i64,
     docs: &[i32],
     max_doc: i32,
 ) {
@@ -583,7 +584,7 @@ pub(crate) fn write_stored_meta(
         meta.write_i16(-1);
         meta.write_byte(0xFF);
     } else {
-        let offset = data.len() as i64;
+        let offset = data_before + data.len() as i64;
         meta.write_i64(offset);
         let (disi, jump_table_entry_count) =
             indexed_disi::write_with_dense_rank_power(docs, indexed_disi::DEFAULT_DENSE_RANK_POWER);
@@ -594,12 +595,12 @@ pub(crate) fn write_stored_meta(
         // table too -- it is what the reader subtracts the table's bytes from
         // (`createBlockSlice`).
         #[allow(clippy::arithmetic_side_effects)]
-        let disi_len = data.len() as i64 - offset;
+        let disi_len = data_before + data.len() as i64 - offset;
         meta.write_i64(disi_len);
         meta.write_i16(jump_table_entry_count);
         meta.write_byte(indexed_disi::DEFAULT_DENSE_RANK_POWER);
 
-        let start = data.len() as i64;
+        let start = data_before + data.len() as i64;
         meta.write_i64(start);
         meta.write_vint(DIRECT_MONOTONIC_BLOCK_SHIFT as i32);
         let values: Vec<i64> = docs.iter().map(|d| *d as i64).collect();
@@ -609,7 +610,7 @@ pub(crate) fn write_stored_meta(
         // ARITH: `start` was `data.len()` before the `extend_from_slice`
         // above; same argument as `disi_len`.
         #[allow(clippy::arithmetic_side_effects)]
-        let addresses_len = data.len() as i64 - start;
+        let addresses_len = data_before + data.len() as i64 - start;
         meta.write_i64(addresses_len);
     }
 }
@@ -1642,6 +1643,10 @@ impl FieldVectorData {
 /// point rather than a `write_field` caller.
 pub struct FlatVectorsWriter {
     data: Vec<u8>,
+    /// Where the `.vec` bytes go as they are written, when
+    /// [`Self::stream_to`] gave one; `spilled` counts what it already holds.
+    out: Option<lucene_store::FsIndexOutput>,
+    spilled: u64,
     meta: Vec<u8>,
     max_doc: i32,
     /// Writes `KNN1040HalfFloatFlatVectorsFormat` ([`stores_half_floats`]).
@@ -1673,10 +1678,60 @@ impl FlatVectorsWriter {
         codec_util::write_index_header(&mut meta, meta_codec, version, segment_id, segment_suffix);
         FlatVectorsWriter {
             data,
+            out: None,
+            spilled: 0,
             meta,
             max_doc,
             half,
         }
+    }
+
+    /// Writes the `.vec` file to `out` as merged fields are copied in,
+    /// instead of holding it. Only [`Self::merge_one_flat_vector_field`]
+    /// streams, and a failed field is not rolled back; finish with
+    /// [`Self::finish_streamed`]. The bytes are those [`Self::finish`] would
+    /// return.
+    pub fn stream_to(&mut self, out: lucene_store::FsIndexOutput) {
+        self.out = Some(out);
+    }
+
+    /// The `.vec` file's length so far.
+    fn data_len(&self) -> usize {
+        usize::try_from(self.spilled)
+            .unwrap_or(usize::MAX)
+            .saturating_add(self.data.len())
+    }
+
+    /// Appends `bytes` to the file, passing them straight to the output
+    /// when streaming.
+    fn append(&mut self, bytes: &[u8]) {
+        if let Some(out) = self.out.as_mut() {
+            lucene_store::DataOutput::write_bytes(out, &self.data);
+            self.spilled = self
+                .spilled
+                .saturating_add(u64::try_from(self.data.len()).unwrap_or(u64::MAX));
+            self.data.clear();
+            lucene_store::DataOutput::write_bytes(out, bytes);
+            self.spilled = self
+                .spilled
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        } else {
+            self.data.extend_from_slice(bytes);
+        }
+    }
+
+    /// [`Self::finish`] for a writer given [`Self::stream_to`]: the `.vec`
+    /// is complete in the output, handed back for the caller to close, with
+    /// the `.vemf` bytes.
+    pub fn finish_streamed(mut self) -> (Option<lucene_store::FsIndexOutput>, Vec<u8>) {
+        self.meta.write_i32(-1);
+        codec_util::write_footer(&mut self.meta);
+        let Some(mut out) = self.out.take() else {
+            return (None, self.meta);
+        };
+        lucene_store::DataOutput::write_bytes(&mut out, &self.data);
+        codec_util::write_footer_to(&mut out);
+        (Some(out), self.meta)
     }
 
     /// `Lucene99FlatVectorsWriter.writeField`: one field, from an in-memory
@@ -1761,7 +1816,9 @@ impl FlatVectorsWriter {
         match self.merge_one_flat_vector_field_inner(field) {
             Ok(()) => Ok(()),
             Err(e) => {
-                self.data.truncate(rollback_to);
+                if self.out.is_none() {
+                    self.data.truncate(rollback_to);
+                }
                 Err(e)
             }
         }
@@ -1896,16 +1953,14 @@ impl FlatVectorsWriter {
                         v.vector_into(ord, &mut scratch)?;
                         for &c in &scratch {
                             if self.half {
-                                self.data.extend_from_slice(&f32_to_f16(c).to_le_bytes());
+                                self.append(&f32_to_f16(c).to_le_bytes());
                             } else {
-                                self.data.extend_from_slice(&c.to_le_bytes());
+                                self.append(&c.to_le_bytes());
                             }
                         }
                     }
                 }
-                values => self
-                    .data
-                    .extend_from_slice(values.raw_range(slot.ord, run_end)?),
+                values => self.append(values.raw_range(slot.ord, run_end)?),
             }
             docs.extend(plan[i..end].iter().map(|s| s.new_doc));
             i = end;
@@ -1914,7 +1969,7 @@ impl FlatVectorsWriter {
         // ARITH: as in `write_field`, `vector_data_offset` is a length
         // `self.data` has already passed.
         #[allow(clippy::arithmetic_side_effects)]
-        let vector_data_length = self.data.len() as i64 - vector_data_offset;
+        let vector_data_length = self.data_len() as i64 - vector_data_offset;
         let Some(expected) = (docs.len() as i64).checked_mul(vector_bytes as i64) else {
             return corrupt(format!(
                 "field {}: merged {} vectors of {vector_bytes} bytes overflows an i64",
@@ -1960,9 +2015,10 @@ impl FlatVectorsWriter {
         } else {
             VECTOR_DATA_ALIGNMENT
         };
-        let padded = self.data.len().next_multiple_of(align);
-        self.data.resize(padded, 0);
-        self.data.len() as i64
+        let padded = self.data_len().next_multiple_of(align);
+        let pad = padded.saturating_sub(self.data_len());
+        self.data.resize(self.data.len().saturating_add(pad), 0);
+        self.data_len() as i64
     }
 
     /// `Lucene99FlatVectorsWriter.writeMeta`.
@@ -1987,7 +2043,13 @@ impl FlatVectorsWriter {
         self.meta.write_vlong(vector_data_length);
         self.meta.write_vint(dimension);
         self.meta.write_i32(docs.len() as i32);
-        write_stored_meta(&mut self.meta, &mut self.data, docs, self.max_doc);
+        write_stored_meta(
+            &mut self.meta,
+            &mut self.data,
+            self.spilled as i64,
+            docs,
+            self.max_doc,
+        );
     }
 }
 
