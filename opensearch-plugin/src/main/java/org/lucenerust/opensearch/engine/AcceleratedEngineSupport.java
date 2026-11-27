@@ -351,15 +351,16 @@ public final class AcceleratedEngineSupport {
      * the versions it had between two refreshes are never indexed: no dead documents for a merge to
      * drop, and indexing CPU and merge work fall in proportion to how often those rows repeat. What
      * does not fit goes through the normal path, so smaller budgets only give less of the gain;
-     * rows updated once, as a bulk update or a trickle does, are never held. {@code 0} (the default)
-     * turns it off. The held updates are not searchable until the next refresh, flush or realtime
+     * rows updated once, as a bulk update or a trickle does, are never held. The default is 8 MiB a
+     * shard, which an idle shard does not use (the heat sketch is allocated by load and freed when
+     * idle); {@code 0} turns it off. The held updates are not searchable until the next refresh, flush or realtime
      * view, and an update dropped for a newer one leaves no version in the segments, so a replica
      * or a cross-cluster follower that replays history from Lucene sees only each refresh's last
      * version of those rows. Use it on indexes where that history is not needed.
      */
     public static final Setting<ByteSizeValue> HOT_TIER_MAX_MEMORY = Setting.byteSizeSetting(
         "index.hot_tier.max_memory",
-        ByteSizeValue.ZERO,
+        ByteSizeValue.ofMb(8),
         Setting.Property.IndexScope,
         Setting.Property.Final
     );

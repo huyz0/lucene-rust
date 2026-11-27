@@ -85,11 +85,13 @@ writer panic.
 
 ### Hot rows (update coalescing)
 
-`index.hot_tier.max_memory` (index setting, final, default `0` = off) holds the latest version of rows that are
+`index.hot_tier.max_memory` (index setting, final, default `8mb` a shard, `0` = off) holds the latest version of rows that are
 updated often in a small, bounded buffer, so the versions in between are never inverted. Rows updated once or
 rarely, trickle updates and bulk updates never enter it: a row is held only after it is updated faster than
 `index.hot_tier.min_update_rate` (updates per second per row, default `1.0`, range 0.5 to 100). Heat is tracked in a
-fixed sketch of at most 2 MiB; held operations are counted against `max_memory` until applied, and an operation that
+sketch that costs nothing while a shard sees no updates, is allocated stripe by stripe as updates arrive,
+grows with the number of distinct rows updated (never past an eighth of `max_memory`) and is freed once its
+counts have decayed; held operations are counted against `max_memory` until applied, and an operation that
 does not fit is written through at once, so the cost degrades to today's speed. The byte count is walked from each
 held operation and checked against a counting allocator (0 to 10% above what the allocator holds).
 
