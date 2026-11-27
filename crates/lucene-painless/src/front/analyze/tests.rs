@@ -105,8 +105,7 @@ fn what_is_not_lowered_yet_is_named() {
         ("for (def x : [1]) { }", "for-each"),
         ("try { } catch (Exception e) { }", "try"),
         ("int[] a = new int[1];", "array"),
-        ("return params", "variable"),
-        ("params.x", "variable"),
+        ("return doc", "variable"),
     ] {
         match refusal(src) {
             Refusal::Unsupported(w) => assert!(w.contains(what), "{src}: {w}"),
@@ -119,7 +118,7 @@ fn what_is_not_lowered_yet_is_named() {
 fn a_refusal_names_its_cause() {
     let r = refusal("break;");
     assert!(r.to_string().contains(" at "), "{r}");
-    assert!(refusal("return params")
+    assert!(refusal("return doc")
         .to_string()
         .starts_with("unsupported:"));
 }
@@ -301,4 +300,19 @@ fn reference_equality_compares_as_painless_does() {
         eval("boolean x = true; boolean y = true; x === y"),
         Value::Bool(true)
     ));
+}
+
+#[test]
+fn params_map_keys_and_elvis_read_as_painless_does() {
+    assert!(matches!(eval("params.a"), Value::Null));
+    assert!(matches!(eval("params.a ?: 5"), Value::Int(5)));
+    assert!(matches!(eval("Map m = ['k': 3]; m.k"), Value::Int(3)));
+    assert!(matches!(eval("Map m = ['k': 3]; m.nope?.x"), Value::Null));
+    assert!(matches!(
+        eval("def m = ['k': ['j': 4]]; m.k.j"),
+        Value::Int(4)
+    ));
+    assert!(matches!(eval("String s = null; s ?: 'z'"), Value::Str(z) if &*z == "z"));
+    assert!(message("int i = 1; i ?: 2").contains("elvis"));
+    assert!(message("'a'.nope").contains("Unknown field [nope]"));
 }

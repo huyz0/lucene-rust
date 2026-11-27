@@ -314,6 +314,20 @@ impl Cx<'_> {
                         &ty,
                     )
                 }
+                None if name == "params" => typed(
+                    Node::InvokeCallMember {
+                        ty: "java.util.Map".into(),
+                        member: ir::Member::Local {
+                            name: "getParams".into(),
+                            internal: true,
+                            is_static: false,
+                            params: Vec::new(),
+                            ret: "java.util.Map".into(),
+                        },
+                        args: Vec::new(),
+                    },
+                    "java.util.Map",
+                ),
                 None => return unsupported(format!("variable [{name}]")),
             },
             ExprKind::Unary(UnOp::Minus, inner) => match &inner.kind {
@@ -565,7 +579,28 @@ impl Cx<'_> {
             }
             B::Lsh | B::Rsh | B::Ush => self.shift(pos, op, l, r, flags),
             B::Find | B::Match => unsupported("regex operators"),
-            B::Elvis => unsupported("elvis operator"),
+            B::Elvis => {
+                let ty = if l.ty == r.ty || r.ty == "null" {
+                    l.ty.clone()
+                } else if l.ty == DEF || r.ty == DEF {
+                    DEF.into()
+                } else {
+                    return unsupported("elvis of different classes");
+                };
+                if is_primitive(&ty) || ty == "null" {
+                    return compile_error(pos, "elvis cannot apply to a primitive");
+                }
+                let l = self.coerce(pos, l, &ty, false)?;
+                let r = self.coerce(pos, r, &ty, false)?;
+                Ok(typed(
+                    Node::Elvis {
+                        ty: ty.clone(),
+                        left: Box::new(l.node),
+                        right: Box::new(r.node),
+                    },
+                    &ty,
+                ))
+            }
         }
     }
 
