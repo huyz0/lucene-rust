@@ -3294,6 +3294,32 @@ impl IndexingConfig {
                 )?
             })
         };
+        // A flush's `.fdt` goes to its file as it compresses, unless a
+        // compound file will pack it from memory.
+        let build_stored = || -> Result<Option<segment_writer::StoredFieldsBytes>> {
+            if self.use_compound_file {
+                return Ok(segment_writer::build_native_stored_fields(
+                    buf.docs,
+                    &segment_id,
+                    self.codec.as_deref(),
+                ));
+            }
+            let mode = self
+                .codec
+                .as_deref()
+                .map_or(lucene_codecs::stored_fields::Mode::BestSpeed, |codec| {
+                    codec.stored_fields_mode()
+                });
+            let fdt_name = segment_file_name(segment_name, mode.segment_suffix(), "fdt");
+            segment_writer::build_native_stored_fields_to(
+                dir,
+                &fdt_name,
+                buf.docs,
+                &segment_id,
+                self.codec.as_deref(),
+            )
+            .map_err(Into::into)
+        };
         let (points_output, vectors_output);
         let (norms_output, term_vectors_output, postings_output);
         let stored_fields_bytes;
@@ -3318,18 +3344,12 @@ impl IndexingConfig {
                                 &self.analyzer(),
                             )
                         },
-                        || {
-                            segment_writer::build_native_stored_fields(
-                                buf.docs,
-                                &segment_id,
-                                self.codec.as_deref(),
-                            )
-                        },
+                        build_stored,
                     )
                 },
                 build_vectors,
             );
-            stored_fields_bytes = stored;
+            stored_fields_bytes = stored?;
             norms_output = if norms_configs.is_empty() {
                 None
             } else {
@@ -3376,18 +3396,12 @@ impl IndexingConfig {
                                 &self.analyzer(),
                             )
                         },
-                        || {
-                            segment_writer::build_native_stored_fields(
-                                buf.docs,
-                                &segment_id,
-                                self.codec.as_deref(),
-                            )
-                        },
+                        build_stored,
                     )
                 },
                 build_vectors,
             );
-            stored_fields_bytes = stored;
+            stored_fields_bytes = stored?;
             // Norms and term vectors only *read* the shared invert pass;
             // postings **consumes** it. Ordering them this way means the whole
             // inverted index -- by far the largest transient structure in a
