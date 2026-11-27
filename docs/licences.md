@@ -383,9 +383,11 @@ a dependency the shipped library links is not under a licence listed here.
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | MIT |
 | either | 1.18.0 | MIT OR Apache-2.0 | MIT |
 | libc | 0.2.189 | MIT OR Apache-2.0 | MIT |
-| zstd-safe | 7.4.0 | MIT OR Apache-2.0 | MIT (`lucene-zstd`: OpenSearch's `zstd` stored fields) |
-| zstd-sys | 2.1.2+zstd.1.5.7 | MIT OR Apache-2.0 | MIT; the libzstd C sources it builds are BSD-3-Clause OR GPL-2.0-only, BSD taken, its text in [`LICENSE`](../LICENSE) |
+| zstd-safe | 8.4.0 | MIT OR Apache-2.0 | MIT (`lucene-zstd`: OpenSearch's `zstd` stored fields) |
+| zstd-sys | 2.2.0+zstd.1.6.0 | MIT OR Apache-2.0 | MIT; the libzstd C sources it builds are BSD-3-Clause OR GPL-2.0-only, BSD taken, its text in [`LICENSE`](../LICENSE) |
 | cc, find-msvc-tools, jobserver, pkg-config, shlex | (build time) | MIT OR Apache-2.0 | MIT (build time only: `zstd-sys` compiles libzstd) |
+| datafusion, arrow and their sub-crates, sqlparser | 56.0.0 / 60.2.0 / 0.63.0 | Apache-2.0 | Apache-2.0 (`lucene-sql`: read-only SQL; built without DataFusion's default features, so no Parquet or compression codecs besides Arrow IPC's zstd) |
+| tiny-keccak | 2.0.2 | CC0-1.0 | CC0-1.0, a public-domain dedication (build time only: a proc-macro `const-random` runs for `ahash`, which Arrow uses; nothing of it is linked) |
 | memchr | 2.8.3 | Unlicense OR MIT | Unlicense (via `regex`, M11) |
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | MIT |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |

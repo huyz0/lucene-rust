@@ -34,6 +34,7 @@ ALLOWED = {
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "ISC",
+    "CC0-1.0",
 }
 
 
