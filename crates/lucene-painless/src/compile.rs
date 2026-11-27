@@ -22,7 +22,7 @@ use crate::{Error, Result};
 
 /// The class Painless compiles a script into: a reference whose delegate
 /// is this class names one of the script's functions.
-const SCRIPT_CLASS: &str = "org.opensearch.painless.PainlessScript$Script";
+pub(crate) const SCRIPT_CLASS: &str = "org.opensearch.painless.PainlessScript$Script";
 
 fn unsupported(what: impl Into<String>) -> Error {
     Error::Unsupported(what.into())

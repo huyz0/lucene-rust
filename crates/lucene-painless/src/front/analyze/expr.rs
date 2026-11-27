@@ -881,11 +881,7 @@ impl Cx<'_> {
         }
         let mut lowered = Vec::new();
         for (arg, ty) in args.iter().zip(&sig.params) {
-            let ast::Arg::Expr(e) = arg else {
-                return unsupported("lambda or method reference argument");
-            };
-            let t = self.expr(e)?;
-            lowered.push(self.coerce(e.pos, t, ty, false)?.node);
+            lowered.push(self.arg(arg, ty)?);
         }
         Ok(typed(
             Node::InvokeCallMember {

@@ -425,3 +425,38 @@ fn try_catch_and_throw_follow_the_exception_type() {
     assert!(message("throw 'a'").contains("cannot cast"));
     assert!(message("try { } catch (String e) { }").contains("not an exception type"));
 }
+
+#[test]
+fn lambdas_and_method_references_implement_the_parameter_interface() {
+    assert!(matches!(
+        eval("List l = new ArrayList(); l.add('looooong'); l.add('short'); l.sort((a, b) -> a.length() - b.length()); l.get(0)"),
+        Value::Str(s) if &*s == "short"
+    ));
+    assert!(matches!(
+        eval("int foo(Function f) { return f.apply(1) } int k = 4; foo(x -> x + k)"),
+        Value::Int(5)
+    ));
+    assert!(matches!(
+        eval("int foo(Function f) { return f.apply(1) } foo(x -> foo(y -> x + 1))"),
+        Value::Int(2)
+    ));
+    assert!(matches!(
+        eval("int mycompare(int i, int j) { j - i } List l = new ArrayList(); l.add(1); l.add(2); l.sort(this::mycompare); l.get(0)"),
+        Value::Int(2)
+    ));
+    assert!(matches!(
+        eval("List l = new ArrayList(); l.add(3); l.add(1); l.sort(Integer::compare); l.get(0)"),
+        Value::Int(1)
+    ));
+    assert!(matches!(
+        eval("def l = new ArrayList(); l.add(1); l.add(2); l.removeIf(x -> x == 1); l.size()"),
+        Value::Int(1)
+    ));
+    assert!(message("List l = new ArrayList(); l.sort(x -> 1)")
+        .contains("Incorrect number of parameters"));
+    assert!(message("'a'.concat(x -> 1)").contains("not a functional interface"));
+    assert!(
+        message("int k = 1; List l = new ArrayList(); l.removeIf(k -> true)")
+            .contains("already defined")
+    );
+}

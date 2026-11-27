@@ -11,6 +11,7 @@
 mod call;
 mod expr;
 mod init;
+mod lambda;
 mod literal;
 mod place;
 #[cfg(test)]
@@ -64,9 +65,30 @@ struct Signature {
     ret: String,
 }
 
+/// The synthetic functions the lambdas of a script lower to.
+#[derive(Default)]
+pub(super) struct Lambdas {
+    count: std::cell::Cell<usize>,
+    done: std::cell::RefCell<Vec<ir::Function>>,
+}
+
+impl Lambdas {
+    /// The number the next lambda is named by.
+    fn next(&self) -> usize {
+        let n = self.count.get();
+        self.count.set(n + 1);
+        n
+    }
+
+    fn push(&self, f: ir::Function) {
+        self.done.borrow_mut().push(f);
+    }
+}
+
 /// The state while one function lowers.
 pub(super) struct Cx<'a> {
     funcs: &'a HashMap<String, Signature>,
+    lambdas: &'a Lambdas,
     scopes: Vec<HashMap<String, String>>,
     ret: String,
     loops: usize,
@@ -88,10 +110,11 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             return compile_error(f.pos, format!("function [{}] is already defined", f.name));
         }
     }
+    let lambdas = Lambdas::default();
     let mut out = Vec::new();
     for f in &script.functions {
         let sig = funcs[&f.name].clone();
-        let mut cx = Cx::new(&funcs, sig.ret.clone());
+        let mut cx = Cx::new(&funcs, &lambdas, sig.ret.clone());
         for ((_, name), ty) in f.params.iter().zip(&sig.params) {
             cx.declare(f.pos, name, ty)?;
         }
@@ -107,7 +130,7 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         });
     }
-    let mut cx = Cx::new(&funcs, DEF.to_string());
+    let mut cx = Cx::new(&funcs, &lambdas, DEF.to_string());
     let body = cx.body_of(&script.body, true)?;
     out.insert(
         0,
@@ -122,6 +145,7 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
             body,
         },
     );
+    out.extend(lambdas.done.take());
     Ok(ir::Script {
         functions: out,
         classes: ir::ClassTable::default(),
@@ -130,9 +154,10 @@ pub fn analyze(script: &ast::Script) -> Res<ir::Script> {
 }
 
 impl<'a> Cx<'a> {
-    fn new(funcs: &'a HashMap<String, Signature>, ret: String) -> Self {
+    fn new(funcs: &'a HashMap<String, Signature>, lambdas: &'a Lambdas, ret: String) -> Self {
         Cx {
             funcs,
+            lambdas,
             scopes: vec![HashMap::new()],
             ret,
             loops: 0,

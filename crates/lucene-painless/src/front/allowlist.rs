@@ -71,6 +71,8 @@ pub struct Allowlist {
     imports: Vec<Import>,
     /// Canonical short name (`Map.Entry`) to class.
     shorts: HashMap<String, String>,
+    /// A functional interface to the name and arity of its one abstract method.
+    functional: HashMap<String, (String, usize)>,
 }
 
 fn class_mut<'a>(a: &'a mut Allowlist, name: &str, n: usize) -> Result<&'a mut Class, String> {
@@ -120,6 +122,10 @@ impl Allowlist {
                 }
                 Some("parent") if f.len() == 3 => {
                     class_mut(&mut a, f[1], n)?.parents.push(f[2].to_string())
+                }
+                Some("iface") if f.len() == 5 => {
+                    a.functional
+                        .insert(f[1].to_string(), (f[2].to_string(), params(f[4]).len()));
                 }
                 Some("ctor") if f.len() == 4 => class_mut(&mut a, f[1], n)?.ctors.push(CtorSig {
                     params: params(f[2]),
@@ -179,6 +185,20 @@ impl Allowlist {
             return Some(full);
         }
         self.classes.get_key_value(written).map(|(k, _)| k.as_str())
+    }
+
+    /// The abstract method a functional interface's lambdas and method
+    /// references implement, as the allowlist lists it (`def` for `Object`).
+    pub fn functional_method(&self, class: &str) -> Option<(&str, &MethodSig)> {
+        let (name, arity) = self.functional.get(class)?;
+        let sig = self
+            .classes
+            .get(class)?
+            .methods
+            .get(name)?
+            .iter()
+            .find(|m| m.params.len() == *arity && !m.is_static)?;
+        Some((name.as_str(), sig))
     }
 
     pub fn imports(&self) -> &[Import] {
