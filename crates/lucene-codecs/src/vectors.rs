@@ -584,7 +584,7 @@ pub(crate) fn write_stored_meta(
         meta.write_i16(-1);
         meta.write_byte(0xFF);
     } else {
-        let offset = data_before + data.len() as i64;
+        let offset = data_before.saturating_add(data.len() as i64);
         meta.write_i64(offset);
         let (disi, jump_table_entry_count) =
             indexed_disi::write_with_dense_rank_power(docs, indexed_disi::DEFAULT_DENSE_RANK_POWER);
@@ -600,7 +600,7 @@ pub(crate) fn write_stored_meta(
         meta.write_i16(jump_table_entry_count);
         meta.write_byte(indexed_disi::DEFAULT_DENSE_RANK_POWER);
 
-        let start = data_before + data.len() as i64;
+        let start = data_before.saturating_add(data.len() as i64);
         meta.write_i64(start);
         meta.write_vint(DIRECT_MONOTONIC_BLOCK_SHIFT as i32);
         let values: Vec<i64> = docs.iter().map(|d| *d as i64).collect();
