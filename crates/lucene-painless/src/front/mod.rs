@@ -13,7 +13,7 @@ mod sites;
 pub mod source;
 
 pub use analyze::{
-    analyze, analyze_in, analyze_returning, Binding, Refusal, AGG, DOC, PARAMS, SCORE,
+    analyze, analyze_in, analyze_returning, Binding, Refusal, AGG, DOC, INGEST, PARAMS, SCORE,
 };
 pub use parse::{parse, Limits};
 
