@@ -25,7 +25,8 @@ types joined by `,`):
   parent  CHILD PARENT                           every allowlisted class CHILD is assignable to
   ctor    CLASS PARAMS  FILE
   method  CLASS NAME RET PARAMS FLAGS FILE       FLAGS: `static`, `nondeterministic`,
-                                                 `augment=CLASS` (comma joined) or `-`
+                                                 `augment=CLASS`, `inject=N` (parameter N, 1-based, is a
+                                                 constant the compiler passes) (comma joined) or `-`
   field   CLASS NAME TYPE FLAGS FILE             FLAGS: `static`, `final` or `-`
   iface   CLASS NAME RET PARAMS                  the one abstract method of a functional interface
   import  NAME  RET PARAMS KIND TARGET FILE      static_import: KIND `from_class` or `bound_to`
@@ -195,6 +196,9 @@ def parse(files):
             flags = []
             if "@nondeterministic" in line:
                 flags.append("nondeterministic")
+            inject = re.search(r"@inject_constant\[(\d+)=", line)
+            if inject:
+                flags.append("inject=" + inject.group(1))
             line = re.sub(r"@\w+(\[[^\]]*\])?", "", line).strip()
             if in_imports:
                 m = re.match(r"^(\S+)\s+(\w+)\(([^)]*)\)\s*(from_class|bound_to)\s+(\S+)$", line)

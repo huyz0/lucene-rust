@@ -3173,12 +3173,12 @@ method	java.util.function.ToLongFunction	applyAsLong	long	def	-	java.util.functi
 method	java.util.function.UnaryOperator	identity	java.util.function.UnaryOperator		static	java.util.function
 method	java.util.regex.Pattern	asPredicate	java.util.function.Predicate		-	java.util.regex
 method	java.util.regex.Pattern	flags	int		-	java.util.regex
-method	java.util.regex.Pattern	matcher	java.util.regex.Matcher	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	matcher	java.util.regex.Matcher	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
 method	java.util.regex.Pattern	pattern	java.lang.String		-	java.util.regex
 method	java.util.regex.Pattern	quote	java.lang.String	java.lang.String	static	java.util.regex
-method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
-method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence,int	augment=org.opensearch.painless.api.Augmentation	java.util.regex
-method	java.util.regex.Pattern	splitAsStream	java.util.stream.Stream	int,java.lang.CharSequence	augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	split	java.lang.String[]	int,java.lang.CharSequence,int	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
+method	java.util.regex.Pattern	splitAsStream	java.util.stream.Stream	int,java.lang.CharSequence	inject=1,augment=org.opensearch.painless.api.Augmentation	java.util.regex
 method	java.util.regex.Matcher	end	int		-	java.util.regex
 method	java.util.regex.Matcher	end	int	int	-	java.util.regex
 method	java.util.regex.Matcher	find	boolean		-	java.util.regex
