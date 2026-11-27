@@ -1,8 +1,8 @@
 // The one place third-party jars are downloaded. Every consumer (the data
 // packs the Rust build needs, the fixture generators, the ML test libraries)
 // asks this project for a named group of jars and reads them from the
-// directory it fills, so a throttled Maven Central falls back to the mirror in
-// one place, and every jar is checked against gradle/verification-metadata.xml.
+// directory it fills, so a throttled or unreachable repository falls back to the
+// next one in one place, and every jar is checked against gradle/verification-metadata.xml.
 //
 //   ./gradlew -q fetch -Pgroups=data,icu -PoutDir=DIR
 //   ./gradlew -q fetch -Pcoordinates=group:artifact:version[,...] -PoutDir=DIR
@@ -10,14 +10,42 @@
 // Coordinates outside the groups below have no entry in the verification file
 // and are refused.
 //
-// Gradle moves to the next repository only when one does not have the module
-// (a 404); once it has chosen a repository, a throttled download (HTTP 429)
-// fails the build instead of falling through. So the mirror, which does not
-// throttle runner pools, comes first and Central second.
+// Gradle itself moves to the next repository only when one lacks a module (a
+// 404); a throttled download (HTTP 429) or an unreachable host fails the
+// build. So `resolveWith` below tries each repository on its own, in order, and
+// retries the whole resolution with the next one when one fails: the mirror
+// first (it does not throttle runner pools), then Central.
 
-repositories {
-    maven { url = uri('https://maven-central.storage-download.googleapis.com/maven2') }
-    mavenCentral()
+def repositoryUrls = [
+    'https://maven-central.storage-download.googleapis.com/maven2',
+    'https://repo.maven.apache.org/maven2',
+]
+// -PrepositoryUrls=a,b replaces them (tests point it at a stand-in server).
+if (findProperty('repositoryUrls')) {
+    repositoryUrls = findProperty('repositoryUrls').split(',').collect { it.trim() }
+}
+
+// Resolves the coordinates (jar only, no transitive dependencies) against each
+// repository alone until one succeeds, and returns the files.
+def resolveWith = { List<String> coordinates ->
+    Exception last = null
+    for (url in repositoryUrls) {
+        repositories.clear()
+        repositories.maven {
+            it.url = uri(url)
+            it.allowInsecureProtocol = url.startsWith('http://')
+        }
+        try {
+            def cfg = configurations.detachedConfiguration(
+                    *coordinates.collect { dependencies.create(it + '@jar') })
+            cfg.transitive = false
+            return cfg.resolve()
+        } catch (Exception e) {
+            logger.warn("deps: ${url} failed (${e.cause?.message ?: e.message}); trying the next repository")
+            last = e
+        }
+    }
+    throw last
 }
 
 // Group name -> Maven coordinates. Versions are the pins the consumers named
@@ -106,10 +134,8 @@ tasks.register('fetch') {
             throw new GradleException('usage: fetch -Pgroups=<name>[,<name>...] or -Pcoordinates=<g:a:v>[,...] -PoutDir=<dir>; groups: ' + groups.keySet().join(', '))
         }
         if (!extra.isEmpty()) {
-            def cfg = configurations.detachedConfiguration(*extra.collect { dependencies.create(it + '@jar') })
-            cfg.transitive = false
             copy {
-                from cfg.resolve()
+                from resolveWith(extra)
                 into outDir
             }
         }
@@ -118,11 +144,8 @@ tasks.register('fetch') {
             if (coordinates == null) {
                 throw new GradleException("unknown group '${name}'; groups: " + groups.keySet().join(', '))
             }
-            def cfg = configurations.detachedConfiguration(
-                    *coordinates.collect { dependencies.create(it + '@jar') })
-            cfg.transitive = false
             copy {
-                from cfg.resolve()
+                from resolveWith(coordinates)
                 into outDir
             }
         }
@@ -132,11 +155,6 @@ tasks.register('fetch') {
 // Every group at once, for `--write-verification-metadata`.
 tasks.register('resolveAll') {
     doLast {
-        groups.values().flatten().unique().each { coordinate ->
-            configurations.detachedConfiguration(dependencies.create(coordinate + '@jar')).with {
-                transitive = false
-                resolve()
-            }
-        }
+        groups.values().flatten().unique().each { coordinate -> resolveWith([coordinate]) }
     }
 }
