@@ -102,6 +102,7 @@ pub mod reader_manager;
 pub mod reference_manager;
 pub mod rescorer;
 pub mod sandbox;
+mod scores_at;
 pub mod segment_cacheable;
 pub mod segment_match;
 pub mod segment_order;

@@ -988,3 +988,52 @@ fn vector_values_sources_refuse_and_describe_as_java() {
     let wrong = vs::from_long_field("li");
     assert!(err(&wrong, &ctx, 0).contains("unexpected docvalues type"));
 }
+
+#[test]
+fn scores_at_agrees_with_a_whole_leaf_scan_and_visits_only_the_asked_documents() {
+    let dir = fixture("values_rescore_index");
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let segments = opened.as_open_segments();
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .unwrap()
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let max_docs: Vec<i32> = reader.segment_readers().iter().map(|r| r.max_doc).collect();
+    let total: i32 = max_docs.iter().sum();
+
+    let term = |t: &[u8]| {
+        BooleanQuery::new().with_must([Clause::Term(TermQuery::new("body", t.to_vec()))])
+    };
+    for query in [term(b"w1"), term(b"nosuch")] {
+        // Every document, across every segment.
+        let all: Vec<i32> = (0..total).collect();
+        let got = searcher.scores_at(&query, &all).unwrap();
+        let mut want: Vec<Option<f32>> = vec![None; all.len()];
+        let mut base = 0;
+        for (leaf, max) in max_docs.iter().enumerate() {
+            for (doc, score) in searcher.leaf_scores(&query, leaf, true).unwrap() {
+                want[(base + doc) as usize] = Some(score);
+            }
+            base += max;
+        }
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!(g.map(f32::to_bits), w.map(f32::to_bits));
+        }
+        // A sparse, ascending subset gets the same answers.
+        let some: Vec<i32> = all.iter().copied().step_by(3).collect();
+        let part = searcher.scores_at(&query, &some).unwrap();
+        for (d, g) in some.iter().zip(&part) {
+            assert_eq!(g.map(f32::to_bits), want[*d as usize].map(f32::to_bits));
+        }
+    }
+    assert!(searcher.scores_at(&term(b"w1"), &[]).unwrap().is_empty());
+    assert!(searcher.scores_at(&term(b"w1"), &[total]).is_err());
+    assert!(searcher.scores_at(&term(b"w1"), &[2, 1]).is_err());
+}
