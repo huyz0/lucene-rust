@@ -40,7 +40,7 @@ import static org.lucenerust.opensearch.NativeCall.*;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 198;
+    public static final int EXPECTED_ABI_VERSION = 199;
 
     public static final int OK = 0;
 

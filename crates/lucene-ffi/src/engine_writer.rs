@@ -1047,6 +1047,24 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
     })
 }
 
+/// The hot tier (`index.hot_tier.max_memory`, `index.hot_tier.min_update_rate`):
+/// the writer holds the latest update of a row updated more than
+/// `min_updates_per_second` times a second, within `max_bytes`, and applies it
+/// at the next flush, commit, snapshot or live view. `max_bytes == 0` leaves it
+/// off. Call once, when the writer opens.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_hot_tier(
+    handle: u64,
+    max_bytes: i64,
+    min_updates_per_second: f64,
+) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            set_hot_tier(w, max_bytes, min_updates_per_second)
+        })
+    })
+}
+
 /// IVF fields' vectors clustered per partition of the index sort's first
 /// field at flush and merge (`index.knn.ivf.partition_min_vectors`):
 /// each partition of at least `min_vectors` vectors on its own, the smaller

@@ -423,6 +423,8 @@ pub struct ConcurrentIndexWriter<'d> {
     live_flushes: Mutex<live::LiveFlushes>,
     /// The next buffer's id for live search, from 1.
     next_buffer_id: AtomicU64,
+    /// [`Self::enable_hot_tier`]: held updates of rows that keep changing.
+    hot: std::sync::OnceLock<Arc<crate::hot_tier::HotTier>>,
 }
 
 /// The scheduler this writer hands its pending merges to, and the writer
@@ -649,6 +651,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_docs,
             live: AtomicBool::new(false),
             next_buffer_id: AtomicU64::new(1),
+            hot: std::sync::OnceLock::new(),
         })
     }
 
@@ -974,6 +977,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// `IndexWriter.updateDocument`: deletes every document matching `term`
     /// added before this call, then adds `doc`.
     pub fn update_document(&self, term: Term, doc: Document) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         self.add(Some(DeleteNode::terms(vec![term])), vec![doc])
     }
 
@@ -1010,6 +1015,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// `IndexWriter.deleteDocuments(Term...)`.
     pub fn delete_documents_by_term(&self, terms: &[Term]) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         self.buffer_delete(DeleteNode::terms(terms.to_vec()))
     }
 
@@ -1017,6 +1024,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// [`DeleteQuery`] covers. `MatchAll` anywhere is [`Self::delete_all`]
     /// (LUCENE-6379), as in [`IndexWriter::delete_documents_by_query`].
     pub fn delete_documents_by_query(&self, queries: &[DeleteQuery]) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         if queries.iter().any(|q| matches!(q, DeleteQuery::MatchAll)) {
             return self.delete_all();
         }
@@ -1032,6 +1041,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// aborted and waited for (`abortMerges`), and every delete
     /// buffered so far is cleared. Returns the operation's sequence number.
     pub fn delete_all(&self) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         let _full_flush = lock(&self.full_flush);
         let mut slots: Vec<RwLockWriteGuard<'_, Dwpt>> =
             self.slots.iter().map(write_slot).collect();
@@ -1076,12 +1087,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// `IndexWriter.updateDocValues(Term, Field...)`.
     pub fn update_doc_values(&self, term: Term, updates: &[DocValuesUpdate]) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         let node = self.cfg().doc_values_update_node(&term, updates)?;
         self.buffer_delete(node)
     }
 
     /// `IndexWriter.updateNumericDocValue(Term, String, long)`.
     pub fn update_numeric_doc_value(&self, term: Term, field: &str, value: i64) -> Result<SeqNo> {
+        // A held soft update must land before a later delete or update of its row.
+        self.drain_hot_tier()?;
         let update = DocValuesUpdate::Numeric {
             term: term.clone(),
             field: field.to_string(),
@@ -1466,15 +1481,55 @@ impl<'d> ConcurrentIndexWriter<'d> {
         for update in soft_deletes {
             cfg.verify_doc_values_update_field(update)?;
         }
-        let updates = soft_deletes
+        let updates: Vec<DocValuesUpdate> = soft_deletes
             .iter()
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
+        if let Some(hot) = self.hot.get() {
+            let op = crate::hot_tier::HeldOp::new(partition, term, docs, vectors, updates);
+            let mut apply = |op: crate::hot_tier::HeldOp| self.apply_held(op).map(|_| ());
+            return match hot.offer(op, &mut apply)? {
+                // The sequence number of the latest assigned operation: a held update is
+                // numbered when it is applied, so this is not its own.
+                crate::hot_tier::Offer::Held => Ok(lock(&self.log).next_seq.saturating_sub(1)),
+                crate::hot_tier::Offer::Through(op) => self.apply_held(op),
+            };
+        }
         self.add_explicit(
             partition,
             Some(DeleteNode::DocValuesUpdates(updates)),
             docs,
             vectors,
+        )
+    }
+
+    /// Turns the hot tier on, once: see [`crate::hot_tier`].
+    pub fn enable_hot_tier(&self, cfg: crate::hot_tier::HotTierConfig) -> bool {
+        self.hot
+            .set(Arc::new(crate::hot_tier::HotTier::new(cfg)))
+            .is_ok()
+    }
+
+    /// The hot tier's counters, when it is on.
+    pub fn hot_tier_stats(&self) -> Option<crate::hot_tier::HotTierStats> {
+        self.hot.get().map(|h| h.stats())
+    }
+
+    /// Applies every held operation: what a flush, a commit, a snapshot and
+    /// a live view do first. Returns how many.
+    pub fn drain_hot_tier(&self) -> Result<usize> {
+        match self.hot.get() {
+            Some(hot) => hot.drain(&mut |op| self.apply_held(op).map(|_| ())),
+            None => Ok(0),
+        }
+    }
+
+    fn apply_held(&self, op: crate::hot_tier::HeldOp) -> Result<SeqNo> {
+        self.add_explicit(
+            op.partition,
+            Some(DeleteNode::DocValuesUpdates(op.soft_deletes)),
+            op.docs,
+            op.vectors,
         )
     }
 
@@ -2268,6 +2323,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// and so every ticket before it, with the sequence number of the last
     /// operation before the cut.
     fn flush_all(&self, barrier: bool) -> Result<(SeqNo, usize)> {
+        self.drain_hot_tier()?;
         let (batches, cut, packet, last_seq, handed) = {
             let mut slots: Vec<RwLockWriteGuard<'_, Dwpt>> =
                 self.slots.iter().map(write_slot).collect();

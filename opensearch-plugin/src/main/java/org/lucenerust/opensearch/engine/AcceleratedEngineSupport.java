@@ -17,6 +17,7 @@ import org.lucenerust.opensearch.NativeStore;
 import org.lucenerust.opensearch.NativeWriter;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
+import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.MergeSchedulerConfig;
 import org.opensearch.index.engine.DefaultPrimaryOperationPolicy;
@@ -339,6 +340,40 @@ public final class AcceleratedEngineSupport {
         "index.knn.ivf.partition_min_vectors",
         0,
         0,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
+     * The hot tier's memory: the most the writer holds of the latest updates of rows that keep being
+     * updated, in bytes of the held operations plus a fixed 2 MiB tracker. A row updated faster than
+     * {@link #HOT_TIER_MIN_UPDATE_RATE} is held in memory and applied once at the next refresh, so
+     * the versions it had between two refreshes are never indexed: no dead documents for a merge to
+     * drop, and indexing CPU and merge work fall in proportion to how often those rows repeat. What
+     * does not fit goes through the normal path, so smaller budgets only give less of the gain;
+     * rows updated once, as a bulk update or a trickle does, are never held. {@code 0} (the default)
+     * turns it off. The held updates are not searchable until the next refresh, flush or realtime
+     * view, and an update dropped for a newer one leaves no version in the segments, so a replica
+     * or a cross-cluster follower that replays history from Lucene sees only each refresh's last
+     * version of those rows. Use it on indexes where that history is not needed.
+     */
+    public static final Setting<ByteSizeValue> HOT_TIER_MAX_MEMORY = Setting.byteSizeSetting(
+        "index.hot_tier.max_memory",
+        ByteSizeValue.ZERO,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
+     * Updates a second above which a row is held by the hot tier (default 1, so a row updated more
+     * than once a second); between 0.5 and 100. A row updated about once a second is not held, and
+     * one a little faster is held on some of its updates and not on others, with no cost either way.
+     */
+    public static final Setting<Double> HOT_TIER_MIN_UPDATE_RATE = Setting.doubleSetting(
+        "index.hot_tier.min_update_rate",
+        1.0,
+        0.5,
+        100.0,
         Setting.Property.IndexScope,
         Setting.Property.Final
     );
@@ -741,6 +776,10 @@ public final class AcceleratedEngineSupport {
                 writer.setMergeLz4HcNonForce();
             }
             writer.setIndexFormat(IndexFormatSettings.resolve(indexSettings.getSettings()));
+            long hotTierBytes = HOT_TIER_MAX_MEMORY.get(indexSettings.getSettings()).getBytes();
+            if (hotTierBytes > 0) {
+                writer.setHotTier(hotTierBytes, HOT_TIER_MIN_UPDATE_RATE.get(indexSettings.getSettings()));
+            }
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {
                 writer.setIvfPartitionClusters(ivfPartitionClusters);

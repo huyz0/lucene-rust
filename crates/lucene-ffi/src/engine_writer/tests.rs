@@ -1153,6 +1153,37 @@ fn index_format_reaches_the_writer() {
 }
 
 #[test]
+fn the_hot_tier_is_set_once_and_validated() {
+    let tmp = empty_index("engine-writer-hot-tier");
+    let h = open(&tmp, 0);
+    let on = || lookup(h).unwrap().writer().hot_tier_stats().is_some();
+    assert!(!on());
+    // Off with no memory, whatever the rate.
+    assert_eq!(ffi_engine_writer_set_hot_tier(h, 0, 1.0), 0);
+    assert!(!on());
+    for (bytes, rate) in [
+        (-1, 1.0),
+        (1 << 20, 0.1),
+        (1 << 20, 1000.0),
+        (1 << 20, f64::NAN),
+    ] {
+        assert_eq!(
+            ffi_engine_writer_set_hot_tier(h, bytes, rate),
+            FfiStatus::InvalidArgument as i32,
+            "{bytes} {rate}"
+        );
+    }
+    assert!(!on());
+    assert_eq!(ffi_engine_writer_set_hot_tier(h, 16 << 20, 1.0), 0);
+    assert!(on());
+    ffi_engine_writer_close(h);
+    assert_eq!(
+        ffi_engine_writer_set_hot_tier(h, 16 << 20, 1.0),
+        FfiStatus::InvalidHandle as i32
+    );
+}
+
+#[test]
 fn ivf_partition_clusters_reach_the_writer() {
     let tmp = empty_index("engine-writer-ivf-partitions");
     let h = open(&tmp, 0);
