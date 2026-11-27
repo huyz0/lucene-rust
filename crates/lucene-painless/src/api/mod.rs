@@ -18,6 +18,7 @@ pub mod map;
 pub mod math;
 pub mod number;
 pub mod objects;
+pub mod optional;
 pub mod regex;
 pub mod score;
 pub mod string;
@@ -61,6 +62,7 @@ pub fn static_method(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         "java.lang.String" => string::static_lookup(name, arity),
         "java.lang.CharSequence" => string::static_lookup(name, arity),
         "java.util.Objects" => objects::objects_lookup(name, arity),
+        "java.util.Optional" => optional::static_lookup(name, arity),
         "java.util.Arrays" => array::arrays_lookup(name, arity),
         "java.util.Collections" => collection::collections_lookup(name, arity),
         "java.util.List" => list::static_lookup(name, arity),

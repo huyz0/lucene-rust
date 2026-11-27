@@ -518,3 +518,65 @@ fn locale_constants_name_their_language_and_country() {
         Value::Bool(true)
     ));
 }
+
+#[test]
+fn an_optional_holds_a_value_or_none() {
+    assert!(matches!(
+        eval("Optional.empty().isPresent()"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(eval("Optional.of(3).get()"), Value::Int(3)));
+    assert!(matches!(eval("Optional.empty().orElse(4)"), Value::Int(4)));
+    assert!(matches!(
+        eval("Optional.empty().orElseGet(() -> 5)"),
+        Value::Int(5)
+    ));
+    assert!(matches!(
+        eval("int k = 6; Optional.empty().orElseGet(() -> k)"),
+        Value::Int(6)
+    ));
+    assert!(matches!(
+        eval("!Optional.ofNullable(null).isPresent()"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).map(x -> x + 1).get()"),
+        Value::Int(3)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).filter(x -> x > 5).isPresent()"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).flatMap(x -> Optional.of(x * 2)).get()"),
+        Value::Int(4)
+    ));
+    assert!(matches!(eval("Optional.of(2).toString()"), Value::Str(s) if &*s == "Optional[2]"));
+    assert!(
+        matches!(eval("Optional.empty().toString()"), Value::Str(s) if &*s == "Optional.empty")
+    );
+    assert!(matches!(
+        eval("Optional.of(2).equals(Optional.of(2))"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).equals(Optional.empty())"),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        eval("Optional.of(2).hashCode() == Optional.of(2).hashCode()"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("List l = new ArrayList(); Optional.of(2).ifPresent(x -> l.add(x)); l.size()"),
+        Value::Int(1)
+    ));
+    assert!(matches!(
+        eval("def o = Optional.empty(); try { o.get() } catch (NoSuchElementException e) { return 1 } 0"),
+        Value::Int(1)
+    ));
+    assert!(matches!(
+        eval("try { Optional.of(null) } catch (NullPointerException e) { return 2 } 0"),
+        Value::Int(2)
+    ));
+}
