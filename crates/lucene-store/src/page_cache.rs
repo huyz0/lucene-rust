@@ -699,7 +699,7 @@ impl PageCache {
         self.stored_pages_with(geom, pages, fetch, true)
     }
 
-    /// [`Self::stored_pages`] with the read-ahead optional: with it off only
+    /// `stored_pages` with the read-ahead optional: with it off only
     /// the asked pages are fetched, for reads whose neighbours nobody wants,
     /// such as the header and footer pages a file's open checks.
     pub(crate) fn stored_pages_with(
