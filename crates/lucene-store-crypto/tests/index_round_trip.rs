@@ -174,10 +174,40 @@ fn an_encrypted_blob_store_index_round_trips() {
     index_and_verify(&dir);
     let names = dir.list_all().unwrap();
     assert!(!names.is_empty());
+    let mut bundle_seen = false;
     for name in names {
         let raw = lucene_store::BlobStore::get(&store, &name).unwrap();
-        assert!(raw.starts_with(b"LRSE"), "{name}");
+        if name == lucene_store::open_bundle::OPEN_BUNDLE_NAME {
+            // The open bundle sits below the encryption layer and copies the
+            // bytes the store holds, so every entry is ciphertext: no
+            // plaintext reaches the store through it.
+            let entries = lucene_store::open_bundle::parse_open_bundle(&raw).expect("a bundle");
+            assert!(!entries.is_empty());
+            for (entry, bytes) in entries {
+                assert!(
+                    bytes.starts_with(b"LRSE"),
+                    "bundled {entry} is not encrypted"
+                );
+                for needle in [&b"doc-00042"[..], b"parity", b"Lucene104"] {
+                    assert!(
+                        !bytes.windows(needle.len()).any(|w| w == needle),
+                        "bundled {entry} leaks {:?}",
+                        String::from_utf8_lossy(needle)
+                    );
+                }
+                // A file a merge has since deleted is a stale entry a reader
+                // skips; one the store still lists is the very object it
+                // holds, which the cipher authenticates on read.
+                if let Ok(stored) = lucene_store::BlobStore::get(&store, &entry) {
+                    assert_eq!(&stored[..], bytes, "bundled {entry} differs from the store");
+                }
+            }
+            bundle_seen = true;
+        } else {
+            assert!(raw.starts_with(b"LRSE"), "{name}");
+        }
     }
+    assert!(bundle_seen, "the open bundle is written by default");
 }
 
 /// The same index over a local directory that reads through the demand

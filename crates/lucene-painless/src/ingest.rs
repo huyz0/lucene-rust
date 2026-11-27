@@ -77,7 +77,7 @@ impl Env for IngestEnv {
 
 /// The document as a `LinkedHashMap`, the order it was read in, with lists
 /// as `ArrayList`s.
-fn to_value(c: &Constant) -> Value {
+pub fn to_value(c: &Constant) -> Value {
     match c {
         Constant::List(items) => {
             Value::list(ListKind::ArrayList, items.iter().map(to_value).collect())
@@ -95,7 +95,7 @@ fn to_value(c: &Constant) -> Value {
 }
 
 /// The constant a value stands for in a document, or the class that cannot.
-fn from_value(v: &Value) -> Result<Constant, IngestError> {
+pub fn from_value(v: &Value) -> Result<Constant, IngestError> {
     Ok(match v {
         Value::Null => Constant::Null,
         Value::Bool(b) => Constant::Bool(*b),
