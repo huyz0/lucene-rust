@@ -12,14 +12,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::vm::Throw;
 
-/// Bytes one invocation may allocate: 4 MiB.
+/// Bytes one invocation may allocate under the limits a node sets: 4 MiB.
 pub const DEFAULT_INVOCATION: usize = 4 << 20;
 
-/// Bytes one string or collection may take: 1 MiB.
+/// Bytes one string or collection may take under the limits a node sets: 1 MiB.
 pub const DEFAULT_VALUE: usize = 1 << 20;
 
-static INVOCATION: AtomicUsize = AtomicUsize::new(DEFAULT_INVOCATION);
-static VALUE: AtomicUsize = AtomicUsize::new(DEFAULT_VALUE);
+/// IR nodes one script may lower to under the limits a node sets.
+pub const DEFAULT_IR_NODES: usize = 20_000;
+
+// Unlimited until a node sets them, so a user of the library that never
+// asks for limits runs scripts as before.
+static INVOCATION: AtomicUsize = AtomicUsize::new(usize::MAX);
+static VALUE: AtomicUsize = AtomicUsize::new(usize::MAX);
+static IR_NODES: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 thread_local! {
     static USED: Cell<usize> = const { Cell::new(0) };
@@ -31,6 +37,16 @@ thread_local! {
 pub fn set_limits(invocation: usize, value: usize) {
     INVOCATION.store(invocation, Ordering::Relaxed);
     VALUE.store(value, Ordering::Relaxed);
+}
+
+/// Sets the most IR nodes a script may lower to. Process-wide.
+pub fn set_ir_nodes(nodes: usize) {
+    IR_NODES.store(nodes, Ordering::Relaxed);
+}
+
+/// The most IR nodes a script may lower to now.
+pub fn ir_nodes() -> usize {
+    IR_NODES.load(Ordering::Relaxed)
 }
 
 /// The limits now: bytes an invocation and bytes a value.
@@ -110,7 +126,10 @@ mod tests {
             .message()
             .unwrap_or_default()
             .contains("600"));
-        set_limits(DEFAULT_INVOCATION, DEFAULT_VALUE);
-        assert_eq!(limits(), (4 << 20, 1 << 20));
+        set_limits(usize::MAX, usize::MAX);
+        assert_eq!(limits(), (usize::MAX, usize::MAX));
+        set_ir_nodes(7);
+        assert_eq!(ir_nodes(), 7);
+        set_ir_nodes(usize::MAX);
     }
 }

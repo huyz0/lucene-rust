@@ -72,17 +72,15 @@ pub fn compile(source: &str, context: u8) -> Result<Script, Refused> {
     for f in &script.functions {
         any_node(&f.body, &mut |_| nodes += 1);
     }
-    if nodes > MAX_IR_NODES {
+    let max = crate::arena::ir_nodes();
+    if nodes > max {
         return Err(Refused::Compile {
             offset: 0,
-            message: format!("the script has {nodes} operations, over the limit of {MAX_IR_NODES}"),
+            message: format!("the script has {nodes} operations, over the limit of {max}"),
         });
     }
     Ok(script)
 }
-
-/// The most IR nodes a script may lower to.
-pub const MAX_IR_NODES: usize = 20_000;
 
 /// The fields the script reads through a constant name (`doc['f']`,
 /// `doc.get('f')`, `doc.containsKey('f')`), in the order it first reads them.

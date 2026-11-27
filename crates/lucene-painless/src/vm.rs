@@ -579,7 +579,7 @@ impl Env for ParamsEnv {
 }
 
 /// Deepest call nesting before a `StackOverflowError`.
-const MAX_CALL_DEPTH: u32 = 128;
+const MAX_CALL_DEPTH: u32 = 200;
 
 pub const LOOP_LIMIT_MESSAGE: &str =
     "The maximum number of statements that can be executed in a loop has been reached.";

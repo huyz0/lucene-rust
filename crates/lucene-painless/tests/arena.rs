@@ -26,6 +26,12 @@ fn run(src: &str) -> Result<Value, String> {
 /// One test: the limits are process-wide.
 #[test]
 fn a_script_past_its_allocation_limits_fails_and_the_next_run_is_clean() {
+    // Unlimited until a node sets the limits.
+    assert_eq!(arena::limits(), (usize::MAX, usize::MAX));
+    assert!(run(
+        "String s = 'xxxxxxxx'; for (int i = 0; i < 18; i++) { s += s; } return s.length();"
+    )
+    .is_ok());
     arena::set_limits(arena::DEFAULT_INVOCATION, arena::DEFAULT_VALUE);
     // A string over 1 MiB: doubled to 2 MiB.
     let doubled =
@@ -45,22 +51,23 @@ fn a_script_past_its_allocation_limits_fails_and_the_next_run_is_clean() {
     // The limits are settable.
     arena::set_limits(1 << 30, 1 << 30);
     assert!(run(doubled).is_ok());
-    arena::set_limits(arena::DEFAULT_INVOCATION, arena::DEFAULT_VALUE);
+    arena::set_limits(usize::MAX, usize::MAX);
 }
 
-/// A script over 20,000 IR nodes is refused when it is compiled, with the
-/// count, and one just under it compiles.
+/// A script over the IR node cap is refused when it is compiled, with the
+/// count; with no cap set it compiles. One test: the cap is process-wide.
 #[test]
 fn a_script_over_the_ir_node_cap_is_refused_at_compile_time() {
-    use lucene_painless::front::source::{compile, Refused, MAX_IR_NODES};
-    assert_eq!(MAX_IR_NODES, 20_000);
+    use lucene_painless::front::source::{compile, Refused};
     let body = |n: usize| format!("int a = 0; {} return a;", "a += 1;".repeat(n));
-    let small = compile(&body(10), 0);
-    assert!(small.is_ok(), "{small:?}");
+    assert!(compile(&body(9_000), 0).is_ok(), "no cap by default");
+    arena::set_ir_nodes(arena::DEFAULT_IR_NODES);
+    assert!(compile(&body(10), 0).is_ok());
     match compile(&body(9_000), 0) {
         Err(Refused::Compile { message, .. }) => {
             assert!(message.contains("over the limit of 20000"), "{message}");
         }
         other => panic!("{other:?}"),
     }
+    arena::set_ir_nodes(usize::MAX);
 }
