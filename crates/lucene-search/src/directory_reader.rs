@@ -80,7 +80,6 @@ use std::sync::{Arc, OnceLock};
 
 use crate::multi_segment::OpenSegment;
 
-mod live_override;
 mod open_segment;
 mod simpletext;
 mod simpletext_search;
@@ -137,6 +136,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 mod open_postings;
+use open_postings::open_per_field_postings;
 mod vector_files;
 
 /// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.

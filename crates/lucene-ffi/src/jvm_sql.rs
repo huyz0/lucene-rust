@@ -180,7 +180,7 @@ pub(crate) fn forget(handle: u64) {
 
 fn snapshot_of(h: &JvmReaderHandle, table: &[u8]) -> Result<Arc<Snapshot>, FfiStatus> {
     let spec = decode_table(table)?;
-    let reader = h.reader.with_live_docs(&h.live_docs).map_err(|e| {
+    let reader = h.reader.with_host_live_docs(&h.live_docs).map_err(|e| {
         set_last_error(format!("applying the live docs: {e}"));
         FfiStatus::Decode
     })?;
