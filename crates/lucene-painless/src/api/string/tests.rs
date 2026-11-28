@@ -12,7 +12,8 @@ fn length_indexing_and_substrings_count_utf16_units() {
     assert_eq!(t(&s("hello"), "substring", &[i(1)]), "ello");
     assert_eq!(t(&s("hello"), "substring", &[i(1), i(3)]), "el");
     assert_eq!(t(&s("hello"), "subSequence", &[i(0), i(5)]), "hello");
-    assert!(t(&s("hello"), "substring", &[i(3), i(2)]).contains("begin 3, end 2, length 5"));
+    assert!(t(&s("hello"), "substring", &[i(3), i(2)])
+        .contains("Range [3, 2) out of bounds for length 5"));
     assert!(t(&s("hello"), "substring", &[i(-1), i(2)]).contains("StringIndexOutOfBounds"));
     assert_eq!(t(&g, "substring", &[i(0), i(1)]), "a");
 }
@@ -254,12 +255,13 @@ fn string_builder_edits_in_place() {
 #[test]
 fn string_builder_range_errors() {
     let b = builder("abc");
-    assert!(t(&b, "insert", &[i(9), s("x")]).contains("offset 9, length 3"));
+    assert!(t(&b, "insert", &[i(9), s("x")]).contains("Range [9, 3) out of bounds for length 3"));
     let r = t(&b, "delete", &[i(2), i(9)]);
     assert_eq!(r, "ab");
     assert!(t(&b, "delete", &[i(7), i(9)]).contains("StringIndexOutOfBounds"));
-    assert!(t(&b, "deleteCharAt", &[i(7)]).contains("index 7,length 2"));
-    assert!(t(&b, "setCharAt", &[i(7), Value::Char('x' as u16)]).contains("index 7,length 2"));
+    assert!(t(&b, "deleteCharAt", &[i(7)]).contains("Index 7 out of bounds for length 2"));
+    assert!(t(&b, "setCharAt", &[i(7), Value::Char('x' as u16)])
+        .contains("Index 7 out of bounds for length 2"));
     assert!(t(&b, "setCharAt", &[i(0), i(1)]).contains("ClassCast"));
     assert!(builder_constructor(1).is_some());
 }

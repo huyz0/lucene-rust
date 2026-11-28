@@ -30,7 +30,9 @@ pub fn substring(s: &str, a: i32, b: i32) -> Result<String, Throw> {
         s.encode_utf16().count()
     } as i32;
     if a < 0 || b > len || a > b {
-        return Err(sioobe(format!("begin {a}, end {b}, length {len}")));
+        return Err(sioobe(format!(
+            "Range [{a}, {b}) out of bounds for length {len}"
+        )));
     }
     if s.is_ascii() {
         return Ok(s[a as usize..b as usize].to_string());
@@ -1123,7 +1125,9 @@ impl JObject for JStringBuilder {
                     let s = self.buf.borrow().clone();
                     let n = len16(&s) as i32;
                     if i < 0 || i > n {
-                        return Err(sioobe(format!("offset {i}, length {n}")));
+                        return Err(sioobe(format!(
+                            "Range [{i}, {n}) out of bounds for length {n}"
+                        )));
                     }
                     let new = format!(
                         "{}{}{}",
@@ -1139,7 +1143,9 @@ impl JObject for JStringBuilder {
                     let n = len16(&s) as i32;
                     let (a, b) = (int_arg(&args[0])?, int_arg(&args[1])?.min(n));
                     if a < 0 || a > b {
-                        return Err(sioobe(format!("start {a}, end {b}, length {n}")));
+                        return Err(sioobe(format!(
+                            "Range [{a}, {b}) out of bounds for length {n}"
+                        )));
                     }
                     let new = format!("{}{}", substring(&s, 0, a)?, substring(&s, b, n)?);
                     *self.buf.borrow_mut() = new;
@@ -1150,7 +1156,7 @@ impl JObject for JStringBuilder {
                     let n = len16(&s) as i32;
                     let a = int_arg(&args[0])?;
                     if a < 0 || a >= n {
-                        return Err(sioobe(format!("index {a},length {n}")));
+                        return Err(sioobe(format!("Index {a} out of bounds for length {n}")));
                     }
                     let new = format!("{}{}", substring(&s, 0, a)?, substring(&s, a + 1, n)?);
                     *self.buf.borrow_mut() = new;
@@ -1192,7 +1198,9 @@ impl JObject for JStringBuilder {
                     };
                     let n = u.len();
                     *u.get_mut(usize::try_from(i).unwrap_or(usize::MAX))
-                        .ok_or_else(|| sioobe(format!("index {i},length {n}")))? = c;
+                        .ok_or_else(|| {
+                            sioobe(format!("Index {i} out of bounds for length {n}"))
+                        })? = c;
                     *self.buf.borrow_mut() = from_utf16(&u);
                     Value::Null
                 }

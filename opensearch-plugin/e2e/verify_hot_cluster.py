@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Rows updated again and again on a primary with a replica (two plugin nodes, `os1` and `os2`), against a standalone stock
+"""Rows updated again and again on a primary with a replica (data nodes `os2` and `os3`, `os1` is the cluster manager), against a standalone stock
 node: the seeded operation stream of verify_hot_rows.py, answered identically; then the node holding the primary is
 SIGKILLed mid-stream (the replica is promoted and writes continue), restarted (peer recovery), and every copy of the
 shard, read with preference=_only_nodes, must hold what the stock node holds.
 
-    nodectl run os1 plugin 9201 --transport 9301 --setting cluster.name=hc --setting discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302 --setting cluster.initial_cluster_manager_nodes=os1,os2   (and os2 on 9202/9302)
+    nodectl run os1 plugin 9201 --transport 9301 --setting cluster.name=hc --setting discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302 --setting cluster.initial_cluster_manager_nodes=os1,os2   (os1 manager-only 9201; os2, os3 data-only 9202, 9203; transports 9311-9313; cluster.name=hc)
     python3 opensearch-plugin/e2e/verify_hot_cluster.py SEED OPS [--hot]   (stock on :9251)"""
 import json
 import random
@@ -12,7 +12,7 @@ import sys
 import urllib.error
 import urllib.request
 
-NODES = {"os1": 9201, "os2": 9202}
+NODES = {"os1": 9201, "os2": 9202, "os3": 9203}
 DOWN = set()
 S = "http://localhost:9251"
 P = "plugin-cluster"
@@ -63,7 +63,7 @@ def reset(index):
 def item(r):
     if "error" in r:
         return ("error", r.get("status"), r["error"].get("type") if isinstance(r["error"], dict) else r["error"])
-    return tuple(r.get(k) for k in ("result", "_version", "_seq_no", "_primary_term", "status"))
+    return tuple(r.get(k) for k in ("result", "_version", "_seq_no", "status"))
 
 
 def result(st, r):
@@ -103,11 +103,12 @@ def refreshed_state(index):
 
 def copies(index):
     """Every copy of the shard, read on its own node, against the stock node."""
+    req(S, "POST", "/%s/_refresh" % index)
     st, stock = req(S, "POST", "/%s/_search" % index, {"size": 100, "query": {"match_all": {}}, "sort": [{"_id": "asc"}], "track_total_hits": True})
     want = [(h["_id"], h["_source"]) for h in stock["hits"]["hits"]]
     global bad_copies
     for n, port in NODES.items():
-        if n in DOWN:
+        if n in DOWN or n == "os1":
             continue
         req1("http://localhost:%d" % port, "POST", "/%s/_refresh" % index)
         st, r = req1("http://localhost:%d" % port, "POST", "/%s/_search?preference=_only_nodes:%s" % (index, n),
@@ -158,7 +159,8 @@ def main():
         elif k == "if_seq":
             st, r = req(S, "GET", "/%s/_doc/%s" % (index, i))
             seq = r.get("_seq_no", 0) + rnd.choice([0, 0, 1])
-            call = ("PUT", "/%s/_doc/%s?if_seq_no=%d&if_primary_term=1" % (index, i, seq), d)
+            st, rp = req(P, "GET", "/%s/_doc/%s" % (index, i))
+            call = ("PUT", "/%s/_doc/%s?if_seq_no=%d&if_primary_term=%d" % (index, i, seq, rp.get("_primary_term", 1)), d)
         elif k == "bulk":
             lines = []
             for _ in range(rnd.randint(2, 8)):
@@ -179,7 +181,7 @@ def main():
         method, path, body = call
         nd = k == "bulk"
         a = req(P, method, path, body, nd=nd)
-        b = req(S, method, path, body, nd=nd)
+        b = req(S, method, path.replace("if_primary_term=%d" % (rp.get("_primary_term", 1) if k == "if_seq" else -1), "if_primary_term=%d" % (r.get("_primary_term", 1) if k == "if_seq" else -1)), body, nd=nd)
         if k == "get":
             ra = (a[0], a[1].get("found"), a[1].get("_version"), a[1].get("_seq_no"), a[1].get("_source"))
             rb = (b[0], b[1].get("found"), b[1].get("_version"), b[1].get("_seq_no"), b[1].get("_source"))
