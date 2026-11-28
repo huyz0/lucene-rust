@@ -347,7 +347,10 @@ impl DiskTier {
         let mut buf = vec![0u8; len as usize];
         let read = self
             .slab(slot)
-            .and_then(|(file, offset)| read_exact_at(&file, &mut buf, offset));
+            // A page handed to another node (`count` false) stays in the
+            // kernel's cache: the nodes that ask for the same hot set after
+            // the first read it from memory, not the disk.
+            .and_then(|(file, offset)| read_exact_at(&file, &mut buf, offset, !count));
         let mut st = lock_ignoring_poison(&self.state);
         let same = st
             .slot(slot)
@@ -637,10 +640,14 @@ fn punch_hole(file: &File, offset: u64, len: u64) {
     let _ = (file, offset, len);
 }
 
+/// Reads `buf` from `offset`, then asks the kernel to drop those bytes from
+/// its cache unless `keep` is set.
 #[cfg(unix)]
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64, keep: bool) -> std::io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)?;
-    drop_cached(file, offset, buf.len());
+    if !keep {
+        drop_cached(file, offset, buf.len());
+    }
     Ok(())
 }
 
@@ -668,7 +675,12 @@ fn drop_cached(file: &File, offset: u64, len: usize) {
 fn drop_cached(_file: &File, _offset: u64, _len: usize) {}
 
 #[cfg(windows)]
-fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+fn read_exact_at(
+    file: &File,
+    mut buf: &mut [u8],
+    mut offset: u64,
+    _keep: bool,
+) -> std::io::Result<()> {
     while !buf.is_empty() {
         let n = std::os::windows::fs::FileExt::seek_read(file, buf, offset)?;
         if n == 0 {

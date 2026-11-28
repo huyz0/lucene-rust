@@ -261,3 +261,55 @@ fn listing_many_shards_prefixes_over_many_files_is_not_files_times_prefixes() {
         "took {took:?}"
     );
 }
+
+/// Whether the kernel holds the first 4 KiB of `path` in its page cache.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn kernel_holds_first_page(path: &std::path::Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::open(path).unwrap();
+    // SAFETY: a private read-only mapping of one page of an open file, used
+    // for `mincore` only and unmapped before returning; it is never read.
+    unsafe {
+        let map = libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        );
+        assert_ne!(map, libc::MAP_FAILED);
+        let mut vec = [0u8; 1];
+        let rc = libc::mincore(map, 4096, vec.as_mut_ptr());
+        libc::munmap(map, 4096);
+        assert_eq!(rc, 0);
+        vec[0] & 1 == 1
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_page_handed_to_another_node_stays_in_the_kernel_cache_and_a_search_read_does_not() {
+    let tmp = lucene_util::test_support::TempDir::new("page-disk-keep");
+    let d = DiskTier::open(&tmp.path().join("t"), 16 * 4096, 4096).unwrap();
+    let a = key("a");
+    d.put(&a, 0, &[1; 4096]);
+    let slab = tmp.path().join("t").join("slab-0-0");
+    // Written pages are dirty until written back, and the kernel keeps those.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&slab)
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    assert_eq!(&d.get(&a, 0).unwrap()[..], &[1; 4096][..]);
+    assert!(!kernel_holds_first_page(&slab), "a search read drops it");
+    assert_eq!(&d.peek("a", 0).unwrap()[..], &[1; 4096][..]);
+    assert!(kernel_holds_first_page(&slab), "a copy read keeps it");
+    assert_eq!(&d.get(&a, 0).unwrap()[..], &[1; 4096][..]);
+    assert!(
+        !kernel_holds_first_page(&slab),
+        "the next search read drops it again"
+    );
+}
