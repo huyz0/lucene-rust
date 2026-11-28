@@ -87,7 +87,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [neural-sparse.md](parity/neural-sparse.md) | `lucene-sparse`: OpenSearch neural-search's Seismic sparse index (reader, writer and approximate query), its hybrid search, stats API, `neural` query, `query_text`, ingest processors, rerank, two-phase and the semantic field | 11 |
 | [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) and remote connectors for the accelerated-search plugin, and its Hugging Face analyzers | 23 |
 | [knn-vector.md](parity/knn-vector.md) | the k-NN plugin's `knn_vector` field and `knn` query, its `_plugins/_knn` REST endpoints and MMR, served by the accelerated-search plugin | 9 |
-| [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 14 |
+| [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 15 |
 | [tensor.md](parity/tensor.md) | `lucene-tensor`: opt-in multi-vector (late-interaction) fields in binary doc values and `MaxSim` rescoring (this port's own encodings beside Lucene's) | 6 |
 | [pattern-text.md](parity/pattern-text.md) | `lucene-pattern-text`: opt-in log-message fields stored as a template plus variables, with verified phrases, and the plugin's `pattern_text` field | 5 |
 | [vector-disk-hnsw.md](parity/vector-disk-hnsw.md) | `lucene-disk-hnsw`: an opt-in HNSW layout with one read per hop (this port's own format, the stock graph) | 8 |
@@ -101,7 +101,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (the `unified`, `plain` and `fvh` highlighters native as `accelerated_unified`, `accelerated_plain`, `accelerated_fvh`; suggesters stay OpenSearch's) | 25 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
 | [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 19 |
-| [sql.md](parity/sql.md) | `lucene-sql`: read-only SQL over an index (router, DataFusion fallback, table provider, plan cache, group-by rule, Arrow export) | 17 |
+| [sql.md](parity/sql.md) | `lucene-sql`: read-only SQL over an index (router, DataFusion fallback, table provider, plan cache, group-by rule, Arrow export) | 19 |
 
 ## Supported, in one paragraph
 
