@@ -17,6 +17,7 @@
   - [Realtime search](reference/realtime-search.md)
   - [Storage and encryption](reference/pluggable-storage.md)
   - [Logs preset](reference/logs-preset.md)
+  - [The index as an Arrow source](reference/arrow-source.md)
   - [ml-commons models and connectors](reference/ml-commons-remote.md)
 
 - [How it works](how-it-works.md)
@@ -46,6 +47,7 @@
   - [Recall targeting](reference/benchmarks/recall-target.md)
   - [Grouped k-NN](reference/benchmarks/knn-grouped.md)
   - [Seismic sparse search](reference/benchmarks/seismic.md)
+  - [Arrow source](reference/benchmarks/arrow-source.md)
   - [Lean sequence numbers](reference/benchmarks/lean-seq-no.md)
   - [Settings defaults review](reference/benchmarks/settings-defaults.md)
 

@@ -118,6 +118,10 @@ impl Snapshot {
         self.keyword_dense.get(column).copied().unwrap_or(false)
     }
 
+    pub(crate) fn leaf_max_doc(&self, segment: usize) -> i32 {
+        self.leaf(segment).max_doc
+    }
+
     pub(crate) fn leaf(&self, segment: usize) -> &SegmentReader {
         &self.reader.segment_readers()[segment]
     }

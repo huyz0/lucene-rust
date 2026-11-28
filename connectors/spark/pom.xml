@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.accelerated.lucene</groupId>
+  <artifactId>lucene-spark</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+  <name>lucene-spark</name>
+  <description>Spark DataSource V2 over an index: column pruning, filters and limit run in the index scan.</description>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <spark.version>4.0.1</spark.version>
+    <arrow.version>18.1.0</arrow.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_2.13</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Spark ships arrow-vector at this version; the C data interface is not part of Spark. -->
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-c-data</artifactId>
+      <version>${arrow.version}</version>
+    </dependency>
+  </dependencies>
+</project>

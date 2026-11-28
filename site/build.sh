@@ -23,7 +23,7 @@ fix_links() { # rewrite links that leave docs/ so they land on the source tree
 }
 
 for f in operations feature-matrix compatibility accelerated-queries opensearch-engine \
-         realtime-search pluggable-storage logs-preset ml-commons-remote licences upstream-forks; do
+         realtime-search pluggable-storage logs-preset arrow-source ml-commons-remote licences upstream-forks; do
     fix_links "../docs/$f.md" > "src/reference/$f.md"
 done
 for f in ci testing-without-docker mechanical-gates arithmetic-gate porting-workflow \

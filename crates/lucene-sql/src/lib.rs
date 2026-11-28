@@ -12,18 +12,29 @@
 //! [`snapshot::Snapshot`]; [`engine::SqlEngine`] ties them together.
 
 pub mod columns;
+#[cfg(feature = "sql")]
 pub mod engine;
 pub mod error;
+pub mod export;
+#[cfg(feature = "sql")]
 pub mod group;
+#[cfg(feature = "sql")]
 pub mod group_rule;
 pub mod native;
+#[cfg(feature = "sql")]
 pub mod plan_cache;
+#[cfg(feature = "sql")]
 pub mod pred;
+#[cfg(feature = "sql")]
 pub mod provider;
+#[cfg(feature = "sql")]
 pub mod router;
+#[cfg(feature = "sql")]
 pub mod rule;
 pub mod snapshot;
 pub mod spec;
+pub use arrow;
+#[cfg(feature = "sql")]
 pub use engine::{SqlConfig, SqlEngine};
 pub use error::{Error, Result};
 pub use snapshot::Snapshot;
