@@ -5,6 +5,7 @@ use datafusion::sql::sqlparser::ast::{
 };
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
+use datafusion::sql::sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::error::{Error, Result};
 
@@ -18,6 +19,7 @@ use crate::error::{Error, Result};
 /// # Errors
 /// A statement that does not parse, or does not read exactly one table.
 pub fn table_name(sql: &str) -> Result<String> {
+    check_operators(sql)?;
     let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
         .map_err(|e| Error::unsupported(format!("sql: {e}")))?;
     if statements.len() != 1 {
@@ -34,6 +36,44 @@ pub fn table_name(sql: &str) -> Result<String> {
         [] => Err(Error::unsupported("the statement reads no table")),
         _ => Err(Error::unsupported("a statement over several tables")),
     }
+}
+
+/// The most binary operators (`AND`, `OR`, arithmetic, `||`) one statement may chain.
+/// The parser, the planner and the tree's drop all recurse over a chain's length, so
+/// one statement of thousands of terms would overflow the stack of the thread running it.
+const MAX_OPERATORS: usize = 1000;
+
+/// Refuses a statement that chains more operators than [`MAX_OPERATORS`], before
+/// anything recursive sees it.
+///
+/// # Errors
+/// A statement with too many operators, or one that does not tokenize.
+pub fn check_operators(sql: &str) -> Result<()> {
+    let tokens = Tokenizer::new(&GenericDialect {}, sql)
+        .tokenize()
+        .map_err(|e| Error::unsupported(format!("sql: {e}")))?;
+    let operators = tokens
+        .iter()
+        .filter(|t| match t {
+            Token::Word(w) => {
+                w.quote_style.is_none()
+                    && (w.value.eq_ignore_ascii_case("and") || w.value.eq_ignore_ascii_case("or"))
+            }
+            Token::Plus
+            | Token::Minus
+            | Token::Mul
+            | Token::Div
+            | Token::Mod
+            | Token::StringConcat => true,
+            _ => false,
+        })
+        .count();
+    if operators > MAX_OPERATORS {
+        return Err(Error::unsupported(format!(
+            "sql: a statement may chain at most {MAX_OPERATORS} operators"
+        )));
+    }
+    Ok(())
 }
 
 fn collect_query(query: &Query, found: &mut Vec<String>) -> Result<()> {
@@ -99,6 +139,16 @@ mod tests {
             table_name("SELECT a FROM t UNION ALL SELECT a FROM t").unwrap(),
             "t"
         );
+    }
+
+    #[test]
+    fn a_statement_of_thousands_of_terms_is_refused_not_planned() {
+        let long = format!("SELECT a FROM t WHERE a = 1{}", " OR a = 0".repeat(20_000));
+        assert!(table_name(&long).is_err());
+        let ok = format!("SELECT a FROM t WHERE a = 1{}", " OR a = 0".repeat(400));
+        assert_eq!(table_name(&ok).unwrap(), "t");
+        let ins = format!("SELECT a FROM t WHERE a IN (1{})", ",1".repeat(20_000));
+        assert_eq!(table_name(&ins).unwrap(), "t");
     }
 
     #[test]

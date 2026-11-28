@@ -239,6 +239,7 @@ impl SqlEngine {
     /// # Errors
     /// A statement that does not parse or plan, or an unreadable index.
     pub async fn query(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         if let Some(batch) = self.router.run(sql)? {
             return Ok(vec![batch]);
         }
@@ -256,6 +257,7 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn standard(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         if let Some(plans) = &self.plans {
             match plans.run(&self.ctx, read_only(), sql, self.max_rows).await {
                 Ok(Some(batches)) => return Ok(batches),
@@ -272,6 +274,7 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn uncached(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         match self.run_on(&self.ctx, sql).await {
             Err(Error::DataFusion(e)) if is_inexact(&e) => self.plain_run(sql).await,
             other => other,
@@ -304,6 +307,7 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub fn query_traced(&self, sql: &str) -> Result<(Vec<RecordBatch>, Path)> {
+        crate::statement::check_operators(sql)?;
         crate::scope::stop()?;
         if let Some(batch) = self.router.run(sql)? {
             return Ok((vec![batch], Path::Router));
@@ -324,6 +328,7 @@ impl SqlEngine {
         self: &Arc<Self>,
         sql: &str,
     ) -> Result<Box<dyn RecordBatchReader + Send>> {
+        crate::statement::check_operators(sql)?;
         if let Some(batch) = self.router.run(sql)? {
             let schema = batch.schema();
             return Ok(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)));

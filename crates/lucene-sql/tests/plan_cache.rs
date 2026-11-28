@@ -150,15 +150,24 @@ fn the_cache_is_bounded_and_can_be_turned_off() {
 
 #[test]
 fn a_long_statement_is_planned_each_time_and_never_kept() {
-    let f = fixture(500, 2, &[]);
-    let pad = " OR price = 0".repeat(400);
-    let sql = format!("SELECT id FROM t WHERE price = 1{pad} ORDER BY id LIMIT 3");
-    let first = cached(&f, &sql);
-    assert_eq!(cached(&f, &sql), first);
-    let short = "SELECT id, price FROM t WHERE cat = 'c01' ORDER BY price, id LIMIT 4";
-    cached(&f, short);
-    cached(&f, short);
-    let s = f.engine.plan_cache_stats().unwrap();
-    assert_eq!(s.hits, 1, "only the short statement is reused: {s:?}");
-    assert_eq!(s.planned + s.uncacheable, 3, "{s:?}");
+    // The planner recurses over the chain of terms, and an unoptimised build's frames
+    // overflow the test thread's default stack well before the node's do.
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(|| {
+            let f = fixture(500, 2, &[]);
+            let pad = " OR price = 0".repeat(400);
+            let sql = format!("SELECT id FROM t WHERE price = 1{pad} ORDER BY id LIMIT 3");
+            let first = cached(&f, &sql);
+            assert_eq!(cached(&f, &sql), first);
+            let short = "SELECT id, price FROM t WHERE cat = 'c01' ORDER BY price, id LIMIT 4";
+            cached(&f, short);
+            cached(&f, short);
+            let s = f.engine.plan_cache_stats().unwrap();
+            assert_eq!(s.hits, 1, "only the short statement is reused: {s:?}");
+            assert_eq!(s.planned + s.uncacheable, 3, "{s:?}");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

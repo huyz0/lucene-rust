@@ -303,10 +303,17 @@ public final class AcceleratedSql {
                 try (NativeMemory.Scope memory = NativeMemory.open(NativeMemory.breakerService(), () -> false, "accelerated_sql")) {
                     try {
                         json = NativeSql.query(acquired.handle(), table.blob(), sql);
+                    } catch (NativeSql.Failure f) {
+                        // The request breaker's own refusal when it stopped the statement.
+                        RuntimeException stopped = f.status() == NativeBridge.MEMORY_LIMIT ? memory.stopped(f.status(), f.getMessage()) : null;
+                        if (stopped != null) {
+                            throw stopped;
+                        }
+                        throw f;
                     } finally {
                         NativeMemory.queryStarted(0);
                     }
-                } 
+                }
                 stats.sqlStatement(System.nanoTime() - start);
                 return json;
             } catch (NativeSql.Failure e) {

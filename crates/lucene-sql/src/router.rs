@@ -637,17 +637,21 @@ fn search_call(e: &Expr, spec: &TableSpec, used: &mut Used) -> Option<(String, u
 
 /// The `AND`-ed terms of `e`.
 fn conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
-    match e {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::And,
-            right,
-        } => {
-            conjuncts(left, out);
-            conjuncts(right, out);
+    // Iterative, so a statement with thousands of terms cannot overflow the stack.
+    let mut pending = vec![e];
+    while let Some(e) = pending.pop() {
+        match e {
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => {
+                pending.push(right);
+                pending.push(left);
+            }
+            Expr::Nested(inner) => pending.push(inner),
+            other => out.push(other),
         }
-        Expr::Nested(inner) => conjuncts(inner, out),
-        other => out.push(other),
     }
 }
 
@@ -683,17 +687,21 @@ fn column_of_cond(c: &Cond) -> Option<usize> {
 
 /// The `OR`-ed terms of `e`.
 fn disjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
-    match e {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Or,
-            right,
-        } => {
-            disjuncts(left, out);
-            disjuncts(right, out);
+    // Iterative, so a statement with thousands of terms cannot overflow the stack.
+    let mut pending = vec![e];
+    while let Some(e) = pending.pop() {
+        match e {
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::Or,
+                right,
+            } => {
+                pending.push(right);
+                pending.push(left);
+            }
+            Expr::Nested(inner) => pending.push(inner),
+            other => out.push(other),
         }
-        Expr::Nested(inner) => disjuncts(inner, out),
-        other => out.push(other),
     }
 }
 
