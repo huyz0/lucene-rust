@@ -7,7 +7,7 @@ fn registry_finds_replaces_and_rejects() {
     let mut r = QuantizerRegistry::with_builtins();
     assert_eq!(
         r.names(),
-        vec!["osq", "sq", "erq", "pq", "rot-osq", "rot-sq"]
+        vec!["osq", "sq", "erq", "pq", "flat", "rot-osq", "rot-sq"]
     );
     assert!(r.get("osq").is_ok());
     assert!(r.get("rot-sq").is_ok());
@@ -18,7 +18,7 @@ fn registry_finds_replaces_and_rejects() {
     r.register(Arc::new(osq::OsqFactory::bbq()));
     assert_eq!(
         r.names(),
-        vec!["sq", "erq", "pq", "rot-osq", "rot-sq", "osq"]
+        vec!["sq", "erq", "pq", "flat", "rot-osq", "rot-sq", "osq"]
     );
     assert!(QuantizerRegistry::new().names().is_empty());
 }

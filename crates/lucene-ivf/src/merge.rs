@@ -7,7 +7,11 @@
 //! `n * k * dim`, while the clusters of the large input already fit most of
 //! its data.
 
-use lucene_vector_quant::QuantizerFactory;
+use std::sync::Arc;
+
+use lucene_vector_quant::{QuantizerFactory, Similarity};
+
+use crate::model::SharedModel;
 
 use crate::kmeans::{self, NO_CLUSTER};
 use crate::reader::{IvfField, IvfReader};
@@ -97,25 +101,18 @@ fn reused_source<'a>(
         .then_some((largest, field, refine_rounds))
 }
 
-/// Writes field `number` of the merged segment into `writer`: the live
-/// vectors of every source that has the field, under their new document
-/// numbers, clustered as `params.merge_clustering` says and quantized
-/// afresh with `factory`. Sources may store their vectors in any
-/// [`crate::VectorEncoding`]; they are decoded, and written in
-/// `params.rerank_encoding`.
-///
-/// # Errors
-///
-/// Sources that disagree on the field's similarity or dimension, two
-/// sources mapping onto the same document, a read failure, or the writer's
-/// own errors. A field no source has is not written.
-pub fn merge_field(
-    writer: &mut IvfWriter,
-    number: i32,
-    sources: &[MergeSource<'_>],
-    factory: &dyn QuantizerFactory,
-    params: &IvfParams,
-) -> Result<()> {
+/// The live vectors of field `number` over `sources`, decoded: `None` when
+/// no source has the field.
+struct Gathered {
+    similarity: Similarity,
+    dimension: usize,
+    /// (new doc, source, slot) for every live vector, by new doc.
+    live: Vec<(i32, usize, u32)>,
+    docs: Vec<i32>,
+    vectors: Vec<f32>,
+}
+
+fn gather(number: i32, sources: &[MergeSource<'_>]) -> Result<Option<Gathered>> {
     let mut shape = None;
     // (new doc, source, slot) for every live vector.
     let mut live: Vec<(i32, usize, u32)> = Vec::new();
@@ -136,7 +133,7 @@ pub fn merge_field(
         }
     }
     let Some((similarity, dimension)) = shape else {
-        return Ok(());
+        return Ok(None);
     };
     live.sort_unstable_by_key(|&(d, _, _)| d);
     if live.windows(2).any(|w| w[0].0 == w[1].0) {
@@ -166,6 +163,44 @@ pub fn merge_field(
             );
         }
     }
+    Ok(Some(Gathered {
+        similarity,
+        dimension,
+        live,
+        docs,
+        vectors,
+    }))
+}
+
+/// Writes field `number` of the merged segment into `writer`: the live
+/// vectors of every source that has the field, under their new document
+/// numbers, clustered as `params.merge_clustering` says and quantized
+/// afresh with `factory`. Sources may store their vectors in any
+/// [`crate::VectorEncoding`]; they are decoded, and written in
+/// `params.rerank_encoding`.
+///
+/// # Errors
+///
+/// Sources that disagree on the field's similarity or dimension, two
+/// sources mapping onto the same document, a read failure, or the writer's
+/// own errors. A field no source has is not written.
+pub fn merge_field(
+    writer: &mut IvfWriter,
+    number: i32,
+    sources: &[MergeSource<'_>],
+    factory: &dyn QuantizerFactory,
+    params: &IvfParams,
+) -> Result<()> {
+    let Some(Gathered {
+        similarity,
+        dimension,
+        live,
+        docs,
+        vectors,
+    }) = gather(number, sources)?
+    else {
+        return Ok(());
+    };
     let field = FieldVectors {
         number,
         similarity,
@@ -202,6 +237,49 @@ pub fn merge_field(
             metric,
         )
     })
+}
+
+/// [`merge_field`] for a field of the shared `model`: the merged vectors keep
+/// the model's lists (each goes to the same nearest centroid it did in its
+/// source, which no clustering run changes) and its quantizer, and the
+/// merged field names the same model. Sources must name `model`.
+///
+/// # Errors
+///
+/// As [`merge_field`], and a source whose field names another model.
+pub fn merge_field_with_model(
+    writer: &mut IvfWriter,
+    number: i32,
+    sources: &[MergeSource<'_>],
+    model: &Arc<SharedModel>,
+    params: &IvfParams,
+) -> Result<()> {
+    for source in sources {
+        if let Some(f) = source.reader.field(number) {
+            if f.model()
+                .is_none_or(|m| (m.id(), m.crc()) != (model.id(), model.crc()))
+            {
+                return Err(Error::IllegalArgument(format!(
+                    "field {number}: a source does not name model [{}]",
+                    model.id()
+                )));
+            }
+        }
+    }
+    let Some(g) = gather(number, sources)? else {
+        return Ok(());
+    };
+    writer.add_field_with_model(
+        &FieldVectors {
+            number,
+            similarity: g.similarity,
+            dimension: g.dimension,
+            docs: &g.docs,
+            vectors: &g.vectors,
+        },
+        model,
+        params,
+    )
 }
 
 /// [`merge_field`] for a merged field whose vectors the caller already

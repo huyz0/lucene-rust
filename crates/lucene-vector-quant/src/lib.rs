@@ -37,12 +37,14 @@
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
 //! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2 to 6 bits per dimension padded to a multiple of 32, or to a power of two of at least 8 up to 32 (one byte at 7 and 8) plus 12 bytes of corrective terms |
 //! | `pq` | [`pq::PqQuantizer`]: product quantization (Jégou et al., 2011) of the residual against the partition centroid, `m` 8-bit sub-quantizers trained as Faiss's `Clustering` trains them, scored by asymmetric distance tables | `m` bytes |
+//! | `flat` | [`flat::FlatQuantizer`]: no codes; an index scores a probed cluster's full-precision vectors exactly (Faiss's `IndexIVFFlat`) | 0 bytes |
 //! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to its code dimension ([`QuantizerFactory::code_dimension`], a multiple of 64 for OSQ at 4 bits and under) and rotated there by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's, no longer than without the rotation |
 //!
 //! A new quantizer implements
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
 //! factory; nothing in the index changes.
 
+pub mod flat;
 pub mod osq;
 // ARITH: every offset is a sub-quantizer or entry index (below `m` or 256) times a row length of the codebooks, whose size `m * 256 * dsub` is checked against the state or built by training; counts are bounded by the sample length.
 #[allow(clippy::arithmetic_side_effects)]
@@ -349,7 +351,7 @@ impl QuantizerRegistry {
         Self::default()
     }
 
-    /// A registry holding the built-in quantizers (`osq`, `sq`, `erq`, `pq`) and the
+    /// A registry holding the built-in quantizers (`osq`, `sq`, `erq`, `pq`, `flat`) and the
     /// rotated forms of the first two
     /// (`rot-osq`, `rot-sq`). A factory reads every encoding
     /// or bit width of its family back, so one entry per family suffices.
@@ -361,6 +363,7 @@ impl QuantizerRegistry {
         r.register(Arc::clone(&sq));
         r.register(Arc::new(rabitq::ExRabitqFactory::new(4)));
         r.register(Arc::new(pq::PqFactory::new(1)));
+        r.register(Arc::new(flat::FlatFactory));
         r.register(Arc::new(rotation::RotatedFactory::new(osq)));
         r.register(Arc::new(rotation::RotatedFactory::new(sq)));
         r
