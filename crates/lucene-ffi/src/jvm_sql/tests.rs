@@ -327,7 +327,7 @@ fn router_and_standard_statements_are_counted() {
     // SAFETY: room for two values.
     unsafe { ffi_jvm_sql_stats(before.as_mut_ptr()) };
     run(&s, &t, "SELECT id FROM t WHERE id = 'doc-001'").unwrap();
-    run(&s, &t, "SELECT count(*) FROM t WHERE price > 3").unwrap();
+    run(&s, &t, "SELECT count(*) FROM t WHERE price > 3 OR id = 'doc-001'").unwrap();
     let mut after = [0u64; 2];
     // SAFETY: room for two values.
     unsafe { ffi_jvm_sql_stats(after.as_mut_ptr()) };
