@@ -4,8 +4,10 @@
 //! directly; the DataFusion table provider calls them from its scans, so the
 //! two paths cannot disagree about what a predicate means.
 
-use datafusion::arrow::array::RecordBatch;
+use arrow::array::RecordBatch;
+#[cfg(feature = "sql")]
 use lucene_search::document::long_point;
+#[cfg(feature = "sql")]
 use lucene_search::extended_query::{
     ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery,
 };
@@ -14,6 +16,7 @@ use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 
 use crate::columns::Columns;
 use crate::error::{Error, Result};
+#[cfg(feature = "sql")]
 use crate::pred::Pred;
 use crate::snapshot::{Searcher, Snapshot};
 use crate::spec::ColumnKind;
@@ -38,6 +41,7 @@ pub(crate) fn any_of(field: &str, terms: &[String]) -> BooleanQuery {
     }
 }
 
+#[cfg(feature = "sql")]
 /// `filters` as one clause every document must match, scoring nothing.
 pub(crate) fn all_of_clauses(filters: Vec<Clause>) -> Clause {
     Clause::Boolean(Box::new(BooleanQuery {
@@ -46,6 +50,7 @@ pub(crate) fn all_of_clauses(filters: Vec<Clause>) -> Clause {
     }))
 }
 
+#[cfg(feature = "sql")]
 /// The non-scoring predicates as filter clauses.
 pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause> {
     let name = |c: usize| snapshot.spec().columns()[c].name.as_str();
@@ -63,6 +68,7 @@ pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause>
         .collect()
 }
 
+#[cfg(feature = "sql")]
 /// Documents whose long `field` has a value in `lower..=upper`, from the
 /// point tree or the doc values, whichever is cheaper for the segment, when
 /// the field has both.
@@ -199,4 +205,27 @@ pub(crate) fn knn_in(
         filter,
     )?;
     Ok(hits.iter().map(|h| (h.doc_id, Some(h.score))).collect())
+}
+
+struct CollectAll(Vec<i32>);
+
+impl lucene_search::collector::ScoringCollector for CollectAll {
+    fn collect(&mut self, doc_id: i32, _score: f32) {
+        self.0.push(doc_id);
+    }
+}
+
+/// Every live document matching all of `filters` (field, term), by global
+/// doc id in ascending order.
+pub(crate) fn matching_docs(
+    s: &Searcher<'_, '_>,
+    filters: &[(String, String)],
+) -> Result<Vec<i32>> {
+    let q = BooleanQuery {
+        filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
+        ..BooleanQuery::default()
+    };
+    let mut c = CollectAll(Vec::new());
+    s.searcher.search_collector(&q, &mut c)?;
+    Ok(c.0)
 }

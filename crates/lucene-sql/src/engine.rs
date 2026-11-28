@@ -3,8 +3,11 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::ArrowError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
@@ -56,6 +59,51 @@ pub enum Path {
     Router,
     /// DataFusion.
     Standard,
+}
+
+/// The batches of a statement as DataFusion produces them.
+struct SqlReader {
+    engine: Arc<SqlEngine>,
+    sql: String,
+    schema: SchemaRef,
+    stream: SendableRecordBatchStream,
+    emitted: bool,
+}
+
+impl Iterator for SqlReader {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use futures::StreamExt;
+        loop {
+            let item = self.engine.runtime.block_on(self.stream.next())?;
+            match item {
+                Ok(batch) => {
+                    self.emitted = true;
+                    return Some(Ok(batch));
+                }
+                // The kernels could not answer exactly and nothing was sent
+                // yet: run the statement the standard way.
+                Err(e) if !self.emitted && is_inexact(&e) => {
+                    let opened = self
+                        .engine
+                        .runtime
+                        .block_on(self.engine.open_stream(&self.engine.plain, &self.sql));
+                    match opened {
+                        Ok((_, stream)) => self.stream = stream,
+                        Err(e) => return Some(Err(ArrowError::ExternalError(Box::new(e)))),
+                    }
+                }
+                Err(e) => return Some(Err(ArrowError::ExternalError(Box::new(e)))),
+            }
+        }
+    }
+}
+
+impl RecordBatchReader for SqlReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
 }
 
 /// Runs read-only SQL over a [`Snapshot`].
@@ -248,6 +296,42 @@ impl SqlEngine {
         }
         let batches = self.runtime.block_on(self.standard(sql))?;
         Ok((batches, Path::Standard))
+    }
+
+    /// The rows of `sql` as a stream, for a consumer that reads Arrow batches
+    /// as they are produced (the Arrow C stream interface): a recognised
+    /// shape answers in one batch, anything else is executed on DataFusion
+    /// and its batches are not collected first. Must not be called from
+    /// inside a tokio runtime.
+    ///
+    /// # Errors
+    /// A statement that does not parse or plan, or a router failure.
+    pub fn stream_blocking(
+        self: &Arc<Self>,
+        sql: &str,
+    ) -> Result<Box<dyn RecordBatchReader + Send>> {
+        if let Some(batch) = self.router.run(sql)? {
+            let schema = batch.schema();
+            return Ok(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)));
+        }
+        let (schema, stream) = self.runtime.block_on(self.open_stream(&self.ctx, sql))?;
+        Ok(Box::new(SqlReader {
+            engine: self.clone(),
+            sql: sql.to_string(),
+            schema,
+            stream,
+            emitted: false,
+        }))
+    }
+
+    async fn open_stream(
+        &self,
+        ctx: &SessionContext,
+        sql: &str,
+    ) -> Result<(SchemaRef, SendableRecordBatchStream)> {
+        let df = ctx.sql_with_options(sql, read_only()).await?;
+        let schema: SchemaRef = Arc::new(df.schema().as_arrow().clone());
+        Ok((schema, df.execute_stream().await?))
     }
 
     /// [`Self::standard`] from synchronous code.

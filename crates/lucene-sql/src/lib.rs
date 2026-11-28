@@ -12,23 +12,37 @@
 //! [`snapshot::Snapshot`]; [`engine::SqlEngine`] ties them together.
 
 pub mod columns;
+#[cfg(feature = "sql")]
 pub mod engine;
 pub mod error;
+pub mod export;
+#[cfg(feature = "sql")]
 pub mod group;
+#[cfg(feature = "sql")]
 pub mod group_rule;
 pub mod native;
+#[cfg(feature = "sql")]
 pub mod output;
+#[cfg(feature = "sql")]
 pub mod plan_cache;
+#[cfg(feature = "sql")]
 pub mod pred;
+#[cfg(feature = "sql")]
 pub mod provider;
+#[cfg(feature = "sql")]
 pub mod router;
+#[cfg(feature = "sql")]
 pub mod rule;
 pub mod snapshot;
 pub mod spec;
+#[cfg(feature = "sql")]
 pub mod statement;
+pub use arrow;
+#[cfg(feature = "sql")]
 pub use engine::{Path, SqlConfig, SqlEngine};
 
 /// The runtime engines run their scans on, shared between engines.
+#[cfg(feature = "sql")]
 pub type Runtime = tokio::runtime::Runtime;
 pub use error::{Error, Result};
 pub use snapshot::Snapshot;

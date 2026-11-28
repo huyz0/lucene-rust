@@ -3,9 +3,7 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{
-    ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, StringBuilder,
-};
+use arrow::array::{ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, StringBuilder};
 use lucene_codecs::doc_values::NumericReader;
 use lucene_search::global_ords::{keyword_column, Ords};
 
@@ -97,6 +95,59 @@ impl<'s> Columns<'s> {
             },
             _ => Slot::Absent,
         })
+    }
+
+    /// The values of the doc-values column `column` for the `vals.len()`
+    /// documents of `segment` from `start`: `vals[i]` is document
+    /// `start + i`'s value (a keyword's ordinal) when bit `i` of `present`
+    /// is set. `false` when the segment has no values for the column.
+    ///
+    /// # Errors
+    /// Unreadable doc values.
+    pub(crate) fn window_values(
+        &mut self,
+        segment: usize,
+        column: usize,
+        start: i32,
+        vals: &mut [i64],
+        present: &mut [u64],
+    ) -> Result<bool> {
+        match self.reader(segment, column)? {
+            Some(r) => {
+                r.fill_window(start, vals, present)
+                    .map_err(lucene_search::Error::from)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// The `(min, max)` of each zone of 1024 documents covering `n` documents
+    /// of `segment` from `start` (a multiple of 1024), when the column was
+    /// written with zone statistics (a dense adaptive array).
+    pub(crate) fn zones(
+        &mut self,
+        segment: usize,
+        column: usize,
+        start: usize,
+        n: usize,
+    ) -> Option<Vec<(i64, i64)>> {
+        use lucene_codecs::adaptive_zones::ZONE_SIZE;
+        if !start.is_multiple_of(ZONE_SIZE) {
+            return None;
+        }
+        let r = self.reader(segment, column).ok()??;
+        if !r.has_window_stats() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(n.div_ceil(ZONE_SIZE));
+        let mut at = start;
+        while at < start + n {
+            let (stats, _) = r.window_stats(i32::try_from(at).ok()?).ok()??;
+            out.push((stats.min, stats.max));
+            at += ZONE_SIZE;
+        }
+        Some(out)
     }
 
     /// The columns `projection` names, for the matched documents `docs`
@@ -249,7 +300,7 @@ impl<'s> Columns<'s> {
         if let Some(live) = live {
             out = out
                 .iter()
-                .map(|a| datafusion::arrow::compute::filter(a, live).map_err(Error::from))
+                .map(|a| arrow::compute::filter(a, live).map_err(Error::from))
                 .collect::<Result<_>>()?;
         }
         Ok(out)

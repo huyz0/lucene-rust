@@ -43,6 +43,40 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }
     }
 
+    /// Applies the held update of every row `docs` adds, before they are
+    /// added. A plain add of a row (an index right after a delete: the engine
+    /// knows the row has no live version, so it adds rather than updates)
+    /// follows an update of that row the tier still holds; applied later, that
+    /// update's delete of the row's documents would reach the added one.
+    pub(super) fn settle_held_rows(&self, docs: &[ExplicitDocument]) -> Result<()> {
+        let Some(hot) = self.hot.get().filter(|h| !h.is_empty()) else {
+            return Ok(());
+        };
+        let Some(field) = hot.term_field() else {
+            return Ok(());
+        };
+        let Some(number) = self
+            .cfg()
+            .field_list()
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.number)
+        else {
+            return Ok(());
+        };
+        self.hot_check()?;
+        for f in docs.iter().flat_map(|d| &d.fields.inverted) {
+            if f.field_number != number {
+                continue;
+            }
+            for term in f.terms.iter() {
+                hot.settle(term.term, &mut |op| self.apply_held(op).map(|_| ()))
+                    .inspect_err(|e| self.hot_fail(e))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Fails once applying a held operation has failed.
     pub(super) fn hot_check(&self) -> Result<()> {
         match lock(&self.hot_failed).as_ref() {

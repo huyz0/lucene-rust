@@ -8,7 +8,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use crate::error::{Error, Result};
 

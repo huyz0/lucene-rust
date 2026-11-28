@@ -1,5 +1,6 @@
 //! The errors a SQL query over an index can end in.
 
+#[cfg(feature = "sql")]
 use datafusion::error::DataFusionError;
 
 /// What went wrong running a statement or opening a table.
@@ -13,12 +14,13 @@ pub enum Error {
     Reader(#[from] lucene_search::directory_reader::Error),
     /// Arrow could not build an array or batch.
     #[error("arrow: {0}")]
-    Arrow(#[from] datafusion::arrow::error::ArrowError),
+    Arrow(#[from] arrow::error::ArrowError),
     /// A statement the SQL layer does not run, or a table definition that
     /// does not fit the index.
     #[error("{0}")]
     Unsupported(String),
     /// DataFusion rejected or failed the statement.
+    #[cfg(feature = "sql")]
     #[error("sql: {0}")]
     DataFusion(#[from] DataFusionError),
 }
@@ -40,6 +42,7 @@ impl Error {
 }
 
 /// `err` wrapped for a DataFusion stream.
+#[cfg(feature = "sql")]
 pub(crate) fn external(err: impl std::error::Error + Send + Sync + 'static) -> DataFusionError {
     DataFusionError::External(Box::new(err))
 }

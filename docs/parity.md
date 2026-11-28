@@ -65,7 +65,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 29 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
 | [expressions.md](parity/expressions.md) | `lucene-expressions`: JavaScript expressions as `DoubleValuesSource`s (M14 T14.2) | 6 |
-| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 20 |
+| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 21 |
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 20 |
@@ -101,7 +101,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (the `unified`, `plain` and `fvh` highlighters native as `accelerated_unified`, `accelerated_plain`, `accelerated_fvh`; suggesters stay OpenSearch's) | 25 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
 | [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 19 |
-| [sql.md](parity/sql.md) | `lucene-sql`: read-only SQL over an index (router, DataFusion fallback, table provider, plan cache, group-by rule) | 12 |
+| [sql.md](parity/sql.md) | `lucene-sql`: read-only SQL over an index (router, DataFusion fallback, table provider, plan cache, group-by rule, Arrow export) | 15 |
 
 ## Supported, in one paragraph
 

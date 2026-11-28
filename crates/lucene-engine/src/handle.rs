@@ -34,6 +34,8 @@ pub enum RegistryTag {
     /// A `sparse_vector` field being clustered for a JVM-written segment
     /// (`sparse_writer.rs`).
     SparseClusterer = 17,
+    /// A table opened for the Arrow export (`arrow_source.rs`).
+    ArrowTable = 18,
 }
 
 /// The cap on simultaneously open handles in one registry: the 24-bit index

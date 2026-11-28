@@ -14,13 +14,23 @@ lucene-aggs = { path = "../lucene-aggs" }
 # No default features: they pull Parquet, compression codecs and the other
 # table formats (a 122 MB binary against 8 MB), none of which a query over our
 # segments reads. `sql` is the parser and planner.
-datafusion = { version = "56", default-features = false, features = ["sql"] }
+datafusion = { version = "56", default-features = false, features = ["sql"], optional = true }
+# The Arrow of the table and of the export; `ffi` is the C data and C stream
+# interface the export hands to pyarrow, Polars and DuckDB.
+arrow = { version = "60", default-features = false, features = ["ffi"] }
 thiserror.workspace = true
 itoa = "1"
 ryu = "1"
-async-trait = "0.1"
-futures = "0.3"
-tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"] }
+async-trait = { version = "0.1", optional = true }
+futures = { version = "0.3", optional = true }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"], optional = true }
+
+[features]
+default = ["sql"]
+# The SQL engine (router and DataFusion). Without it the crate is the table
+# declaration, the snapshot and the Arrow export, which is all the library
+# form of the Arrow source needs.
+sql = ["dep:datafusion", "dep:async-trait", "dep:futures", "dep:tokio"]
 
 [dev-dependencies]
 serde_json = "1"

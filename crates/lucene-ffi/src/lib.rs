@@ -89,6 +89,10 @@ unsafe impl<A: std::alloc::GlobalAlloc> std::alloc::GlobalAlloc for Accounting<A
 
 mod abi;
 mod analysis_modules;
+#[cfg(feature = "spark")]
+mod arrow_jni;
+#[cfg(feature = "arrow")]
+mod arrow_source;
 #[cfg(test)]
 mod engine_tests;
 pub(crate) mod engine_writer;

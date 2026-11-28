@@ -120,6 +120,7 @@ impl Snapshot {
         self
     }
 
+    #[cfg(feature = "sql")]
     pub(crate) fn agg_identities(&self) -> Option<&[Option<SegmentIdentity>]> {
         self.agg_identities.as_deref()
     }
@@ -156,8 +157,13 @@ impl Snapshot {
 
     /// Whether the long column `column` has a point tree in every segment
     /// that has the column.
+    #[cfg(feature = "sql")]
     pub(crate) fn long_has_points(&self, column: usize) -> bool {
         self.long_points.get(column).copied().unwrap_or(false)
+    }
+
+    pub(crate) fn leaf_max_doc(&self, segment: usize) -> i32 {
+        self.leaf(segment).max_doc
     }
 
     pub(crate) fn leaf(&self, segment: usize) -> &SegmentReader {
