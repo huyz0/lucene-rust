@@ -38,10 +38,6 @@ lucene-analysis-kuromoji = { path = "../../crates/lucene-analysis-kuromoji" }
 lucene-analysis-nori = { path = "../../crates/lucene-analysis-nori" }
 lucene-analysis-smartcn = { path = "../../crates/lucene-analysis-smartcn" }
 lucene-analysis-icu = { path = "../../crates/lucene-analysis-icu" }
-# This crate has no committed lockfile, so it resolves fresh each run, and
-# zstd-sys 2.2 removed what the zstd-safe 7.4 it pairs with calls. Pinned to
-# the workspace's version until zstd-safe is bumped.
-zstd-sys = "=2.1.3"
 lucene-analysis-opennlp = { path = "../../crates/lucene-analysis-opennlp" }
 crc32fast = "1"
 miniz_oxide = "0.9"
