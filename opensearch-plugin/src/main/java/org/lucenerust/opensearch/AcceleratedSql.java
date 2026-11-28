@@ -66,6 +66,8 @@ public final class AcceleratedSql {
 
     private static final org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(AcceleratedSql.class);
 
+    private static final String HANDLER_NAME = "accelerated_sql";
+
     /** The path of the endpoint. */
     public static final String PATH = "/_plugins/accelerated/sql";
 
@@ -379,7 +381,7 @@ public final class AcceleratedSql {
 
         @Override
         public String getName() {
-            return "accelerated_sql";
+            return HANDLER_NAME;
         }
 
         @Override
