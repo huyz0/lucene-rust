@@ -92,14 +92,17 @@ pub struct JMapValue {
 
 impl Value {
     pub fn str(s: &str) -> Value {
+        crate::arena::charge(s.len());
         Value::Str(Rc::from(s))
     }
 
     pub fn string(s: String) -> Value {
+        crate::arena::charge(s.len());
         Value::Str(Rc::from(s))
     }
 
     pub fn list(kind: ListKind, items: Vec<Value>) -> Value {
+        crate::arena::charge(items.len().saturating_mul(std::mem::size_of::<Value>()));
         Value::List(Rc::new(RefCell::new(JList { kind, items })))
     }
 
@@ -112,6 +115,7 @@ impl Value {
     }
 
     pub fn array(component: &str, items: Vec<Value>) -> Value {
+        crate::arena::charge(items.len().saturating_mul(std::mem::size_of::<Value>()));
         Value::Array(Rc::new(RefCell::new(JArray {
             component: Rc::from(component),
             items,
