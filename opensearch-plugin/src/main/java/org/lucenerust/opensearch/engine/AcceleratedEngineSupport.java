@@ -17,6 +17,7 @@ import org.lucenerust.opensearch.NativeStore;
 import org.lucenerust.opensearch.NativeWriter;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
+import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.MergeSchedulerConfig;
@@ -351,16 +352,16 @@ public final class AcceleratedEngineSupport {
      * the versions it had between two refreshes are never indexed: no dead documents for a merge to
      * drop, and indexing CPU and merge work fall in proportion to how often those rows repeat. What
      * does not fit goes through the normal path, so smaller budgets only give less of the gain;
-     * rows updated once, as a bulk update or a trickle does, are never held. The default is 8 MiB a
-     * shard, which an idle shard does not use (the heat sketch is allocated by load and freed when
-     * idle); {@code 0} turns it off. The held updates are not searchable until the next refresh, flush or realtime
+     * rows updated once, as a bulk update or a trickle does, are never held. It is off by default
+     * ({@code 0}); a shard that turns it on, for example with {@code 8mb}, uses nothing while idle (the
+     * heat sketch is allocated by load and freed when idle). The held updates are not searchable until the next refresh, flush or realtime
      * view, and an update dropped for a newer one leaves no version in the segments, so a replica
      * or a cross-cluster follower that replays history from Lucene sees only each refresh's last
      * version of those rows. Use it on indexes where that history is not needed.
      */
     public static final Setting<ByteSizeValue> HOT_TIER_MAX_MEMORY = Setting.byteSizeSetting(
         "index.hot_tier.max_memory",
-        ByteSizeValue.ofMb(8),
+        new ByteSizeValue(0, ByteSizeUnit.BYTES),
         Setting.Property.IndexScope,
         Setting.Property.Final
     );
