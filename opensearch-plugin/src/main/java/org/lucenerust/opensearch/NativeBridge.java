@@ -57,7 +57,7 @@ public final class NativeBridge {
     public static final int INVALID_ARGUMENT = 10;
 
     /** The search or statement failed ({@code Search} in {@code status.rs}). */
-    public static final int SEARCH_FAILED = 6;
+    public static final int SEARCH = 6;
 
     /** The request outgrew the memory it was granted, or the node is over its off-heap bound. */
     public static final int MEMORY_LIMIT = 12;
