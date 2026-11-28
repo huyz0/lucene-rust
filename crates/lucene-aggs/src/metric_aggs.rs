@@ -576,7 +576,11 @@ pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
         ValueKind::Float => f64::from(sortable_int_to_float(v as i32)),
         ValueKind::HalfFloat => f64::from(half_to_f32(sortable_short_to_half_bits(v as i16))),
         // `ScaledFloatFieldMapper`'s values: `longValue * (1 / scalingFactor)`.
-        ValueKind::Scaled(bits) => v as f64 * (1.0 / f64::from_bits(bits)),
+        // `black_box` keeps the compiler from hoisting the reciprocal above
+        // the `kind` match: for every other kind `bits` is not a factor, and
+        // dividing by that garbage (often a subnormal) costs ~100 cycles per
+        // value inside a collect loop.
+        ValueKind::Scaled(bits) => v as f64 * (1.0 / f64::from_bits(std::hint::black_box(bits))),
     }
 }
 
