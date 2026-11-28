@@ -39,7 +39,8 @@ import org.opensearch.search.sort.SortBuilder;
  * Answers a plain search on an accelerated-engine index straight from the REST layer: the request's query is
  * parsed and built by OpenSearch's own code, encoded and run natively, and the hits' {@code _id} and
  * {@code _source} read natively and written as JSON, without the coordinating search action, the shard search
- * service, its thread-pool hand-off and the response objects. That machinery costs about 0.6 ms per request on
+ * service, its shard-level hand-offs and the response objects. The search itself runs on the node's search pool, so a slow
+ * one never holds an HTTP I/O thread, and a full search queue is rejected by the search action as usual. That machinery costs about 0.6 ms per request on
  * every engine, which is most of a cheap search's time.
  *
  * <p>It is a request-level shortcut for what the search would anyway do natively. Anything else is left to
@@ -164,23 +165,75 @@ final class DirectSearch {
             && service.mapperService().hasNested() == false;
     }
 
-    /** Whether it answered the request; false leaves it, untouched, to OpenSearch. */
-    boolean handle(RestRequest request, RestChannel channel) {
+    /** Runs the searches on the node's search pool, so a slow one never holds an HTTP I/O thread; unset, they run in the caller. */
+    private volatile java.util.concurrent.Executor executor;
+
+    void executor(java.util.concurrent.Executor executor) {
+        this.executor = executor;
+    }
+
+    /**
+     * Whether it took the request; false leaves it, untouched, to OpenSearch. The checks run in the caller and the
+     * search itself on the search pool, where a request it cannot answer natively is handed to {@code leave}.
+     */
+    boolean handle(RestRequest request, RestChannel channel, org.opensearch.common.CheckedRunnable<Exception> leave) {
+        Job job;
         try {
-            return answer(request, channel);
+            job = prepare(request, channel);
+        } catch (Exception | LinkageError e) {
+            logger.debug("accelerated-search: direct search left to OpenSearch", e);
+            return false;
+        }
+        if (job == null) {
+            return false;
+        }
+        java.util.concurrent.Executor pool = executor;
+        if (pool == null) {
+            return run(job);
+        }
+        try {
+            pool.execute(() -> {
+                if (run(job)) {
+                    return;
+                }
+                try {
+                    leave.run();
+                } catch (Exception e) {
+                    try {
+                        channel.sendResponse(new BytesRestResponse(channel, e));
+                    } catch (Exception ignored) {
+                        logger.debug("accelerated-search: no response sent", ignored);
+                    }
+                }
+            });
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // A full search queue: the search action answers it with its own rejection.
+            return false;
+        }
+    }
+
+    private boolean run(Job job) {
+        try {
+            return job.run();
         } catch (Exception | LinkageError e) {
             logger.debug("accelerated-search: direct search left to OpenSearch", e);
             return false;
         }
     }
 
-    private boolean answer(RestRequest request, RestChannel channel) throws Exception {
+    /** A request that passed the checks, ready to search. */
+    private interface Job {
+        boolean run() throws Exception;
+    }
+
+    private Job prepare(RestRequest request, RestChannel channel) throws Exception {
         String path = request.rawPath();
         if ((request.method() != RestRequest.Method.POST && request.method() != RestRequest.Method.GET)
             || path.endsWith("/_search") == false
             || path.length() <= "/_search".length() + 1
             || request.hasContent() == false) {
-            return false;
+            return null;
         }
         String index = concrete(
             path.substring(1, path.length() - "/_search".length()),
@@ -189,61 +242,64 @@ final class DirectSearch {
         IndexShard shard = index == null ? null : shards.get(index);
         IndexService service = services.get(index);
         if (shard == null || service == null || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED || plainParams(request) == false) {
-            return false;
+            return null;
         }
         long start = System.nanoTime();
         SearchFlags.Flags flags = SearchFlags.of(service.getIndexSettings());
         if (flags.enabled() == false || service.mapperService().hasNested() || open(service) == false) {
-            return false;
+            return null;
         }
         SearchSourceBuilder source = plainBody(request);
         if (source == null) {
-            return false;
+            return null;
         }
         if (source.aggregations() != null
             && DirectAggs.slicing(cluster.get().getSettings(), cluster.get().state().metadata().settings(), service.getIndexSettings().getSettings())) {
-            return false;
+            return null;
         }
         DirectResponse.Shape shape = applyParams(request, source);
         if (shape == null || DirectFields.supported(source, service.mapperService()) == false) {
-            return false;
+            return null;
         }
         if (shape.totalAsInt() && source.trackTotalHitsUpTo() != Integer.MAX_VALUE) {
-            return false;
+            return null;
         }
         int size = source.size() < 0 ? 10 : source.size();
         int from = Math.max(source.from(), 0);
         if (from + size > MAX_SIZE || source.searchAfter() != null && (source.sorts() == null || from > 0)) {
-            return false;
+            return null;
         }
         // The limits the search action enforces and this path would otherwise skip: the index's result window and
         // the number of doc-value fields a request may ask for.
         if (from + size > service.getIndexSettings().getMaxResultWindow()
             || source.docValueFields() != null && source.docValueFields().size() > service.getIndexSettings().getMaxDocvalueFields()) {
-            return false;
+            return null;
         }
         Integer tracked = source.trackTotalHitsUpTo();
         long countLimit = tracked == null ? TOTAL_HITS_THRESHOLD : tracked < 0 ? 0 : tracked == Integer.MAX_VALUE ? Long.MAX_VALUE : tracked;
-        try (Engine.Searcher searcher = shard.acquireSearcher("direct_search")) {
-            DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit, request);
-            if (hits == null) {
-                return false;
-            }
-            if (source.docValueFields() != null && source.docValueFields().isEmpty() == false) {
-                QueryShardContext fieldContext = service.newQueryShardContext(0, new IndexSearcher(searcher.getIndexReader()), System::currentTimeMillis, null);
-                DirectFields fields = DirectFields.of(source.docValueFields(), service.mapperService(), fieldContext);
-                if (fields == null) {
+        return () -> {
+            try (Engine.Searcher searcher = shard.acquireSearcher("direct_search")) {
+                DirectResponse.Hits hits = search(service, searcher.getIndexReader(), source, from + size, countLimit, request);
+                if (hits == null) {
                     return false;
                 }
-                hits = new DirectResponse.Hits(hits.docs(), hits.scores(), hits.counts(), hits.sort(), hits.maxScore(), hits.aggregations(), fields);
+                if (source.docValueFields() != null && source.docValueFields().isEmpty() == false) {
+                    QueryShardContext fieldContext = service.newQueryShardContext(0, new IndexSearcher(searcher.getIndexReader()), System::currentTimeMillis, null);
+                    DirectFields fields = DirectFields.of(source.docValueFields(), service.mapperService(), fieldContext);
+                    if (fields == null) {
+                        return false;
+                    }
+                    hits = new DirectResponse.Hits(hits.docs(), hits.scores(), hits.counts(), hits.sort(), hits.maxScore(), hits.aggregations(), fields);
+                }
+                String json = DirectResponse.write(index, searcher.getIndexReader(), start, from, size, countLimit, hits, shape);
+                if (json == null) {
+                    return false;
+                }
+                reply(channel, index, source, json, start, hits.counts()[1]);
+                return true;
             }
-            String json = DirectResponse.write(index, searcher.getIndexReader(), start, from, size, countLimit, hits, shape);
-            if (json == null) {
-                return false;
-            }
-            reply(channel, index, source, json, start, hits.counts()[1]);
-            return true;
-        }
+
+        };
     }
 
     /** Runs the query (and sort) natively over the reader; null when the native engine does not answer it. */
