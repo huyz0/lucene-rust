@@ -107,6 +107,7 @@ RENAMES = {
     ("SortEncoder.java", "GEO"): ("reader_search.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("abi.rs", "JVM_ABI_VERSION"),
+    ("SqlTables.java", "VERSION"): ("jvm_sql.rs", "TABLE_VERSION"),
     # format.rs re-exports these from backend.rs.
     ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
     ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),
@@ -127,6 +128,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("AcceleratedSql.java", "MAX_REMEMBERED_STATEMENT"): "the longest statement the plugin remembers a table name for, so its map stays small; Java only",
     ("NativeIngest.java", "MAX_CHILDREN"): "how many nested children's object indices the per-thread prepare buffer has room for; a source with more is left to the document mapper",
     ("DirectSearch.java", "MAX_SIZE"): "the most hits (from + size) the REST-layer direct search collects, checked in Java before the search is built",
     ("MlLimits.java", "HEAP_PER_FLOAT"): "the heap estimate of one float of an ML answer, used by the Java memory check before an answer is built",
