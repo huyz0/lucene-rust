@@ -89,29 +89,51 @@ fn main() {
     };
     let engine = SqlEngine::new(snap, &cfg).unwrap();
     let mut routed = 0;
-    println!("{:<7}{:>8}{:>12}{:>12}{:>8}  statement", "kind", "path", "engine us", "DF us", "x");
+    println!(
+        "{:<7}{:>8}{:>12}{:>12}{:>8}  statement",
+        "kind", "path", "engine us", "DF us", "x"
+    );
     for (kind, sql) in CORPUS {
-        let path = engine.router().shape(sql).is_some();
+        // The router took it when it recognised the statement and answered.
+        let path = matches!(engine.router().run(sql), Ok(Some(_)));
         routed += usize::from(path);
-        let time = |f: &dyn Fn() -> bool| -> Option<f64> {
+        // Each path runs twice, in the order A B B A, so that neither gains
+        // from running first or second.
+        let sample = |f: &dyn Fn() -> bool| -> Option<Vec<std::time::Duration>> {
             if !f() {
                 return None;
             }
             let mut lat = Vec::new();
             let start = Instant::now();
-            while start.elapsed().as_secs_f64() < secs || lat.len() < 3 {
+            while start.elapsed().as_secs_f64() < secs / 2.0 || lat.len() < 3 {
                 let t = Instant::now();
                 f();
                 lat.push(t.elapsed());
-                if lat.len() >= 2000 {
+                if lat.len() >= 1000 {
                     break;
                 }
             }
-            lat.sort();
-            Some(lat[lat.len() / 2].as_secs_f64() * 1e6)
+            Some(lat)
         };
-        let eng = time(&|| engine.query_blocking(sql).is_ok());
-        let df = time(&|| engine.standard_blocking(sql).is_ok());
+        let median = |mut lat: Vec<std::time::Duration>| {
+            lat.sort();
+            lat[lat.len() / 2].as_secs_f64() * 1e6
+        };
+        let run_engine = || engine.query_blocking(sql).is_ok();
+        let run_df = || engine.standard_blocking(sql).is_ok();
+        let (e1, d1, d2, e2) = (
+            sample(&run_engine),
+            sample(&run_df),
+            sample(&run_df),
+            sample(&run_engine),
+        );
+        let join = |a: Option<Vec<_>>, b: Option<Vec<_>>| {
+            a.zip(b).map(|(mut a, b)| {
+                a.extend(b);
+                median(a)
+            })
+        };
+        let (eng, df) = (join(e1, e2), join(d1, d2));
         let fmt = |v: Option<f64>| v.map_or("error".to_string(), |v| format!("{v:.1}"));
         let ratio = match (eng, df) {
             (Some(e), Some(d)) => format!("{:.1}", d / e),

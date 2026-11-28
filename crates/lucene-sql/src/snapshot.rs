@@ -140,6 +140,18 @@ impl Snapshot {
         self.group_limit.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether every segment that has `column` holds doc values for it, which
+    /// an `ORDER BY` reads.
+    pub(crate) fn has_doc_values(&self, column: usize) -> bool {
+        self.reader
+            .segment_readers()
+            .iter()
+            .zip(&self.field_numbers)
+            .all(|(leaf, numbers)| {
+                numbers[column].is_none_or(|n| leaf.doc_values_for_field(n).is_some())
+            })
+    }
+
     /// The table declaration.
     pub fn spec(&self) -> &Arc<TableSpec> {
         &self.spec

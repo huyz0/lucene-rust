@@ -51,7 +51,6 @@ fn near_miss_shapes_are_not_routed() {
         "SELECT id FROM t WHERE knn(body, '1') ORDER BY _score DESC LIMIT 5",
         "SELECT id FROM t WHERE other(body, 'a') ORDER BY _score DESC LIMIT 5",
         "SELECT body FROM t WHERE match_text(body, 'a') ORDER BY _score DESC LIMIT 5",
-        "SELECT id FROM t WHERE match_text(body, 'a') ORDER BY _score DESC LIMIT 5 OFFSET 1",
         "SELECT id FROM t WHERE match_text(body, 'a') ORDER BY _score DESC FETCH FIRST 5 ROWS ONLY",
         "SELECT DISTINCT id FROM t WHERE id = 'a'",
         "WITH x AS (SELECT 1) SELECT id FROM t WHERE id = 'a'",

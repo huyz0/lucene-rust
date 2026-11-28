@@ -13,6 +13,10 @@ use lucene_search::extended_query::{
 };
 use lucene_search::knn_search::{knn_top_hits, KnnTarget};
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+#[cfg(feature = "sql")]
+use lucene_search::query::{FieldExistsQuery, MatchAllDocsQuery, PrefixQuery};
+#[cfg(feature = "sql")]
+use lucene_search::top_field::{SortField, SortType};
 
 use crate::columns::Columns;
 use crate::error::{Error, Result};
@@ -24,6 +28,17 @@ use crate::spec::ColumnKind;
 /// Candidates a nearest-neighbour search collects per segment before keeping
 /// the best `k`.
 pub const KNN_CANDIDATES: usize = 50;
+
+/// One key of an `ORDER BY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortKey {
+    /// The column.
+    pub column: usize,
+    /// `DESC`.
+    pub desc: bool,
+    /// Whether a document without a value sorts before the others.
+    pub nulls_first: bool,
+}
 
 /// A matched document: its global doc id and, for a scored search, its score.
 pub type Hit = (i32, Option<f32>);
@@ -74,6 +89,37 @@ pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause>
                 }
                 None => ranges.push((*column, *lower, *upper)),
             },
+            Pred::Present { column } => clauses.push(exists_clause(name(*column))),
+            Pred::Missing { column } => clauses.push(missing_clause(snapshot, name(*column))),
+            Pred::Prefix { column, prefix } => clauses.push(Clause::Prefix(PrefixQuery::new(
+                name(*column),
+                prefix.as_bytes().to_vec(),
+            ))),
+            Pred::Not(inner) => {
+                let mut negated = filter_clauses(snapshot, std::slice::from_ref(inner));
+                let mut exists = Vec::new();
+                if let Some(c) = column_of_pred(inner) {
+                    exists.push(exists_clause(name(c)));
+                }
+                if let Some(clause) = negated.pop() {
+                    clauses.push(Clause::Boolean(Box::new(BooleanQuery {
+                        filter: exists,
+                        must_not: vec![clause],
+                        ..BooleanQuery::default()
+                    })));
+                }
+            }
+            Pred::Or(branches) => {
+                let should = branches
+                    .iter()
+                    .map(|b| conjunction(filter_clauses(snapshot, b)))
+                    .collect();
+                clauses.push(Clause::Boolean(Box::new(BooleanQuery {
+                    should,
+                    minimum_should_match: 1,
+                    ..BooleanQuery::default()
+                })));
+            }
             Pred::Match { .. } | Pred::Knn { .. } => {}
         }
     }
@@ -83,6 +129,45 @@ pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause>
             .map(|(c, lo, hi)| range_clause(snapshot, c, lo, hi)),
     );
     clauses
+}
+
+#[cfg(feature = "sql")]
+fn exists_clause(field: &str) -> Clause {
+    Clause::Exists(FieldExistsQuery::new(field))
+}
+
+#[cfg(feature = "sql")]
+/// The documents without a value for `field`.
+fn missing_clause(snapshot: &Snapshot, field: &str) -> Clause {
+    Clause::Boolean(Box::new(BooleanQuery {
+        must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(
+            snapshot.max_doc(),
+        ))],
+        must_not: vec![exists_clause(field)],
+        ..BooleanQuery::default()
+    }))
+}
+
+#[cfg(feature = "sql")]
+/// The one clause every one of `clauses` must meet.
+fn conjunction(mut clauses: Vec<Clause>) -> Clause {
+    if clauses.len() == 1 {
+        clauses.remove(0)
+    } else {
+        all_of_clauses(clauses)
+    }
+}
+
+#[cfg(feature = "sql")]
+/// The column a single-column predicate is about.
+fn column_of_pred(p: &Pred) -> Option<usize> {
+    match p {
+        Pred::Term { column, .. }
+        | Pred::Any { column, .. }
+        | Pred::Range { column, .. }
+        | Pred::Prefix { column, .. } => Some(*column),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "sql")]
@@ -120,6 +205,88 @@ impl Snapshot {
             filter,
             ..BooleanQuery::default()
         }
+    }
+
+    /// The documents meeting the non-scoring predicates in `preds`, ordered
+    /// by `order` (the document order without keys), from `offset` on, at
+    /// most `limit` of them (all without one).
+    ///
+    /// Returns `None` when a sort column has no doc values to order by.
+    ///
+    /// # Errors
+    /// A sort column is not a long, key or keyword column, or the index is
+    /// unreadable.
+    pub fn rows(
+        &self,
+        preds: &[Pred],
+        order: &[SortKey],
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Result<Option<Vec<Hit>>> {
+        if !order.iter().all(|k| self.has_doc_values(k.column)) {
+            return Ok(None);
+        }
+        let query = self.filter_query(preds);
+        let want = limit.map_or(usize::MAX, |l| l.saturating_add(offset));
+        let docs: Vec<i32> = if want == 0 {
+            Vec::new()
+        } else if order.is_empty() && limit.is_none() {
+            self.with_searcher(|s| {
+                let mut all = CollectAll(Vec::new());
+                s.searcher.search_collector(&query, &mut all)?;
+                Ok(all.0)
+            })?
+        } else if order.is_empty() {
+            self.with_searcher(|s| {
+                let top = s.searcher.search(&query, want)?;
+                Ok(top.score_docs.iter().map(|h| h.doc).collect())
+            })?
+        } else {
+            let sorts = order
+                .iter()
+                .map(|k| self.sort_field(k))
+                .collect::<Result<Vec<_>>>()?;
+            self.with_searcher(|s| {
+                let top = s
+                    .searcher
+                    .search_sorted(s.leaves, &query, want, &sorts, None)?;
+                Ok(top.hits.iter().map(|h| h.doc).collect())
+            })?
+        };
+        Ok(Some(
+            docs.into_iter()
+                .skip(offset)
+                .take(limit.unwrap_or(usize::MAX))
+                .map(|d| (d, None))
+                .collect(),
+        ))
+    }
+
+    fn sort_field(&self, key: &SortKey) -> Result<SortField> {
+        let column = &self.spec().columns()[key.column];
+        // A missing value sorts as the greatest or the least value; which
+        // one is the key's `NULLS FIRST`/`LAST` read with its direction.
+        let greatest = key.nulls_first == key.desc;
+        let mut field = match column.kind {
+            ColumnKind::Long => {
+                let mut f = SortField::numeric(&column.name, SortType::Long, key.desc);
+                f.missing = if greatest { i64::MAX } else { i64::MIN };
+                f
+            }
+            ColumnKind::Key | ColumnKind::Keyword => {
+                let mut f = SortField::string(&column.name, key.desc);
+                f.missing = i64::from(greatest);
+                f
+            }
+            _ => {
+                return Err(Error::unsupported(format!(
+                    "`{}` cannot be ordered by",
+                    column.name
+                )))
+            }
+        };
+        field.reverse = key.desc;
+        Ok(field)
     }
 
     /// How many live documents meet all the non-scoring predicates in

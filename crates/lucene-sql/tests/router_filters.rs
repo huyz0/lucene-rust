@@ -163,14 +163,9 @@ fn a_keyword_lookup_returns_every_document_with_the_value() {
 fn what_is_not_a_filter_is_left_to_the_standard_path() {
     let f = fixture_points(N, 2, &[]);
     for sql in [
-        "SELECT count(*) FROM t WHERE price > 5 OR cat = 'c01'",
-        "SELECT count(*) FROM t WHERE price NOT BETWEEN 5 AND 10",
-        "SELECT count(*) FROM t WHERE price <> 5",
-        "SELECT count(*) FROM t WHERE cat NOT IN ('c01')",
         "SELECT count(*) FROM t WHERE price > 1.5",
         "SELECT count(*) FROM t WHERE price > 5 LIMIT 1",
         "SELECT count(*) FROM t WHERE cat > 'c01'",
-        "SELECT count(price) FROM t",
         "SELECT count(*), 'x' FROM t",
         "SELECT count(*) FROM t WHERE price > 5 AND body = 'w1'",
     ] {
@@ -178,8 +173,8 @@ fn what_is_not_a_filter_is_left_to_the_standard_path() {
     }
     // The statements the router declines still answer.
     for sql in [
-        "SELECT count(*) FROM t WHERE price > 5 OR cat = 'c01'",
         "SELECT count(*) FROM t WHERE price > 1.5",
+        "SELECT count(*) FROM t WHERE cat > 'c05'",
     ] {
         assert_eq!(run(&f, sql), standard(&f, sql), "{sql}");
     }

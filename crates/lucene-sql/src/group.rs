@@ -20,6 +20,9 @@ use crate::spec::ColumnKind;
 /// Whole numbers a `f64` holds exactly.
 const EXACT: f64 = 9_007_199_254_740_992.0;
 
+/// A filter that keeps fewer than one document in this many is selective.
+const SELECTIVE: i64 = 16;
+
 /// An aggregate of a group, over a long column (indices into the table).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggFn {
@@ -160,66 +163,159 @@ impl Snapshot {
                     .map_err(|_| Error::unsupported("a group key is not UTF-8"))
             })
             .collect::<Result<_>>()?;
-        let mut arrays = Vec::with_capacity(aggs.len());
-        for a in aggs {
-            let state_of = |i: usize| -> Option<&MetricState> {
-                let c = a.column()?;
-                let f = fields.iter().position(|f| f.0 == c)?;
-                states.get(f).and_then(|s| s.get(i))
-            };
-            let n = buckets.len();
-            let array: ArrayRef = match a {
-                AggFn::CountStar => Arc::new(Int64Array::from_iter_values(
-                    buckets
-                        .iter()
-                        .map(|b| i64::try_from(b.1).unwrap_or(i64::MAX)),
-                )),
-                AggFn::Count(_) => Arc::new(Int64Array::from_iter_values((0..n).map(|i| {
-                    state_of(i).map_or(0, |s| i64::try_from(s.count).unwrap_or(i64::MAX))
-                }))),
-                AggFn::Avg(_) => {
-                    let mut v = Vec::with_capacity(n);
-                    for i in 0..n {
-                        let Some(s) = state_of(i) else {
-                            return Ok(None);
-                        };
-                        if !sum_is_exact(s) {
-                            return Ok(None);
-                        }
-                        v.push((s.count > 0).then(|| s.sum / s.count as f64));
-                    }
-                    Arc::new(Float64Array::from(v))
-                }
-                AggFn::Sum(_) | AggFn::Min(_) | AggFn::Max(_) => {
-                    let mut v = Vec::with_capacity(n);
-                    for i in 0..n {
-                        let Some(s) = state_of(i) else {
-                            return Ok(None);
-                        };
-                        let exact = match a {
-                            AggFn::Sum(_) => sum_is_exact(s),
-                            _ => s.count == 0 || extremes_are_exact(s),
-                        };
-                        if !exact {
-                            return Ok(None);
-                        }
-                        let value = match a {
-                            AggFn::Sum(_) => s.sum as i64,
-                            AggFn::Min(_) => s.min as i64,
-                            _ => s.max as i64,
-                        };
-                        v.push((s.count > 0).then_some(value));
-                    }
-                    Arc::new(Int64Array::from(v))
-                }
-            };
-            arrays.push(array);
-        }
+        let counts: Vec<i64> = buckets
+            .iter()
+            .map(|b| i64::try_from(b.1).unwrap_or(i64::MAX))
+            .collect();
+        let Some(arrays) = agg_arrays(aggs, &counts, |a, i| {
+            let c = a.column()?;
+            let f = fields.iter().position(|f| f.0 == c)?;
+            states.get(f).and_then(|s| s.get(i))
+        }) else {
+            return Ok(None);
+        };
         Ok(Some(Grouped {
             keys: Arc::new(StringArray::from_iter_values(keys)),
             aggs: arrays,
         }))
     }
+
+    /// The aggregates `aggs` over every live document matching `preds`, one
+    /// row, on the aggregation kernels (`count(*)` from the index's counts).
+    ///
+    /// Returns `None` when the kernels cannot give exactly the answer a SQL
+    /// engine would (see [`Self::group_by`]).
+    ///
+    /// # Errors
+    /// An aggregated column is not a long column, or the index is unreadable.
+    pub fn aggregate(&self, aggs: &[AggFn], preds: &[Pred]) -> Result<Option<Vec<ArrayRef>>> {
+        let spec = self.spec();
+        let mut fields: Vec<(usize, u8)> = Vec::new();
+        for a in aggs {
+            let Some(c) = a.column() else { continue };
+            if spec.columns().get(c).map(|c| &c.kind) != Some(&ColumnKind::Long) {
+                return Err(Error::unsupported(
+                    "an aggregate over a column needs a long column",
+                ));
+            }
+            let needs = NEED_COUNT
+                | NEED_MIN_MAX
+                | if matches!(a, AggFn::Sum(_) | AggFn::Avg(_)) {
+                    NEED_SUM
+                } else {
+                    0
+                };
+            match fields.iter_mut().find(|f| f.0 == c) {
+                Some(f) => f.1 |= needs,
+                None => fields.push((c, needs)),
+            }
+        }
+        let matched = i64::try_from(self.count(preds)?).unwrap_or(i64::MAX);
+        // The kernels visit the whole index; a filter that keeps a small part
+        // of it is answered faster by reading the few documents, which is
+        // what the standard path does.
+        if !preds.is_empty() && matched.saturating_mul(SELECTIVE) < i64::from(self.max_doc()) {
+            return Ok(None);
+        }
+        let mut states: Vec<Vec<MetricState>> = Vec::new();
+        if !fields.is_empty() && matched > 0 {
+            let nodes: Vec<AggNode> = fields
+                .iter()
+                .map(|&(c, needs)| AggNode::Metric {
+                    field: spec.columns()[c].name.clone(),
+                    missing: None,
+                    kind: ValueKind::Long,
+                    source: Source::DocValues,
+                    needs,
+                    script: None,
+                })
+                .collect();
+            let query = self.filter_query(preds);
+            let ords = HashMap::new();
+            let slices = vec![(0..self.segment_count()).collect::<Vec<_>>()];
+            let cache = AggSegmentCache::global();
+            let request = self
+                .agg_identities()
+                .filter(|_| cache.budget() > 0 && preds.is_empty())
+                .map(|segments| CacheRequest { cache, segments });
+            let mut out = self.with_searcher(|s| {
+                Ok(aggregate_tree_cached(
+                    s.segments,
+                    s.leaves,
+                    &query,
+                    &nodes,
+                    &Globals::new(&ords),
+                    &slices,
+                    None,
+                    request.as_ref(),
+                )?)
+            })?;
+            for r in out.pop().unwrap_or_default() {
+                let AggResult::Metric(m) = r else {
+                    return Err(Error::unsupported("the kernels returned no metric result"));
+                };
+                states.push(m);
+            }
+        }
+        Ok(agg_arrays(aggs, &[matched], |a, _| {
+            let c = a.column()?;
+            let f = fields.iter().position(|f| f.0 == c)?;
+            states.get(f).and_then(|s| s.first())
+        }))
+    }
+}
+
+/// One array per aggregate over `counts.len()` groups (`counts[i]` is group
+/// `i`'s document count); `None` when a result is not exact in the kernels'
+/// `f64`.
+fn agg_arrays<'s>(
+    aggs: &[AggFn],
+    counts: &[i64],
+    state_of: impl Fn(&AggFn, usize) -> Option<&'s MetricState>,
+) -> Option<Vec<ArrayRef>> {
+    let n = counts.len();
+    let mut arrays = Vec::with_capacity(aggs.len());
+    for a in aggs {
+        let array: ArrayRef = match a {
+            AggFn::CountStar => Arc::new(Int64Array::from(counts.to_vec())),
+            AggFn::Count(_) => Arc::new(Int64Array::from_iter_values((0..n).map(|i| {
+                state_of(a, i).map_or(0, |s| i64::try_from(s.count).unwrap_or(i64::MAX))
+            }))),
+            AggFn::Avg(_) => {
+                let mut v = Vec::with_capacity(n);
+                for i in 0..n {
+                    let s = state_of(a, i)?;
+                    if !sum_is_exact(s) {
+                        return None;
+                    }
+                    v.push((s.count > 0).then(|| s.sum / s.count as f64));
+                }
+                Arc::new(Float64Array::from(v))
+            }
+            AggFn::Sum(_) | AggFn::Min(_) | AggFn::Max(_) => {
+                let mut v = Vec::with_capacity(n);
+                for i in 0..n {
+                    let s = state_of(a, i)?;
+                    let exact = match a {
+                        AggFn::Sum(_) => sum_is_exact(s),
+                        _ => s.count == 0 || extremes_are_exact(s),
+                    };
+                    if !exact {
+                        return None;
+                    }
+                    let value = match a {
+                        AggFn::Sum(_) => s.sum as i64,
+                        AggFn::Min(_) => s.min as i64,
+                        _ => s.max as i64,
+                    };
+                    v.push((s.count > 0).then_some(value));
+                }
+                Arc::new(Int64Array::from(v))
+            }
+        };
+        arrays.push(array);
+    }
+    Some(arrays)
 }
 
 fn extremes_are_exact(s: &MetricState) -> bool {

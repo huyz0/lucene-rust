@@ -55,6 +55,29 @@ pub enum Pred {
         /// The highest value selected.
         upper: i64,
     },
+    /// `column IS NOT NULL`.
+    Present {
+        /// Column index.
+        column: usize,
+    },
+    /// `column IS NULL`.
+    Missing {
+        /// Column index.
+        column: usize,
+    },
+    /// `column LIKE 'prefix%'` on a key or keyword column.
+    Prefix {
+        /// Column index.
+        column: usize,
+        /// The prefix.
+        prefix: String,
+    },
+    /// The negation of one condition on one column: the documents that have
+    /// a value for the column and do not meet the condition (a document
+    /// without a value is unknown, which `WHERE` drops).
+    Not(Box<Pred>),
+    /// Any of the alternatives, each the conjunction of its predicates.
+    Or(Vec<Vec<Pred>>),
 }
 
 impl Pred {
@@ -73,7 +96,7 @@ impl Pred {
                 column: *column,
                 vector: lit.to_string(),
             },
-            Pred::Any { .. } | Pred::Range { .. } => self.clone(),
+            _ => self.clone(),
         }
     }
 
@@ -83,7 +106,7 @@ impl Pred {
             Pred::Term { value, .. } => value,
             Pred::Match { text, .. } => text,
             Pred::Knn { vector, .. } => vector,
-            Pred::Any { .. } | Pred::Range { .. } => "",
+            _ => "",
         }
     }
 

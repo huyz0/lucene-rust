@@ -14,14 +14,21 @@
 //! | shape | statement |
 //! |---|---|
 //! | point read | `SELECT <columns> FROM t WHERE <key> = '<id>'` |
-//! | text top-k | `SELECT <columns, _score> FROM t WHERE match_text(<text>, '<q>') [AND <filters>] ORDER BY _score DESC LIMIT k` |
+//! | rows | `SELECT <columns> FROM t [WHERE <filters>] [ORDER BY <column> [ASC\|DESC] [NULLS FIRST\|LAST], ...] LIMIT n [OFFSET m]`; without `LIMIT`, `WHERE <key> = / IN (...)` |
+//! | text top-k | `SELECT <columns, _score> FROM t WHERE match_text(<text>, '<q>') [AND <filters>] ORDER BY _score DESC LIMIT k [OFFSET m]` |
 //! | k-NN top-k | `SELECT <columns, _score> FROM t WHERE knn(<vector>, '<v>') [AND <filters>] ORDER BY _score DESC LIMIT k` |
 //! | group-by | `SELECT <keyword>, count(*), sum/min/max/avg/count(<long>) ... FROM t [WHERE <filters>] GROUP BY <keyword>` |
 //! | count | `SELECT count(*) FROM t [WHERE <filters>]` |
+//! | aggregates | `SELECT count(*), sum/min/max/avg/count(<long>), ... FROM t [WHERE <filters>]` |
 //!
-//! `<filters>` are `AND`-ed `<key or keyword> = '<x>'`, `<key or keyword> IN
-//! ('<x>', ...)`, and comparisons or `BETWEEN` of a long column with
-//! integers. A select item may carry an alias.
+//! `<filters>` are a tree of `AND`, `OR` and `NOT` over `<key or keyword> =
+//! '<x>'`, `<>`, `IN ('<x>', ...)`, `LIKE '<prefix>%'`, `IS [NOT] NULL`, and
+//! comparisons, `BETWEEN` and `IN` of a long column with integers; `NOT`
+//! applies to one condition on one column, and a negated condition keeps
+//! only documents that have a value (as `WHERE` does with an unknown). A
+//! select item may carry an alias. Each recognised part is a rule that
+//! accepts or refuses: a statement is routed only when every part of it
+//! is accepted, and what any rule refuses is left to DataFusion whole.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,15 +38,15 @@ use datafusion::arrow::datatypes::{Field, Schema};
 use datafusion::logical_expr::Operator;
 use datafusion::sql::sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident,
-    LimitClause, ObjectNamePart, OrderByKind, OrderBySort, Query, Select, SelectItem, SetExpr,
-    Statement, TableFactor, Value,
+    LimitClause, ObjectNamePart, OffsetRows, OrderByKind, OrderBySort, Query, Select, SelectItem,
+    SetExpr, Statement, TableFactor, UnaryOperator, Value,
 };
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use crate::error::{Error, Result};
 use crate::group::AggFn;
-use crate::native::Hit;
+use crate::native::{Hit, SortKey};
 use crate::pred::{parse_vector, range_of, Pred};
 use crate::snapshot::Snapshot;
 use crate::spec::{ColumnKind, TableSpec};
@@ -108,6 +115,29 @@ pub enum Cond {
         /// The integer.
         value: Lit,
     },
+    /// `column IS NOT NULL`.
+    Present {
+        /// The column.
+        column: usize,
+    },
+    /// `column IS NULL`.
+    Missing {
+        /// The column.
+        column: usize,
+    },
+    /// `column LIKE '<pattern>'` on a key or keyword column; a pattern that is
+    /// a prefix (`abc%`) or a plain string is answered, any other is left to
+    /// the standard path.
+    Like {
+        /// The column.
+        column: usize,
+        /// The pattern.
+        pattern: Lit,
+    },
+    /// The negation of a condition on one column (see [`Pred::Not`]).
+    Not(Box<Cond>),
+    /// Any of the alternatives, each the conjunction of its conditions.
+    Or(Vec<Vec<Cond>>),
 }
 
 impl Cond {
@@ -137,6 +167,18 @@ impl Cond {
                 op: *op,
                 value: one(value, true),
             },
+            Cond::Present { .. } | Cond::Missing { .. } => self.clone(),
+            Cond::Like { column, pattern } => Cond::Like {
+                column: *column,
+                pattern: one(pattern, false),
+            },
+            Cond::Not(c) => Cond::Not(Box::new(c.bind(lits))),
+            Cond::Or(branches) => Cond::Or(
+                branches
+                    .iter()
+                    .map(|b| b.iter().map(|c| c.bind(lits)).collect())
+                    .collect(),
+            ),
         }
     }
 
@@ -165,6 +207,31 @@ impl Cond {
                     upper,
                 })
             }
+            Cond::Present { column } => Some(Pred::Present { column: *column }),
+            Cond::Missing { column } => Some(Pred::Missing { column: *column }),
+            Cond::Like { column, pattern } => {
+                let p = text(pattern)?;
+                let column = *column;
+                if p.contains(['\\', '_']) {
+                    return None;
+                }
+                match p.find('%') {
+                    None => Some(Pred::Term { column, value: p }),
+                    Some(i) if i + 1 == p.len() && i == 0 => Some(Pred::Present { column }),
+                    Some(i) if i + 1 == p.len() => Some(Pred::Prefix {
+                        column,
+                        prefix: p[..i].to_string(),
+                    }),
+                    Some(_) => None,
+                }
+            }
+            Cond::Not(c) => Some(Pred::Not(Box::new(c.pred()?))),
+            Cond::Or(branches) => Some(Pred::Or(
+                branches
+                    .iter()
+                    .map(|b| preds_of(b))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
         }
     }
 }
@@ -202,6 +269,8 @@ pub enum Shape {
         project: Vec<usize>,
         /// Hits wanted.
         k: usize,
+        /// Hits skipped before them.
+        offset: usize,
         /// The text.
         text: Lit,
         /// The other conditions.
@@ -240,9 +309,44 @@ pub enum Shape {
         /// The conditions.
         conds: Vec<Cond>,
     },
+    /// Aggregates without `GROUP BY`: one row.
+    Global {
+        /// The aggregates, in select order.
+        aggs: Vec<AggFn>,
+        /// The result's column names, as DataFusion names them.
+        names: Vec<String>,
+        /// The conditions.
+        conds: Vec<Cond>,
+    },
+    /// `SELECT <columns> FROM t [WHERE ...] [ORDER BY ...] [LIMIT n [OFFSET m]]`.
+    Rows {
+        /// Columns to return.
+        project: Vec<usize>,
+        /// The conditions.
+        conds: Vec<Cond>,
+        /// The `ORDER BY` keys (the document order without any).
+        order: Vec<SortKey>,
+        /// `LIMIT`.
+        limit: Option<usize>,
+        /// `OFFSET`.
+        offset: usize,
+    },
 }
 
 impl Shape {
+    /// The conditions, for the shapes that filter.
+    fn conds(&self) -> Option<&[Cond]> {
+        match self {
+            Shape::Point { .. } => None,
+            Shape::Match { conds, .. }
+            | Shape::Knn { conds, .. }
+            | Shape::Group { conds, .. }
+            | Shape::Count { conds, .. }
+            | Shape::Global { conds, .. }
+            | Shape::Rows { conds, .. } => Some(conds),
+        }
+    }
+
     /// The shape with the statement's literals in place of its slots.
     fn bind(&self, lits: &[String]) -> Shape {
         let one = |l: &Lit| match l {
@@ -264,12 +368,14 @@ impl Shape {
                 column,
                 project,
                 k,
+                offset,
                 text,
                 conds: c,
             } => Shape::Match {
                 column: *column,
                 project: project.clone(),
                 k: *k,
+                offset: *offset,
                 text: one(text),
                 conds: conds(c),
             },
@@ -302,6 +408,28 @@ impl Shape {
             Shape::Count { name, conds: c } => Shape::Count {
                 name: name.clone(),
                 conds: conds(c),
+            },
+            Shape::Global {
+                aggs,
+                names,
+                conds: c,
+            } => Shape::Global {
+                aggs: aggs.clone(),
+                names: names.clone(),
+                conds: conds(c),
+            },
+            Shape::Rows {
+                project,
+                conds: c,
+                order,
+                limit,
+                offset,
+            } => Shape::Rows {
+                project: project.clone(),
+                conds: conds(c),
+                order: order.clone(),
+                limit: *limit,
+                offset: *offset,
             },
         }
     }
@@ -534,6 +662,58 @@ fn comparison(op: &BinaryOperator) -> Option<Operator> {
     })
 }
 
+/// The columns a null test or a negation may name: those with doc values,
+/// which is what tells a document without a value from one with.
+fn nullable(kind: &ColumnKind) -> bool {
+    matches!(kind, ColumnKind::Keyword | ColumnKind::Long)
+}
+
+fn column_of_cond(c: &Cond) -> Option<usize> {
+    match c {
+        Cond::Term { column, .. }
+        | Cond::Any { column, .. }
+        | Cond::Cmp { column, .. }
+        | Cond::Like { column, .. }
+        | Cond::Present { column }
+        | Cond::Missing { column } => Some(*column),
+        Cond::Not(c) => column_of_cond(c),
+        Cond::Or(_) => None,
+    }
+}
+
+/// The `OR`-ed terms of `e`.
+fn disjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Or,
+            right,
+        } => {
+            disjuncts(left, out);
+            disjuncts(right, out);
+        }
+        Expr::Nested(inner) => disjuncts(inner, out),
+        other => out.push(other),
+    }
+}
+
+/// `c` negated, when it is one condition on one column: `NOT` of a null
+/// test is the other test, of a comparison the documents that have a value
+/// and fail it.
+fn negate(mut c: Vec<Cond>, spec: &TableSpec) -> Option<Cond> {
+    let one = (c.len() == 1).then(|| c.remove(0))?;
+    nullable(&spec.columns()[column_of_cond(&one)?].kind).then_some(())?;
+    Some(match one {
+        Cond::Present { column } => Cond::Missing { column },
+        Cond::Missing { column } => Cond::Present { column },
+        Cond::Not(inner) => *inner,
+        c @ (Cond::Term { .. } | Cond::Any { .. } | Cond::Cmp { .. } | Cond::Like { .. }) => {
+            Cond::Not(Box::new(c))
+        }
+        Cond::Or(_) => return None,
+    })
+}
+
 /// The conditions `e` is, when it is one of the filter forms; a `BETWEEN`
 /// is two.
 fn conds_of(e: &Expr, spec: &TableSpec, used: &mut Used, out: &mut Vec<Cond>) -> Option<()> {
@@ -542,7 +722,45 @@ fn conds_of(e: &Expr, spec: &TableSpec, used: &mut Used, out: &mut Vec<Cond>) ->
             .iter()
             .position(|c| c.name == ident(e).unwrap_or_default())
     };
+    let nested = |e: &Expr, used: &mut Used| {
+        let mut v = Vec::new();
+        conds_of(e, spec, used, &mut v)?;
+        Some(v)
+    };
     match e {
+        Expr::Nested(inner) => conds_of(inner, spec, used, out)?,
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            conds_of(left, spec, used, out)?;
+            conds_of(right, spec, used, out)?;
+        }
+        Expr::BinaryOp {
+            op: BinaryOperator::Or,
+            ..
+        } => {
+            let mut terms = Vec::new();
+            disjuncts(e, &mut terms);
+            let branches = terms
+                .into_iter()
+                .map(|t| nested(t, used))
+                .collect::<Option<Vec<_>>>()?;
+            out.push(Cond::Or(branches));
+        }
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::NotEq,
+            right,
+        } => {
+            let eq = Expr::BinaryOp {
+                left: left.clone(),
+                op: BinaryOperator::Eq,
+                right: right.clone(),
+            };
+            out.push(negate(nested(&eq, used)?, spec)?);
+        }
         Expr::BinaryOp { left, op, right } => {
             let op = comparison(op)?;
             let column = column_of(left)?;
@@ -559,9 +777,36 @@ fn conds_of(e: &Expr, spec: &TableSpec, used: &mut Used, out: &mut Vec<Cond>) ->
                 _ => return None,
             }
         }
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => {
+            let mut inner = &**expr;
+            while let Expr::Nested(e) = inner {
+                inner = e;
+            }
+            match inner {
+                // `NOT a BETWEEN x AND y` is `a NOT BETWEEN x AND y`.
+                Expr::Between {
+                    expr,
+                    negated,
+                    low,
+                    high,
+                } => {
+                    let flipped = Expr::Between {
+                        expr: expr.clone(),
+                        negated: !negated,
+                        low: low.clone(),
+                        high: high.clone(),
+                    };
+                    conds_of(&flipped, spec, used, out)?;
+                }
+                _ => out.push(negate(nested(inner, used)?, spec)?),
+            }
+        }
         Expr::Between {
             expr,
-            negated: false,
+            negated,
             low,
             high,
         } => {
@@ -569,21 +814,23 @@ fn conds_of(e: &Expr, spec: &TableSpec, used: &mut Used, out: &mut Vec<Cond>) ->
             if spec.columns()[column].kind != ColumnKind::Long {
                 return None;
             }
-            out.push(Cond::Cmp {
-                column,
-                op: Operator::GtEq,
-                value: used.any(low)?,
-            });
-            out.push(Cond::Cmp {
-                column,
-                op: Operator::LtEq,
-                value: used.any(high)?,
-            });
+            let (low, high) = (used.any(low)?, used.any(high)?);
+            let cmp = |op, value| Cond::Cmp { column, op, value };
+            if *negated {
+                nullable(&spec.columns()[column].kind).then_some(())?;
+                out.push(Cond::Or(vec![
+                    vec![cmp(Operator::Lt, low)],
+                    vec![cmp(Operator::Gt, high)],
+                ]));
+            } else {
+                out.push(cmp(Operator::GtEq, low));
+                out.push(cmp(Operator::LtEq, high));
+            }
         }
         Expr::InList {
             expr,
             list,
-            negated: false,
+            negated,
         } if !list.is_empty() => {
             let column = column_of(expr)?;
             if !spec.columns()[column].kind.is_term_indexed() {
@@ -593,14 +840,117 @@ fn conds_of(e: &Expr, spec: &TableSpec, used: &mut Used, out: &mut Vec<Cond>) ->
                 .iter()
                 .map(|v| used.quoted(v))
                 .collect::<Option<Vec<_>>>()?;
-            out.push(Cond::Any { column, values });
+            let any = Cond::Any { column, values };
+            out.push(if *negated {
+                negate(vec![any], spec)?
+            } else {
+                any
+            });
+        }
+        Expr::IsNull(x) | Expr::IsNotNull(x) => {
+            let column = column_of(x)?;
+            if !nullable(&spec.columns()[column].kind) {
+                return None;
+            }
+            out.push(if matches!(e, Expr::IsNull(_)) {
+                Cond::Missing { column }
+            } else {
+                Cond::Present { column }
+            });
+        }
+        Expr::Like {
+            negated,
+            any: false,
+            expr,
+            pattern,
+            escape_char: None,
+        } => {
+            let column = column_of(expr)?;
+            if !spec.columns()[column].kind.is_term_indexed() {
+                return None;
+            }
+            let like = Cond::Like {
+                column,
+                pattern: used.quoted(pattern)?,
+            };
+            out.push(if *negated {
+                negate(vec![like], spec)?
+            } else {
+                like
+            });
         }
         _ => return None,
     }
     Some(())
 }
 
-fn order_score_desc_limit(q: &Query, spec: &TableSpec) -> Option<usize> {
+/// `LIMIT n [OFFSET m]` as numbers; `None` for any other form.
+fn limit_offset(q: &Query) -> Option<(Option<usize>, usize)> {
+    let number = |e: &Expr| match e {
+        Expr::Value(v) => match &v.value {
+            Value::Number(n, false) => n.parse::<usize>().ok(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(clause) = q.limit_clause.as_ref() else {
+        return Some((None, 0));
+    };
+    let LimitClause::LimitOffset {
+        limit,
+        offset,
+        limit_by,
+    } = clause
+    else {
+        return None;
+    };
+    if !limit_by.is_empty() {
+        return None;
+    }
+    let limit = Some(number(limit.as_ref()?)?);
+    let offset = match offset {
+        Some(o) if o.rows == OffsetRows::None => number(&o.value)?,
+        Some(_) => return None,
+        None => 0,
+    };
+    Some((limit, offset))
+}
+
+/// The `ORDER BY` keys of `q`, as plain columns; `Some(vec![])` without one.
+fn order_keys(q: &Query, spec: &TableSpec) -> Option<Vec<SortKey>> {
+    let Some(ob) = q.order_by.as_ref() else {
+        return Some(Vec::new());
+    };
+    if ob.interpolate.is_some() {
+        return None;
+    }
+    let OrderByKind::Expressions(exprs) = &ob.kind else {
+        return None;
+    };
+    exprs
+        .iter()
+        .map(|e| {
+            if e.with_fill.is_some() {
+                return None;
+            }
+            let column = spec.index_of(&ident(&e.expr)?)?;
+            let kind = &spec.columns().get(column)?.kind;
+            if !(kind.is_term_indexed() || *kind == ColumnKind::Long) {
+                return None;
+            }
+            let desc = e.options.sort == Some(OrderBySort::Desc);
+            // DataFusion's default: nulls last ascending, first descending.
+            Some(SortKey {
+                column,
+                desc,
+                nulls_first: e.options.nulls_first.unwrap_or(desc),
+            })
+        })
+        .collect()
+}
+
+/// `ORDER BY _score DESC LIMIT k [OFFSET m]`: `k` and `m`.
+fn order_score_desc_limit(q: &Query) -> Option<(usize, usize)> {
     let ob = q.order_by.as_ref()?;
     if ob.interpolate.is_some() {
         return None;
@@ -616,22 +966,10 @@ fn order_score_desc_limit(q: &Query, spec: &TableSpec) -> Option<usize> {
     {
         return None;
     }
-    let _ = spec;
-    let LimitClause::LimitOffset {
-        limit: Some(Expr::Value(v)),
-        offset: None,
-        limit_by,
-    } = q.limit_clause.as_ref()?
-    else {
+    let (Some(limit), offset) = limit_offset(q)? else {
         return None;
     };
-    if !limit_by.is_empty() {
-        return None;
-    }
-    match &v.value {
-        Value::Number(n, false) => n.parse().ok(),
-        _ => None,
-    }
+    Some((limit, offset))
 }
 
 fn aggregate(e: &Expr, spec: &TableSpec) -> Option<(AggFn, String)> {
@@ -727,6 +1065,60 @@ fn count_shape(s: &Select, q: &Query, spec: &TableSpec, used: &mut Used) -> Opti
     })
 }
 
+/// The most rows (`LIMIT` plus `OFFSET`) a routed row select collects; a
+/// deeper page is left to the standard path, which streams.
+const MAX_ROWS: usize = 10_000;
+
+fn global_shape(s: &Select, q: &Query, spec: &TableSpec, used: &mut Used) -> Option<Shape> {
+    if q.order_by.is_some() || q.limit_clause.is_some() {
+        return None;
+    }
+    let mut aggs = Vec::new();
+    let mut names = Vec::new();
+    for item in &s.projection {
+        let (e, alias) = select_item(item)?;
+        let (agg, n) = aggregate(e, spec)?;
+        aggs.push(agg);
+        names.push(alias.unwrap_or(n));
+    }
+    (!aggs.is_empty()).then_some(Shape::Global {
+        aggs,
+        names,
+        conds: where_conds(s, spec, used)?,
+    })
+}
+
+fn rows_shape(s: &Select, q: &Query, spec: &TableSpec, used: &mut Used) -> Option<Shape> {
+    let project = projection(s, spec, false)?;
+    let conds = where_conds(s, spec, used)?;
+    let order = order_keys(q, spec)?;
+    let (limit, offset) = limit_offset(q)?;
+    match limit {
+        Some(l) if l.saturating_add(offset) > MAX_ROWS => return None,
+        Some(_) => {}
+        // Without a `LIMIT` only a lookup of keys, which name one document
+        // each, is a small answer.
+        None => {
+            let by_key = conds.iter().any(|c| match c {
+                Cond::Term { column, .. } | Cond::Any { column, .. } => {
+                    spec.columns()[*column].kind == ColumnKind::Key
+                }
+                _ => false,
+            });
+            if !by_key || !order.is_empty() {
+                return None;
+            }
+        }
+    }
+    Some(Shape::Rows {
+        project,
+        conds,
+        order,
+        limit,
+        offset,
+    })
+}
+
 fn search_shape(s: &Select, q: &Query, spec: &TableSpec, used: &mut Used) -> Option<Shape> {
     let mut terms = Vec::new();
     conjuncts(s.selection.as_ref()?, &mut terms);
@@ -740,17 +1132,18 @@ fn search_shape(s: &Select, q: &Query, spec: &TableSpec, used: &mut Used) -> Opt
         }
     }
     let (f, column, lit) = search?;
-    let k = order_score_desc_limit(q, spec)?;
+    let (k, offset) = order_score_desc_limit(q)?;
     let project = projection(s, spec, true)?;
     match (f.as_str(), &spec.columns()[column].kind) {
         ("match_text", ColumnKind::Text) => Some(Shape::Match {
             column,
             project,
             k,
+            offset,
             text: lit,
             conds,
         }),
-        ("knn", ColumnKind::Vector { .. }) => Some(Shape::Knn {
+        ("knn", ColumnKind::Vector { .. }) if offset == 0 => Some(Shape::Knn {
             column,
             project,
             k,
@@ -813,6 +1206,14 @@ pub fn recognise(template: &str, spec: &TableSpec) -> Option<(Shape, usize)> {
             .or_else(|| {
                 used = Used::default();
                 count_shape(s, q, spec, &mut used)
+            })
+            .or_else(|| {
+                used = Used::default();
+                global_shape(s, q, spec, &mut used)
+            })
+            .or_else(|| {
+                used = Used::default();
+                rows_shape(s, q, spec, &mut used)
             })
     }?;
     Some((shape, used.count()?))
@@ -955,7 +1356,12 @@ impl Router {
                 .or_insert_with_key(|t| recognise(t, self.snapshot.spec()))
                 .clone()
         }?;
-        (slots == lits.len()).then(|| cached.bind(&lits))
+        if slots != lits.len() {
+            return None;
+        }
+        // A literal that does not fit its column (a pattern that is not a
+        // prefix, text for an integer) is the standard path's.
+        Some(cached.bind(&lits)).filter(|s| s.conds().is_none_or(|c| preds_of(c).is_some()))
     }
 
     /// Runs `sql` when it is a recognised shape: `Ok(None)` means "not mine,
@@ -1001,13 +1407,20 @@ impl Router {
                 column,
                 project,
                 k,
+                offset,
                 text: t,
                 conds,
             } => {
                 let Some(preds) = preds_of(conds) else {
                     return Ok(None);
                 };
-                let hits = snap.match_top_k_where(&name_of(*column), &text(t), *k, &preds)?;
+                let mut hits = snap.match_top_k_where(
+                    &name_of(*column),
+                    &text(t),
+                    k.saturating_add(*offset),
+                    &preds,
+                )?;
+                hits.drain(..(*offset).min(hits.len()));
                 snap.read(project, &hits)?
             }
             Shape::Knn {
@@ -1067,6 +1480,39 @@ impl Router {
                 let array: ArrayRef = Arc::new(Int64Array::from(vec![n]));
                 let schema = Schema::new(vec![Field::new(name, array.data_type().clone(), false)]);
                 RecordBatch::try_new(Arc::new(schema), vec![array]).map_err(Error::from)?
+            }
+            Shape::Global { aggs, names, conds } => {
+                let Some(preds) = preds_of(conds) else {
+                    return Ok(None);
+                };
+                let Some(arrays) = snap.aggregate(aggs, &preds)? else {
+                    return Ok(None);
+                };
+                let fields: Vec<Field> = names
+                    .iter()
+                    .zip(aggs)
+                    .zip(&arrays)
+                    .map(|((n, agg), a)| {
+                        let counts = matches!(agg, AggFn::CountStar | AggFn::Count(_));
+                        Field::new(n, a.data_type().clone(), !counts)
+                    })
+                    .collect();
+                RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(Error::from)?
+            }
+            Shape::Rows {
+                project,
+                conds,
+                order,
+                limit,
+                offset,
+            } => {
+                let Some(preds) = preds_of(conds) else {
+                    return Ok(None);
+                };
+                let Some(hits) = snap.rows(&preds, order, *limit, *offset)? else {
+                    return Ok(None);
+                };
+                snap.read(project, &hits)?
             }
         }))
     }
