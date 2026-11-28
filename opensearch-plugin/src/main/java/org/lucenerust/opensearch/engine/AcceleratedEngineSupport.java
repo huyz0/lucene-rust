@@ -17,6 +17,7 @@ import org.lucenerust.opensearch.NativeStore;
 import org.lucenerust.opensearch.NativeWriter;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
+import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.MergeSchedulerConfig;
@@ -360,7 +361,7 @@ public final class AcceleratedEngineSupport {
      */
     public static final Setting<ByteSizeValue> HOT_TIER_MAX_MEMORY = Setting.byteSizeSetting(
         "index.hot_tier.max_memory",
-        ByteSizeValue.ofMb(8),
+        new ByteSizeValue(8, ByteSizeUnit.MB),
         Setting.Property.IndexScope,
         Setting.Property.Final
     );
