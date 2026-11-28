@@ -23,7 +23,9 @@ use crate::registry::JvmReaderHandle;
 use lucene_analysis::TokenStream;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The layout version of the table blob.
@@ -140,9 +142,7 @@ fn analyzer_of(field: &str, spec: &[u8]) -> Result<lucene_sql::spec::Analyzer, F
 static CONFIG: Mutex<Option<SqlConfig>> = Mutex::new(None);
 
 fn config() -> SqlConfig {
-    lock(&CONFIG)
-        .get_or_insert_with(SqlConfig::default)
-        .clone()
+    lock(&CONFIG).get_or_insert_with(SqlConfig::default).clone()
 }
 
 /// One runtime for every engine: an engine per reader would start a thread
@@ -184,10 +184,13 @@ fn snapshot_of(h: &JvmReaderHandle, table: &[u8]) -> Result<Arc<Snapshot>, FfiSt
         set_last_error(format!("applying the live docs: {e}"));
         FfiStatus::Decode
     })?;
-    Snapshot::new(reader, spec).map(Arc::new).map_err(|e| {
-        set_last_error(format!("opening the table: {e}"));
-        FfiStatus::InvalidArgument
-    })
+    let identities = h.agg_identities().to_vec();
+    Snapshot::new(reader, spec)
+        .map(|s| Arc::new(s.with_agg_identities(identities)))
+        .map_err(|e| {
+            set_last_error(format!("opening the table: {e}"));
+            FfiStatus::InvalidArgument
+        })
 }
 
 fn engine_for(handle: u64, table: &[u8]) -> Result<Arc<SqlEngine>, FfiStatus> {
@@ -211,7 +214,8 @@ fn engine_for(handle: u64, table: &[u8]) -> Result<Arc<SqlEngine>, FfiStatus> {
     };
     let built = cached.engine.get_or_init(|| {
         let build = || -> Result<Arc<SqlEngine>, String> {
-            let snapshot = snapshot_of(&h, table).map_err(|_| lucene_engine::status::last_error())?;
+            let snapshot =
+                snapshot_of(&h, table).map_err(|_| lucene_engine::status::last_error())?;
             let runtime = runtime().map_err(|_| lucene_engine::status::last_error())?;
             SqlEngine::with_runtime(snapshot, &config(), runtime)
                 .map(Arc::new)
@@ -238,10 +242,15 @@ pub(crate) fn query_json(handle: u64, table: &[u8], sql: &str) -> Result<Vec<u8>
         set_last_error(format!("{e}"));
         FfiStatus::Search
     })?;
-    let counter = if path == Path::Router { &ROUTED } else { &STANDARD };
+    let counter = if path == Path::Router {
+        &ROUTED
+    } else {
+        &STANDARD
+    };
     counter.fetch_add(1, Ordering::Relaxed);
-    let schema = lucene_sql::output::result_schema(&batches, &engine.snapshot().spec().arrow_schema());
-    let mut out = Vec::with_capacity(256);
+    let schema =
+        lucene_sql::output::result_schema(&batches, &engine.snapshot().spec().arrow_schema());
+    let mut out = Vec::new();
     lucene_sql::output::write_json(&mut out, &schema, &batches).map_err(|e| {
         set_last_error(format!("writing the result: {e}"));
         FfiStatus::Search
@@ -254,7 +263,11 @@ pub(crate) fn query_json(handle: u64, table: &[u8], sql: &str) -> Result<Vec<u8>
 /// threads scans run on (`0`: the number of CPUs). Takes effect for engines
 /// built afterwards, and the thread count only before the first statement.
 #[no_mangle]
-pub extern "C" fn ffi_jvm_sql_configure(max_rows: u64, memory_limit: u64, worker_threads: u32) -> i32 {
+pub extern "C" fn ffi_jvm_sql_configure(
+    max_rows: u64,
+    memory_limit: u64,
+    worker_threads: u32,
+) -> i32 {
     guard(|| {
         let mut config = SqlConfig::default();
         if max_rows > 0 {

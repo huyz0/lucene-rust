@@ -5,11 +5,16 @@
 //! two paths cannot disagree about what a predicate means.
 
 use datafusion::arrow::array::RecordBatch;
+use lucene_search::document::long_point;
+use lucene_search::extended_query::{
+    ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery,
+};
 use lucene_search::knn_search::{knn_top_hits, KnnTarget};
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 
 use crate::columns::Columns;
 use crate::error::{Error, Result};
+use crate::pred::Pred;
 use crate::snapshot::{Searcher, Snapshot};
 use crate::spec::ColumnKind;
 
@@ -33,13 +38,46 @@ pub(crate) fn any_of(field: &str, terms: &[String]) -> BooleanQuery {
     }
 }
 
-/// `filters` (field, term) as one clause every document must match, scoring
-/// nothing.
-pub(crate) fn all_of(filters: &[(String, String)]) -> Clause {
+/// `filters` as one clause every document must match, scoring nothing.
+pub(crate) fn all_of_clauses(filters: Vec<Clause>) -> Clause {
     Clause::Boolean(Box::new(BooleanQuery {
-        filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
+        filter: filters,
         ..BooleanQuery::default()
     }))
+}
+
+/// The non-scoring predicates as filter clauses.
+pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause> {
+    let name = |c: usize| snapshot.spec().columns()[c].name.as_str();
+    preds
+        .iter()
+        .filter_map(|p| match p {
+            Pred::Term { column, value } => Some(term_clause(name(*column), value)),
+            Pred::Range {
+                column,
+                lower,
+                upper,
+            } => Some(range_clause(snapshot, *column, *lower, *upper)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Documents whose long `field` has a value in `lower..=upper`, from the
+/// point tree or the doc values, whichever is cheaper for the segment, when
+/// the field has both.
+pub(crate) fn range_clause(snapshot: &Snapshot, column: usize, lower: i64, upper: i64) -> Clause {
+    let field = &snapshot.spec().columns()[column].name;
+    let values = NumericDocValuesRangeQuery::new(field.as_str(), lower, upper);
+    if snapshot.long_has_points(column) {
+        if let Ok(points) = long_point::new_range_query(field, lower, upper) {
+            return Clause::from(IndexOrDocValuesQuery::new(
+                Clause::from(points),
+                Clause::from(values),
+            ));
+        }
+    }
+    Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(values)))
 }
 
 impl Snapshot {

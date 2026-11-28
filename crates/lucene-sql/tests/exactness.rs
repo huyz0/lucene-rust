@@ -22,7 +22,7 @@ fn documents_without_the_key_make_a_null_group_so_the_router_declines() {
     assert!(f.engine.router().shape(sql).is_some());
     assert!(f
         .snapshot()
-        .group_by(2, &[lucene_sql::group::AggFn::CountStar])
+        .group_by(2, &[lucene_sql::group::AggFn::CountStar], &[])
         .unwrap()
         .is_none());
     let r = run(&f, sql);
@@ -39,7 +39,7 @@ fn sums_the_kernels_cannot_hold_exactly_run_the_standard_way() {
     let sql = "SELECT cat, sum(price), max(price) FROM t GROUP BY cat";
     assert!(f
         .snapshot()
-        .group_by(2, &[lucene_sql::group::AggFn::Sum(1)])
+        .group_by(2, &[lucene_sql::group::AggFn::Sum(1)], &[])
         .unwrap()
         .is_none());
     let r = run(&f, sql);
@@ -56,9 +56,9 @@ fn sums_the_kernels_cannot_hold_exactly_run_the_standard_way() {
 fn group_by_asks_for_the_right_columns() {
     let f = fixture(30, 1, &[]);
     use lucene_sql::group::AggFn;
-    assert!(f.snapshot().group_by(1, &[AggFn::CountStar]).is_err());
-    assert!(f.snapshot().group_by(2, &[AggFn::Sum(2)]).is_err());
-    assert!(f.snapshot().group_by(99, &[]).is_err());
+    assert!(f.snapshot().group_by(1, &[AggFn::CountStar], &[]).is_err());
+    assert!(f.snapshot().group_by(2, &[AggFn::Sum(2)], &[]).is_err());
+    assert!(f.snapshot().group_by(99, &[], &[]).is_err());
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn averages_and_extremes_the_kernels_cannot_hold_run_the_standard_way() {
         // Exact only for groups whose values fit; the huge one makes it None.
         assert!(
             f.snapshot()
-                .group_by(2, std::slice::from_ref(&agg))
+                .group_by(2, std::slice::from_ref(&agg), &[])
                 .unwrap()
                 .is_none(),
             "{agg:?}"

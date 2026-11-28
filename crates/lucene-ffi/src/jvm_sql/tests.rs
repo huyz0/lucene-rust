@@ -63,6 +63,14 @@ fn table() -> Vec<u8> {
 /// `DOCS` documents in three segments; `dead` are masked as the JVM's live
 /// docs do (words per segment, in segment order).
 fn shard(dead: &[usize]) -> Shard {
+    shard_with(DOCS, 3, dead)
+}
+
+fn shard_of(docs: usize, segments: usize) -> Shard {
+    shard_with(docs, segments, &[])
+}
+
+fn shard_with(docs: usize, segments: usize, dead: &[usize]) -> Shard {
     let dir = TempDir::new("ffi-sql");
     {
         let fs = FsDirectory::open(dir.path_str());
@@ -72,7 +80,7 @@ fn shard(dead: &[usize]) -> Shard {
             bugfix: 0,
         };
         let mut w = IndexWriter::open(&fs, Vec::new(), "Lucene104", version).unwrap();
-        for i in 0..DOCS {
+        for i in 0..docs {
             let mut doc = Document::new();
             doc.add(StringField::new("id", format!("doc-{i:03}"), Store::Yes));
             let body = if i % 2 == 0 { "Alpha beta" } else { "gamma" };
@@ -80,7 +88,7 @@ fn shard(dead: &[usize]) -> Shard {
             doc.add(NumericDocValuesField::new("price", i as i64));
             doc.add(KeywordField::new("cat", format!("c{}", i % 5), Store::No));
             w.add_fields_document(&doc).unwrap();
-            if (i + 1) % (DOCS / 3) == 0 {
+            if (i + 1) % (docs / segments) == 0 {
                 w.commit().unwrap();
             }
         }
@@ -107,7 +115,7 @@ fn shard(dead: &[usize]) -> Shard {
             counts.push(0usize);
         } else {
             let mut w = vec![u64::MAX; m.div_ceil(64)];
-            if m % 64 != 0 {
+            if !m.is_multiple_of(64) {
                 *w.last_mut().unwrap() = (1u64 << (m % 64)) - 1;
             }
             for d in hit {
@@ -266,7 +274,10 @@ fn bad_input_is_a_status_with_a_message_never_a_panic() {
     assert!(err.contains("version"), "{err}");
     assert!(run(&s, &table()[..10], "SELECT 1 FROM t").is_err());
     let err = run(&s, &table(), "DELETE FROM t").unwrap_err();
-    assert!(err.to_lowercase().contains("delete") || err.contains("DDL") || err.contains("DML"), "{err}");
+    assert!(
+        err.to_lowercase().contains("delete") || err.contains("DDL") || err.contains("DML"),
+        "{err}"
+    );
     assert!(run(&s, &table(), "SELEC").is_err());
     let err = run(&s, &table(), "SELECT nope FROM t").unwrap_err();
     assert!(err.contains("nope"), "{err}");
@@ -275,7 +286,15 @@ fn bad_input_is_a_status_with_a_message_never_a_panic() {
     let mut len = 0usize;
     // SAFETY: live locals.
     let rc = unsafe {
-        ffi_jvm_sql_query(0xdead_beef, table().as_ptr(), 0, b"x".as_ptr().cast(), 1, &mut ptr, &mut len)
+        ffi_jvm_sql_query(
+            0xdead_beef,
+            table().as_ptr(),
+            0,
+            b"x".as_ptr().cast(),
+            1,
+            &mut ptr,
+            &mut len,
+        )
     };
     assert_ne!(rc, 0);
 }
@@ -313,4 +332,58 @@ fn router_and_standard_statements_are_counted() {
     // SAFETY: room for two values.
     unsafe { ffi_jvm_sql_stats(after.as_mut_ptr()) };
     assert!(after[0] > before[0] && after[1] > before[1]);
+}
+
+/// What the bridge and the JSON writer add to a statement: the engine's own
+/// batches against `query_json` and the whole exported call. Run with
+/// `cargo test --release -p lucene-ffi --lib sql_overhead -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn sql_overhead() {
+    use std::time::Instant;
+    let s = shard_of(200_000, 4);
+    let t = table();
+    let engine = engine_for(s.handle, &t).unwrap();
+    let statements = [
+        ("point read", "SELECT id, price FROM t WHERE id = 'doc-123456'"),
+        (
+            "text top-10",
+            "SELECT price, _score FROM t WHERE match_text(body, 'alpha') ORDER BY _score DESC LIMIT 10",
+        ),
+        (
+            "group by",
+            "SELECT cat, count(*), sum(price), min(price), max(price) FROM t GROUP BY cat",
+        ),
+        ("range count", "SELECT count(*) FROM t WHERE price > 150000 AND cat = 'c3'"),
+    ];
+    let p50 = |f: &mut dyn FnMut()| {
+        for _ in 0..300 {
+            f();
+        }
+        let mut us: Vec<f64> = (0..2000)
+            .map(|_| {
+                let t0 = Instant::now();
+                f();
+                t0.elapsed().as_secs_f64() * 1e6
+            })
+            .collect();
+        us.sort_by(f64::total_cmp);
+        us[us.len() / 2]
+    };
+    println!(
+        "{:14} {:>10} {:>12} {:>12}",
+        "statement", "engine us", "json us", "ffi call us"
+    );
+    for (name, sql) in statements {
+        let a = p50(&mut || {
+            std::hint::black_box(engine.query_blocking(sql).unwrap());
+        });
+        let b = p50(&mut || {
+            std::hint::black_box(query_json(s.handle, &t, sql).unwrap());
+        });
+        let c = p50(&mut || {
+            run(&s, &t, sql).unwrap();
+        });
+        println!("{name:14} {a:>10.1} {b:>12.1} {c:>12.1}");
+    }
 }

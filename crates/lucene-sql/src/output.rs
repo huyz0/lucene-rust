@@ -297,10 +297,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(StringArray::from(vec![
-                    Some("a\"b\\c\n\u{1}é"),
-                    None,
-                ])),
+                Arc::new(StringArray::from(vec![Some("a\"b\\c\n\u{1}é"), None])),
                 Arc::new(Int64Array::from(vec![Some(-7), None])),
                 Arc::new(UInt64Array::from(vec![Some(u64::MAX), Some(0)])),
                 Arc::new(Float64Array::from(vec![Some(1.5), Some(f64::NAN)])),
@@ -346,7 +343,10 @@ mod tests {
         .unwrap();
         let v = json(&batch);
         assert_eq!(v["schema"][0]["type"], "knn_vector");
-        assert_eq!(v["datarows"][0], serde_json::json!([[1.0, 2.5], "1970-01-01"]));
+        assert_eq!(
+            v["datarows"][0],
+            serde_json::json!([[1.0, 2.5], "1970-01-01"])
+        );
         assert_eq!(v["datarows"][1][0], serde_json::json!([3.0, 4.0]));
     }
 

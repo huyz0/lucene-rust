@@ -52,6 +52,7 @@ public final class RestStatsAction extends BaseRestHandler {
         b.field("direct_searches", stats.directCount());
         b.field("sql_statements", stats.sqlCount());
         b.field("sql_time_in_nanos", stats.sqlTimeNanos());
+        b.field("sql_direct_statements", stats.sqlDirectCount());
         long[] sql = NativeSql.stats();
         b.field("sql_router_statements", sql[0]);
         b.field("sql_standard_statements", sql[1]);

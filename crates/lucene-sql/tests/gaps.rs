@@ -168,7 +168,7 @@ fn columns_the_index_lacks_read_as_null() {
     // The group-by cannot use a keyword the segments lack.
     assert!(f
         .snapshot()
-        .group_by(6, &[lucene_sql::group::AggFn::CountStar])
+        .group_by(6, &[lucene_sql::group::AggFn::CountStar], &[])
         .unwrap()
         .is_none());
     let g = run(&f, "SELECT nokw, count(*) FROM t GROUP BY nokw");

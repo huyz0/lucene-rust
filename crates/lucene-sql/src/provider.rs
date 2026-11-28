@@ -27,7 +27,7 @@ use lucene_search::query::BooleanQuery;
 
 use crate::columns::{Columns, WINDOW};
 use crate::error::{external, Error};
-use crate::native::{all_of, any_of, check_dimension, knn_in, term_clause, Hit};
+use crate::native::{all_of_clauses, any_of, check_dimension, filter_clauses, knn_in, Hit};
 use crate::pred::{self, Pred};
 use crate::snapshot::{Searcher, Snapshot};
 
@@ -252,13 +252,7 @@ pub(crate) fn search_hits(
 ) -> crate::Result<Vec<Hit>> {
     let spec = snapshot.spec();
     let name = |c: usize| spec.columns()[c].name.clone();
-    let filters: Vec<(String, String)> = preds
-        .iter()
-        .filter_map(|p| match p {
-            Pred::Term { column, value } => Some((name(*column), value.clone())),
-            _ => None,
-        })
-        .collect();
+    let filters = filter_clauses(snapshot, preds);
     let scoring = preds.iter().find(|p| p.is_scoring());
     match scoring {
         Some(Pred::Knn { column, vector }) => {
@@ -266,7 +260,7 @@ pub(crate) fn search_hits(
                 Error::unsupported(format!("`{vector}` is not a list of numbers"))
             })?;
             check_dimension(snapshot, *column, &v)?;
-            let filter = (!filters.is_empty()).then(|| all_of(&filters));
+            let filter = (!filters.is_empty()).then(|| all_of_clauses(filters.clone()));
             knn_in(
                 s,
                 &name(*column),
@@ -281,7 +275,7 @@ pub(crate) fn search_hits(
                 return Ok(Vec::new());
             }
             let mut q = any_of(&name(*column), &terms);
-            q.filter = filters.iter().map(|(f, t)| term_clause(f, t)).collect();
+            q.filter = filters.clone();
             match fetch {
                 Some(k) => {
                     let top = s.searcher.search(&q, k)?;
@@ -296,7 +290,7 @@ pub(crate) fn search_hits(
         }
         _ => {
             let q = BooleanQuery {
-                filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
+                filter: filters,
                 ..BooleanQuery::default()
             };
             let mut hits = collect_all(s, &q, false)?;

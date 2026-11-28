@@ -64,11 +64,16 @@ import org.opensearch.transport.client.node.NodeClient;
 public final class AcceleratedSql {
     private AcceleratedSql() {}
 
+    private static final org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(AcceleratedSql.class);
+
     /** The path of the endpoint. */
     public static final String PATH = "/_plugins/accelerated/sql";
 
     /** Node setting: serve {@link #PATH}. */
     public static final Setting<Boolean> ENABLED = Setting.boolSetting("plugins.accelerated.sql.enabled", true, Setting.Property.NodeScope);
+
+    /** Node setting: answer a statement from the REST layer when this node holds the index (never with the security plugin). */
+    public static final Setting<Boolean> DIRECT = Setting.boolSetting("plugins.accelerated.sql.direct", true, Setting.Property.NodeScope);
 
     /** Node setting: the most rows a statement may return. */
     public static final Setting<Integer> MAX_ROWS = Setting.intSetting("plugins.accelerated.sql.max_rows", 10_000, 1, Setting.Property.NodeScope);
@@ -79,6 +84,9 @@ public final class AcceleratedSql {
         new org.opensearch.core.common.unit.ByteSizeValue(512, org.opensearch.core.common.unit.ByteSizeUnit.MB),
         Setting.Property.NodeScope
     );
+
+    /** The table each recent statement reads, so a repeated statement is not parsed twice. */
+    private static final Map<String, String> TABLE_NAMES = new ConcurrentHashMap<>();
 
     private static volatile NativeReaders readers;
     private static volatile SearchStats stats;
@@ -164,9 +172,6 @@ public final class AcceleratedSql {
 
     public static final class TransportAction extends TransportSingleShardAction<Request, Response> {
         private final IndicesService indices;
-        private final Map<String, Cached> tables = new ConcurrentHashMap<>();
-
-        private record Cached(DocumentMapper mapper, SqlTables.Table table) {}
 
         @Inject
         public TransportAction(
@@ -205,8 +210,62 @@ public final class AcceleratedSql {
         protected Response shardOperation(Request request, ShardId shardId) throws IOException {
             IndexService service = indices.indexServiceSafe(shardId.getIndex());
             IndexShard shard = service.getShard(shardId.id());
-            refuseUnsupported(request, service);
-            SqlTables.Table table = table(shardId.getIndexName(), request.table(), service);
+            Runner.refuse(request.table(), service, clusterService.state());
+            return new Response(Runner.run(shard, service, request.table(), request.sql()));
+        }
+    }
+
+    /** Runs a statement over a local shard: what the transport action and the direct path share. */
+    static final class Runner {
+        private Runner() {}
+
+        private record Cached(DocumentMapper mapper, SqlTables.Table table) {}
+
+        private static final Map<String, Cached> TABLES = new ConcurrentHashMap<>();
+
+        /** Throws when {@code service}'s index is not one SQL runs over, or {@code table} reaches it by a filtered alias. */
+        static void refuse(String table, IndexService service, ClusterState state) {
+            if (unsupported(table, service, state) instanceof String reason) {
+                throw new OpenSearchStatusException(reason, RestStatus.BAD_REQUEST);
+            }
+        }
+
+        /** Why SQL does not run over the index {@code table} names, or null when it does. */
+        static String unsupported(String table, IndexService service, ClusterState state) {
+            org.opensearch.index.IndexSettings settings = service.getIndexSettings();
+            if (settings.getNumberOfShards() != 1) {
+                return "SQL runs over an index with one shard; [" + service.index().getName() + "] has " + settings.getNumberOfShards();
+            }
+            if (org.lucenerust.opensearch.engine.AcceleratedEngineSupport.REALTIME_SEARCH.get(settings.getSettings())
+                || service.mapperService().hasNested()) {
+                return "SQL does not run over an index with realtime search or nested fields";
+            }
+            if (table.equals(service.index().getName()) == false) {
+                IndexMetadata meta = state.metadata().index(service.index());
+                for (AliasMetadata alias : meta.getAliases().values()) {
+                    if (alias.filteringRequired()) {
+                        return "[" + table + "] resolves to an index with a filtered alias, which SQL does not apply";
+                    }
+                }
+            }
+            return null;
+        }
+
+        /** The index as a table: its columns follow its mapping, found again when the mapping changes. */
+        static SqlTables.Table table(String index, String name, IndexService service) {
+            DocumentMapper mapper = service.mapperService().documentMapper();
+            String key = index + '\0' + name;
+            Cached cached = TABLES.get(key);
+            if (cached != null && cached.mapper() == mapper) {
+                return cached.table();
+            }
+            SqlTables.Table built = SqlTables.of(name, service.mapperService());
+            TABLES.put(key, new Cached(mapper, built));
+            return built;
+        }
+
+        static byte[] run(IndexShard shard, IndexService service, String name, String sql) throws IOException {
+            SqlTables.Table table = table(service.index().getName(), name, service);
             long start = System.nanoTime();
             try (Engine.Searcher searcher = shard.acquireSearcher("accelerated_sql")) {
                 NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
@@ -217,9 +276,9 @@ public final class AcceleratedSql {
                     );
                 }
                 NativeMemory.queryStarted(0);
-                byte[] json = NativeSql.query(acquired.handle(), table.blob(), request.sql());
+                byte[] json = NativeSql.query(acquired.handle(), table.blob(), sql);
                 stats.sqlStatement(System.nanoTime() - start);
-                return new Response(json);
+                return json;
             } catch (NativeSql.Failure e) {
                 throw new OpenSearchStatusException(e.getMessage(), status(e));
             }
@@ -232,51 +291,89 @@ public final class AcceleratedSql {
                 default -> RestStatus.INTERNAL_SERVER_ERROR;
             };
         }
+    }
 
-        /** The index as a table: its columns follow its mapping, found again when the mapping changes. */
-        private SqlTables.Table table(String index, String name, IndexService service) {
-            DocumentMapper mapper = service.mapperService().documentMapper();
-            String key = index + '\0' + name;
-            Cached cached = tables.get(key);
-            if (cached != null && cached.mapper() == mapper) {
-                return cached.table();
-            }
-            SqlTables.Table built = SqlTables.of(name, service.mapperService());
-            tables.put(key, new Cached(mapper, built));
-            return built;
+    /**
+     * Answers a statement from the REST layer when this node holds a copy of the index: the statement runs on the
+     * search thread pool without the transport action's routing, filters and serialisation. Never with the security
+     * plugin installed, whose index permission check is the transport action's: the plugin does not create it then.
+     */
+    static final class Direct {
+        private final Map<String, IndexService> services = new ConcurrentHashMap<>();
+        private final java.util.function.Supplier<ClusterService> cluster;
+        private final java.util.function.Supplier<IndexNameExpressionResolver> resolver;
+
+        Direct(java.util.function.Supplier<ClusterService> cluster, java.util.function.Supplier<IndexNameExpressionResolver> resolver) {
+            this.cluster = cluster;
+            this.resolver = resolver;
         }
 
-        private void refuseUnsupported(Request request, IndexService service) {
-            org.opensearch.index.IndexSettings settings = service.getIndexSettings();
-            if (settings.getNumberOfShards() != 1) {
-                throw new OpenSearchStatusException(
-                    "SQL runs over an index with one shard; [" + service.index().getName() + "] has " + settings.getNumberOfShards(),
-                    RestStatus.BAD_REQUEST
-                );
+        /** Tracks the index's service while it lives. */
+        void track(org.opensearch.index.IndexModule indexModule) {
+            indexModule.addIndexEventListener(new org.opensearch.index.shard.IndexEventListener() {
+                @Override
+                public void afterIndexCreated(IndexService service) {
+                    services.put(service.index().getName(), service);
+                }
+
+                @Override
+                public void afterIndexRemoved(
+                    org.opensearch.core.index.Index index,
+                    org.opensearch.index.IndexSettings indexSettings,
+                    org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason reason
+                ) {
+                    services.remove(index.getName());
+                }
+            });
+        }
+
+        /** The consumer that runs the statement here, or null when it is the transport action's to run or refuse. */
+        org.opensearch.common.CheckedConsumer<org.opensearch.rest.RestChannel, Exception> consumer(NodeClient client, String table, String sql) {
+            ClusterService clusterService = cluster.get();
+            IndexNameExpressionResolver names = resolver.get();
+            if (clusterService == null || names == null || table.indexOf(':') >= 0) {
+                return null;
             }
-            if (org.lucenerust.opensearch.engine.AcceleratedEngineSupport.REALTIME_SEARCH.get(settings.getSettings())
-                || service.mapperService().hasNested()) {
-                throw new OpenSearchStatusException(
-                    "SQL does not run over an index with realtime search or nested fields",
-                    RestStatus.BAD_REQUEST
-                );
+            ClusterState state = clusterService.state();
+            String[] concrete;
+            try {
+                concrete = names.concreteIndexNames(state, org.opensearch.action.support.IndicesOptions.strictExpandOpenAndForbidClosedIgnoreThrottled(), table);
+            } catch (RuntimeException e) {
+                return null;
             }
-            if (request.table().equals(service.index().getName()) == false) {
-                IndexMetadata meta = clusterService.state().metadata().index(service.index());
-                for (AliasMetadata alias : meta.getAliases().values()) {
-                    if (alias.filteringRequired()) {
-                        throw new OpenSearchStatusException(
-                            "[" + request.table() + "] resolves to an index with a filtered alias, which SQL does not apply",
-                            RestStatus.BAD_REQUEST
-                        );
+            IndexService service = concrete.length == 1 ? services.get(concrete[0]) : null;
+            IndexShard shard = service == null ? null : service.getShardOrNull(0);
+            if (shard == null
+                || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED
+                || state.blocks().indexBlockedException(ClusterBlockLevel.READ, concrete[0]) != null
+                || Runner.unsupported(table, service, state) != null) {
+                return null;
+            }
+            return channel -> client.threadPool().executor(ThreadPool.Names.SEARCH).execute(() -> {
+                try {
+                    byte[] json = Runner.run(shard, service, table, sql);
+                    stats.sqlDirect();
+                    channel.sendResponse(new BytesRestResponse(RestStatus.OK, "application/json", json));
+                } catch (Exception | LinkageError e) {
+                    try {
+                        channel.sendResponse(new BytesRestResponse(channel, e instanceof Exception ex ? ex : new IllegalStateException(e)));
+                    } catch (IOException io) {
+                        logger.warn("accelerated-search: could not report a SQL failure", io);
                     }
                 }
-            }
+            });
         }
     }
 
     /** {@code POST} or {@code GET} {@link #PATH}, the statement in the body's {@code query}. */
     public static final class Rest extends BaseRestHandler {
+        private final Direct direct;
+
+        /** {@code direct} answers from this node when it can; null leaves every statement to the transport action. */
+        Rest(Direct direct) {
+            this.direct = direct;
+        }
+
         @Override
         public String getName() {
             return "accelerated_sql";
@@ -303,11 +400,23 @@ public final class AcceleratedSql {
             if (sql == null || sql.isBlank()) {
                 throw new IllegalArgumentException("the request needs a [query]");
             }
-            String table;
-            try {
-                table = NativeSql.table(sql);
-            } catch (NativeSql.Failure e) {
-                throw new IllegalArgumentException(e.getMessage());
+            String table = TABLE_NAMES.get(sql);
+            if (table == null) {
+                try {
+                    table = NativeSql.table(sql);
+                } catch (NativeSql.Failure e) {
+                    throw new IllegalArgumentException(e.getMessage());
+                }
+                if (TABLE_NAMES.size() >= 4096) {
+                    TABLE_NAMES.clear();
+                }
+                TABLE_NAMES.put(sql, table);
+            }
+            if (direct != null) {
+                org.opensearch.common.CheckedConsumer<org.opensearch.rest.RestChannel, Exception> local = direct.consumer(client, table, sql);
+                if (local != null) {
+                    return local::accept;
+                }
             }
             Request execute = new Request(table, sql);
             return channel -> client.execute(Action.INSTANCE, execute, new RestActionListener<>(channel) {

@@ -69,10 +69,16 @@ fn one_value_per_document_reads_like_a_numeric_field() {
 
     let values = expected(100);
     let missing = values.iter().filter(|v| v.is_none()).count();
-    let r = rows(&e.query_blocking("SELECT count(*) FROM t WHERE price IS NULL").unwrap());
+    let r = rows(
+        &e.query_blocking("SELECT count(*) FROM t WHERE price IS NULL")
+            .unwrap(),
+    );
     assert_eq!(r, vec![vec![missing.to_string()]]);
     let big = values.iter().flatten().filter(|&&v| v > 100).count();
-    let r = rows(&e.query_blocking("SELECT count(*) FROM t WHERE price > 100").unwrap());
+    let r = rows(
+        &e.query_blocking("SELECT count(*) FROM t WHERE price > 100")
+            .unwrap(),
+    );
     assert_eq!(r, vec![vec![big.to_string()]]);
 }
 

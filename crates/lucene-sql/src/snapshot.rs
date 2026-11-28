@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity;
 use lucene_codecs::doc_values::SortedSetKind;
 use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue};
 use lucene_codecs::terms_dict::TermsDict;
@@ -32,6 +33,14 @@ pub struct Snapshot {
     /// `keyword_dense[column]`: every document of every segment has a value
     /// (so a `GROUP BY` has no NULL group). False for other columns.
     keyword_dense: Vec<bool>,
+    /// `long_points[column]`: every segment that has the long column indexed
+    /// it as one-dimensional eight-byte points, so a range can use the point
+    /// tree. False for other columns.
+    long_points: Vec<bool>,
+    /// Each segment's identity in the aggregation segment cache, when the
+    /// host offers one: a group-by then reuses what an earlier pass over the
+    /// same segment collected.
+    agg_identities: Option<Vec<Option<SegmentIdentity>>>,
 }
 
 /// The segments of a snapshot opened for one search.
@@ -79,13 +88,40 @@ impl Snapshot {
                         .all(|(s, leaf)| keyword_is_dense(leaf, field_numbers[s][c]))
             })
             .collect();
+        let long_points = spec
+            .columns()
+            .iter()
+            .map(|col| {
+                col.kind == ColumnKind::Long
+                    && reader.segment_readers().iter().all(|leaf| {
+                        leaf.field_infos()
+                            .field_by_name(&col.name)
+                            .is_none_or(|f| f.point_dimension_count == 1 && f.point_num_bytes == 8)
+                    })
+            })
+            .collect();
         Ok(Self {
             reader,
             spec: Arc::new(spec),
             field_numbers,
             keyword_terms,
             keyword_dense,
+            long_points,
+            agg_identities: None,
         })
+    }
+
+    /// This snapshot with `identities` (one per segment, `None` for a segment
+    /// not to cache) as its segments' identities in the aggregation segment
+    /// cache.
+    #[must_use]
+    pub fn with_agg_identities(mut self, identities: Vec<Option<SegmentIdentity>>) -> Self {
+        self.agg_identities = Some(identities);
+        self
+    }
+
+    pub(crate) fn agg_identities(&self) -> Option<&[Option<SegmentIdentity>]> {
+        self.agg_identities.as_deref()
     }
 
     /// The table declaration.
@@ -118,6 +154,12 @@ impl Snapshot {
         self.keyword_dense.get(column).copied().unwrap_or(false)
     }
 
+    /// Whether the long column `column` has a point tree in every segment
+    /// that has the column.
+    pub(crate) fn long_has_points(&self, column: usize) -> bool {
+        self.long_points.get(column).copied().unwrap_or(false)
+    }
+
     pub(crate) fn leaf(&self, segment: usize) -> &SegmentReader {
         &self.reader.segment_readers()[segment]
     }
@@ -146,7 +188,10 @@ impl Snapshot {
             .filter(|c| c.kind == ColumnKind::Text)
             .map(|c| c.name.clone())
             .collect();
-        let opened = self.reader.open_segments()?;
+        let mut opened = self.reader.open_segments()?;
+        if self.long_points.iter().any(|&p| p) {
+            opened.open_points()?;
+        }
         let segments = opened.as_open_segments();
         let norms = self.reader.field_norms_by_field(&text_fields)?;
         let norm_refs: Vec<SegmentNorms<'_, '_>> = norms.iter().map(Some).collect();

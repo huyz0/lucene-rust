@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn names_the_one_table_a_query_reads() {
         assert_eq!(table_name("SELECT * FROM Logs").unwrap(), "logs");
-        assert_eq!(table_name("select a from \"My-Index\" where a = 'x'").unwrap(), "My-Index");
+        assert_eq!(
+            table_name("select a from \"My-Index\" where a = 'x'").unwrap(),
+            "My-Index"
+        );
         assert_eq!(
             table_name("SELECT k, count(*) FROM (SELECT k FROM t) GROUP BY k").unwrap(),
             "t"

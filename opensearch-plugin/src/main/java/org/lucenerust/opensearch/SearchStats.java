@@ -42,6 +42,17 @@ public final class SearchStats {
         sqlNanos.add(nanos);
     }
 
+    private final LongAdder sqlDirects = new LongAdder();
+
+    /** A SQL statement answered from the REST layer, without the transport action. */
+    public void sqlDirect() {
+        sqlDirects.increment();
+    }
+
+    public long sqlDirectCount() {
+        return sqlDirects.sum();
+    }
+
     public long sqlCount() {
         return sqlStatements.sum();
     }

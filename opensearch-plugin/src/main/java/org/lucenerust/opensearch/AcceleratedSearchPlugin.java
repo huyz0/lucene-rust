@@ -262,6 +262,8 @@ public class AcceleratedSearchPlugin extends Plugin implements
     private final SearchStats stats = new SearchStats();
     /** Direct search for eligible plain searches; null unless {@link DirectSearch#ENABLED} and the security plugin is absent. */
     private final DirectSearch directSearch;
+    /** SQL answered from the REST layer; null with the security plugin or {@link AcceleratedSql#DIRECT} off. */
+    private final AcceleratedSql.Direct sqlDirect;
     /** The node's settings, for the highlighters that read node settings. */
     private final Settings nodeSettings;
     private final String libraryPath;
@@ -319,6 +321,8 @@ public class AcceleratedSearchPlugin extends Plugin implements
         this.fetchWrapper = nativeFetch && security == false;
         AcceleratedSql.install(readers, stats);
         NativeSql.configure(AcceleratedSql.MAX_ROWS.get(settings), AcceleratedSql.MEMORY_LIMIT.get(settings).getBytes(), 0);
+        this.sqlDirect = AcceleratedSql.DIRECT.get(settings) && security == false
+            ? new AcceleratedSql.Direct(clusterService::get, resolver::get) : null;
         this.directSearch = DirectSearch.ENABLED.get(settings) && security == false ? new DirectSearch(readers, stats, clusterService::get, resolver::get) : null;
         if (nativeFetch) {
             org.lucenerust.opensearch.engine.EngineFetchLayer.install(
@@ -494,6 +498,9 @@ public class AcceleratedSearchPlugin extends Plugin implements
         AcceleratedIndexerFactory.install(indexModule);
         if (directSearch != null) {
             directSearch.track(indexModule);
+        }
+        if (sqlDirect != null) {
+            sqlDirect.track(indexModule);
         }
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
             indexModule.addIndexOperationListener(new DerivedSource.Listener(AcceleratedEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
@@ -769,6 +776,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
             AcceleratedQueryPhaseSearcher.ENABLED,
             DirectSearch.ENABLED,
             AcceleratedSql.ENABLED,
+            AcceleratedSql.DIRECT,
             AcceleratedSql.MAX_ROWS,
             AcceleratedSql.MEMORY_LIMIT,
             FETCH_ENABLED,
@@ -1162,7 +1170,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         List<RestHandler> handlers = new ArrayList<>();
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
         if (AcceleratedSql.ENABLED.get(settings)) {
-            handlers.add(new AcceleratedSql.Rest());
+            handlers.add(new AcceleratedSql.Rest(sqlDirect));
         }
         handlers.add(org.lucenerust.opensearch.neural.NeuralStats.restHandler());
         handlers.add(new org.lucenerust.opensearch.sparse.SparseShardsTransport.Rest(true));
