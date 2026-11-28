@@ -88,6 +88,9 @@ public final class AcceleratedSql {
     /** The table each recent statement reads, so a repeated statement is not parsed twice. */
     private static final Map<String, String> TABLE_NAMES = new ConcurrentHashMap<>();
 
+    /** Longer statements are not remembered, so the map holds at most 4096 short strings. */
+    private static final int MAX_REMEMBERED_STATEMENT = 2048;
+
     private static volatile NativeReaders readers;
     private static volatile SearchStats stats;
 
@@ -400,17 +403,19 @@ public final class AcceleratedSql {
             if (sql == null || sql.isBlank()) {
                 throw new IllegalArgumentException("the request needs a [query]");
             }
-            String table = TABLE_NAMES.get(sql);
+            String table = sql.length() <= MAX_REMEMBERED_STATEMENT ? TABLE_NAMES.get(sql) : null;
             if (table == null) {
                 try {
                     table = NativeSql.table(sql);
                 } catch (NativeSql.Failure e) {
                     throw new IllegalArgumentException(e.getMessage());
                 }
-                if (TABLE_NAMES.size() >= 4096) {
-                    TABLE_NAMES.clear();
+                if (sql.length() <= MAX_REMEMBERED_STATEMENT) {
+                    if (TABLE_NAMES.size() >= 4096) {
+                        TABLE_NAMES.clear();
+                    }
+                    TABLE_NAMES.put(sql, table);
                 }
-                TABLE_NAMES.put(sql, table);
             }
             if (direct != null) {
                 org.opensearch.common.CheckedConsumer<org.opensearch.rest.RestChannel, Exception> local = direct.consumer(client, table, sql);

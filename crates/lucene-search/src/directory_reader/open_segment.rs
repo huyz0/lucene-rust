@@ -229,7 +229,7 @@ fn open_postings(
         });
 
     let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, postings_files) = if multi_format {
-        open_per_field_postings(
+        super::open_postings::open_per_field_postings(
             dir,
             compound.as_ref(),
             &si.files,

@@ -31,7 +31,7 @@ use datafusion::prelude::{SQLOptions, SessionContext};
 use crate::engine::collect_bounded;
 use crate::error::Result;
 use crate::provider::SegScanExec;
-use crate::router::templatize_with;
+use crate::router::{templatize_with, MAX_TEMPLATE_BYTES};
 
 /// Plans kept before the cache starts over.
 const MAX_PLANS: usize = 1024;
@@ -117,11 +117,13 @@ impl PlanCache {
                     &self.uncacheable
                 };
                 counter.fetch_add(1, Ordering::Relaxed);
-                let mut plans = self.plans.lock().unwrap_or_else(|e| e.into_inner());
-                if plans.len() >= MAX_PLANS {
-                    plans.clear();
+                if template.len() <= MAX_TEMPLATE_BYTES {
+                    let mut plans = self.plans.lock().unwrap_or_else(|e| e.into_inner());
+                    if plans.len() >= MAX_PLANS {
+                        plans.clear();
+                    }
+                    plans.insert(template, e.clone());
                 }
-                plans.insert(template, e.clone());
                 e
             }
         };
