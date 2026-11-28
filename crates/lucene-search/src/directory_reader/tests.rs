@@ -590,6 +590,21 @@ fn live_docs_masks_replace_a_segments_live_docs() {
     assert!(reader.with_live_docs_masks(Vec::new()).is_err());
 }
 
+/// The host's view: a mask replaces the live docs, `None` makes every document live.
+#[test]
+fn host_live_docs_replace_a_segments_live_docs() {
+    let dir = FsDirectory::open(fixture_dir());
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let seg = &reader.segment_readers()[0];
+    let mut live = FixedBitSet::new(seg.max_doc as usize);
+    live.set(0);
+    let masked = reader.with_host_live_docs(&[Some(live)]).unwrap();
+    assert_eq!(masked.segment_readers()[0].num_docs(), 1);
+    let all = reader.with_host_live_docs(&[None]).unwrap();
+    assert_eq!(all.segment_readers()[0].num_docs(), seg.max_doc);
+    assert!(reader.with_host_live_docs(&[]).is_err());
+}
+
 fn read_commit(dir: &FsDirectory) -> SegmentInfos {
     segment_infos::read_latest(dir).expect("read real segments_1")
 }
