@@ -46,9 +46,11 @@ const MAX_OPERATORS: usize = 1000;
 /// Refuses a statement that chains more operators than [`MAX_OPERATORS`], before
 /// anything recursive sees it.
 ///
+/// Returns how many operators the statement chains.
+///
 /// # Errors
 /// A statement with too many operators, or one that does not tokenize.
-pub fn check_operators(sql: &str) -> Result<()> {
+pub fn check_operators(sql: &str) -> Result<usize> {
     let tokens = Tokenizer::new(&GenericDialect {}, sql)
         .tokenize()
         .map_err(|e| Error::unsupported(format!("sql: {e}")))?;
@@ -73,7 +75,7 @@ pub fn check_operators(sql: &str) -> Result<()> {
             "sql: a statement may chain at most {MAX_OPERATORS} operators"
         )));
     }
-    Ok(())
+    Ok(operators)
 }
 
 fn collect_query(query: &Query, found: &mut Vec<String>) -> Result<()> {
