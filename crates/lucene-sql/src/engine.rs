@@ -125,6 +125,33 @@ pub struct SqlEngine {
     max_rows: usize,
 }
 
+/// Stack of the threads that run a statement with a long operator chain: the planner,
+/// the expression evaluator and the tree's drop recurse over the chain, and the
+/// calling thread (a host thread with a 1 MiB stack) cannot hold a chain of a
+/// thousand terms. Address space only, committed as it is touched.
+const DEEP_STACK: usize = 64 << 20;
+
+/// Operators a statement may chain and still run on the caller's stack: release needs about
+/// 2-8 KiB per operator and an unoptimised build several times that, so 64 stay under 1 MiB.
+const SHALLOW_OPERATORS: usize = 64;
+
+/// Runs `f` on the calling thread, or on a deep-stack thread carrying the same memory scope
+/// when the statement chains more than [`SHALLOW_OPERATORS`] operators.
+fn with_stack<T: Send>(operators: usize, f: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    if operators <= SHALLOW_OPERATORS {
+        return f();
+    }
+    let scope = lucene_util::memory::current();
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(DEEP_STACK)
+            .spawn_scoped(s, move || lucene_util::memory::within(scope.as_ref(), f))
+            .map_err(|e| Error::unsupported(format!("starting a statement thread: {e}")))?
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 fn read_only() -> SQLOptions {
     SQLOptions::new()
         .with_allow_ddl(false)
@@ -151,6 +178,7 @@ impl SqlEngine {
         } else {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(config.worker_threads)
+                .thread_stack_size(DEEP_STACK)
                 .build()
         }
         .map_err(|e| Error::unsupported(format!("starting the runtime: {e}")))
@@ -307,12 +335,12 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub fn query_traced(&self, sql: &str) -> Result<(Vec<RecordBatch>, Path)> {
-        crate::statement::check_operators(sql)?;
+        let operators = crate::statement::check_operators(sql)?;
         crate::scope::stop()?;
         if let Some(batch) = self.router.run(sql)? {
             return Ok((vec![batch], Path::Router));
         }
-        let batches = self.runtime.block_on(self.standard(sql))?;
+        let batches = with_stack(operators, || self.runtime.block_on(self.standard(sql)))?;
         Ok((batches, Path::Standard))
     }
 
@@ -328,12 +356,14 @@ impl SqlEngine {
         self: &Arc<Self>,
         sql: &str,
     ) -> Result<Box<dyn RecordBatchReader + Send>> {
-        crate::statement::check_operators(sql)?;
+        let operators = crate::statement::check_operators(sql)?;
         if let Some(batch) = self.router.run(sql)? {
             let schema = batch.schema();
             return Ok(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)));
         }
-        let (schema, stream) = self.runtime.block_on(self.open_stream(&self.ctx, sql))?;
+        let (schema, stream) = with_stack(operators, || {
+            self.runtime.block_on(self.open_stream(&self.ctx, sql))
+        })?;
         Ok(Box::new(SqlReader {
             engine: self.clone(),
             sql: sql.to_string(),
@@ -359,7 +389,8 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub fn standard_blocking(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        self.runtime.block_on(self.standard(sql))
+        let operators = crate::statement::check_operators(sql)?;
+        with_stack(operators, || self.runtime.block_on(self.standard(sql)))
     }
 }
 
