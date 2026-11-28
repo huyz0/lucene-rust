@@ -17,6 +17,7 @@ pub mod error;
 pub mod group;
 pub mod group_rule;
 pub mod native;
+pub mod output;
 pub mod plan_cache;
 pub mod pred;
 pub mod provider;
@@ -24,7 +25,11 @@ pub mod router;
 pub mod rule;
 pub mod snapshot;
 pub mod spec;
-pub use engine::{SqlConfig, SqlEngine};
+pub mod statement;
+pub use engine::{Path, SqlConfig, SqlEngine};
+
+/// The runtime engines run their scans on, shared between engines.
+pub type Runtime = tokio::runtime::Runtime;
 pub use error::{Error, Result};
 pub use snapshot::Snapshot;
 pub use spec::TableSpec;

@@ -33,6 +33,23 @@ public final class SearchStats {
         return directSearches.sum();
     }
 
+    private final LongAdder sqlStatements = new LongAdder();
+    private final LongAdder sqlNanos = new LongAdder();
+
+    /** A SQL statement {@link AcceleratedSql} ran, and how long the native call took. */
+    public void sqlStatement(long nanos) {
+        sqlStatements.increment();
+        sqlNanos.add(nanos);
+    }
+
+    public long sqlCount() {
+        return sqlStatements.sum();
+    }
+
+    public long sqlTimeNanos() {
+        return sqlNanos.sum();
+    }
+
     private final LongAdder liveQueries = new LongAdder();
 
     /** A native search that read the writer's buffered documents too; also counted as native. */

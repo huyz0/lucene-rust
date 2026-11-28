@@ -50,6 +50,11 @@ public final class RestStatsAction extends BaseRestHandler {
         b.field("accelerated_queries", stats.nativeCount());
         b.field("live_queries", stats.liveCount());
         b.field("direct_searches", stats.directCount());
+        b.field("sql_statements", stats.sqlCount());
+        b.field("sql_time_in_nanos", stats.sqlTimeNanos());
+        long[] sql = NativeSql.stats();
+        b.field("sql_router_statements", sql[0]);
+        b.field("sql_standard_statements", sql[1]);
         b.field("accelerated_errors", stats.errorCount());
         b.field("script_errors", stats.scriptErrorCount());
         b.field("accelerated_fetches", stats.fetchCount());

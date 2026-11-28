@@ -112,6 +112,8 @@ pub struct TableSpec {
     name: String,
     columns: Vec<Column>,
     analyzer: Analyzer,
+    /// The analyzers of text columns that are not analysed as `analyzer` is.
+    column_analyzers: Vec<(String, Analyzer)>,
 }
 
 impl TableSpec {
@@ -122,6 +124,7 @@ impl TableSpec {
             name: name.into(),
             columns: Vec::new(),
             analyzer: Analyzer::whitespace_lowercase(),
+            column_analyzers: Vec::new(),
         }
     }
 
@@ -163,6 +166,14 @@ impl TableSpec {
         self.with(name, ColumnKind::Vector { dim })
     }
 
+    /// Adds a [`ColumnKind::Text`] column whose `match_text` text is analysed
+    /// by `analyzer` instead of the table's.
+    #[must_use]
+    pub fn text_with(mut self, name: &str, analyzer: Analyzer) -> Self {
+        self.column_analyzers.push((name.to_string(), analyzer));
+        self.text(name)
+    }
+
     /// Sets how `match_text` analyses its text.
     #[must_use]
     pub fn analyzer(mut self, analyzer: Analyzer) -> Self {
@@ -180,9 +191,12 @@ impl TableSpec {
         &self.columns
     }
 
-    /// The analyzer of `match_text`.
-    pub fn text_analyzer(&self) -> &Analyzer {
-        &self.analyzer
+    /// The analyzer of `match_text` on the text column `column`.
+    pub fn text_analyzer(&self, column: &str) -> &Analyzer {
+        self.column_analyzers
+            .iter()
+            .find(|(n, _)| n == column)
+            .map_or(&self.analyzer, |(_, a)| a)
     }
 
     /// Checks the declaration: lower-case unique names, none called `_score`.
@@ -324,6 +338,6 @@ mod tests {
         assert_eq!(c.terms("A b"), ["A b"]);
         assert_eq!(format!("{c:?}"), "Analyzer");
         let s = TableSpec::new("t").analyzer(c);
-        assert_eq!(s.text_analyzer().terms("X"), ["X"]);
+        assert_eq!(s.text_analyzer("body").terms("X"), ["X"]);
     }
 }

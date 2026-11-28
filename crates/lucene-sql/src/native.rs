@@ -74,7 +74,7 @@ impl Snapshot {
     /// `field` is not a text column, or the index is unreadable.
     pub fn match_top_k(&self, field: &str, text: &str, k: usize) -> Result<Vec<Hit>> {
         self.column_of(field, "text", |k| *k == ColumnKind::Text)?;
-        let terms = self.spec().text_analyzer().terms(text);
+        let terms = self.spec().text_analyzer(field).terms(text);
         self.with_searcher(|s| match_in(s, field, &terms, k))
     }
 

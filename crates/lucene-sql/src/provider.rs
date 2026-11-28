@@ -276,7 +276,7 @@ pub(crate) fn search_hits(
             )
         }
         Some(Pred::Match { column, text }) => {
-            let terms = spec.text_analyzer().terms(text);
+            let terms = spec.text_analyzer(&name(*column)).terms(text);
             if terms.is_empty() || fetch == Some(0) {
                 return Ok(Vec::new());
             }

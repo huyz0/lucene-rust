@@ -63,11 +63,27 @@ impl<'s> Columns<'s> {
                 let Some(number) = self.snapshot.field_number(segment, column) else {
                     return Ok(Slot::Absent);
                 };
-                let found = leaf.doc_values_for_field(number).and_then(|(meta, data)| {
-                    meta.numeric_entry(number)
-                        .map(|entry| NumericReader::new(data, entry))
-                });
-                found.map_or(Slot::Absent, |r| Slot::Values(Box::new(r)))
+                let Some((meta, data)) = leaf.doc_values_for_field(number) else {
+                    return Ok(Slot::Absent);
+                };
+                if let Some(entry) = meta.numeric_entry(number) {
+                    return Ok(Slot::Values(Box::new(NumericReader::new(data, entry))));
+                }
+                // A field written as sorted numeric (what OpenSearch writes
+                // for every number and date) with one value per document
+                // has the numeric layout under its entry.
+                match meta.sorted_numeric_entry(number) {
+                    Some(entry) if entry.addresses.is_none() => {
+                        Slot::Values(Box::new(NumericReader::new(data, &entry.numeric)))
+                    }
+                    Some(_) => {
+                        return Err(Error::unsupported(format!(
+                            "long column `{}` is multi-valued",
+                            col.name
+                        )))
+                    }
+                    None => Slot::Absent,
+                }
             }
             ColumnKind::Keyword => match keyword_column(leaf, &col.name)? {
                 Some((Ords::Single(r), _, _)) => Slot::Values(r),

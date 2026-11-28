@@ -705,7 +705,10 @@ pub unsafe extern "C" fn ffi_jvm_reader_count_terminates(
 /// until that handle closes too.
 #[no_mangle]
 pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
-    guard(|| lucene_engine::registry::close_jvm_reader(handle))
+    guard(|| {
+        crate::jvm_sql::forget(handle);
+        lucene_engine::registry::close_jvm_reader(handle)
+    })
 }
 
 /// [`lucene_engine::reader_search::search_sorted_blobs`] over `handle`'s reader.
