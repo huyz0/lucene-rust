@@ -51,6 +51,7 @@ pub(super) fn merge_vector_group(
     merged_segment_id: &[u8; ID_LENGTH],
     suffix: &str,
     partitions: Option<crate::ivf_vectors::Partitions<'_>>,
+    ivf_models: &[(i32, std::sync::Arc<lucene_ivf::SharedModel>)],
 ) -> Result<(GroupFiles, Vec<String>)> {
     let mut flat_writer =
         vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
@@ -187,7 +188,11 @@ pub(super) fn merge_vector_group(
     }
 
     if let Some(mut ivf) =
-        crate::ivf_vectors::IvfGroupWriter::new(format, merged_segment_id, suffix)?
+        crate::ivf_vectors::IvfGroupWriter::new(format, merged_segment_id, suffix)?.map(|ivf| {
+            ivf_models.iter().fold(ivf, |ivf, (number, model)| {
+                ivf.with_model(*number, model.clone())
+            })
+        })
     {
         // The `.ivv` goes to its file as it is built rather than being held
         // whole beside the vectors it is built from.

@@ -49,6 +49,7 @@ impl IndexWriter<'_> {
         graphs: &[BufferGraphField],
         old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
+        ivf_models: &[(String, String)],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         // Empty when no buffered document carries a vector (a buffer of
@@ -174,6 +175,10 @@ impl IndexWriter<'_> {
                 graphs,
                 old_to_new,
                 clusters,
+                &crate::ivf_vectors::models_for(
+                    ivf_models,
+                    names.iter().map(|(n, s)| (*n, s.as_str())),
+                ),
                 segment_id,
                 &suffix,
                 partitions,
@@ -280,6 +285,7 @@ impl IndexWriter<'_> {
         graphs: &[BufferGraphField],
         old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
+        ivf_models: &[(i32, std::sync::Arc<lucene_ivf::SharedModel>)],
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
         partitions: Option<crate::ivf_vectors::Partitions<'_>>,
@@ -327,7 +333,11 @@ impl IndexWriter<'_> {
         }
 
         let ivf = if indexes {
-            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
+            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?.map(|ivf| {
+                ivf_models.iter().fold(ivf, |ivf, (number, model)| {
+                    ivf.with_model(*number, model.clone())
+                })
+            })
         } else {
             None
         };

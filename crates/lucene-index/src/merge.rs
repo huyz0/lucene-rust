@@ -2703,6 +2703,9 @@ pub struct MergeOptions {
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
     pub knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
+    /// The shared IVF model (by id) each field is clustered by
+    /// ([`crate::index_writer::IndexWriter::set_ivf_model_for_field`]).
+    pub ivf_models: Vec<(String, String)>,
     /// The writer's codec ([`crate::index_writer::IndexWriter::set_codec`]),
     /// consulted for a field the lists above do not route and for its optional
     /// stored-fields writer factory.
@@ -2921,6 +2924,7 @@ impl Default for MergeOptions {
             lz4_high_compression_sources: Vec::new(),
             zstd_dictionary_min_bytes: stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
             knn_vectors_formats: Vec::new(),
+            ivf_models: Vec::new(),
             codec: None,
             reorder: None,
             sorted_numeric_remap: None,
@@ -3081,6 +3085,7 @@ fn merge_vectors(
             merged_segment_id,
             &suffix,
             partitions,
+            &crate::ivf_vectors::models_for(&options.ivf_models, names.iter().copied()),
         )?;
         for n in &group.field_numbers {
             out.written.push((

@@ -1090,6 +1090,10 @@ pub(crate) struct IndexingConfig {
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
     /// [`IndexWriter::set_knn_vectors_format_for_field`].
     knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
+    /// The shared IVF model (by id, as [`crate::ivf_vectors::register_model`]
+    /// holds it) each field of an `IvfModelVectorsFormat` is clustered by --
+    /// see [`IndexWriter::set_ivf_model_for_field`].
+    ivf_models: Vec<(String, String)>,
     /// `IndexWriterConfig.setCodec`: the per-field routing every field
     /// without a per-field setting of its own follows -- see
     /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
@@ -3293,6 +3297,7 @@ impl IndexingConfig {
                     buf.graphs,
                     buf.old_to_new,
                     &self.ivf_clusters,
+                    &self.ivf_models,
                     &segment_id,
                 )?
             })
@@ -5267,6 +5272,24 @@ impl<'d> IndexWriter<'d> {
         formats.push((field.to_string(), format));
     }
 
+    /// Clusters the vectors of `field` by the shared `model` (its centroids
+    /// and quantizer), for a field routed to
+    /// [`per_field_knn_vectors::KnnVectorsFormat::IvfModel`] by
+    /// [`Self::set_knn_vectors_format_for_field`]. The model is registered
+    /// ([`crate::ivf_vectors::register_model`]) so the segments written can
+    /// be read back. Flushes and merges after this call write it; existing
+    /// segments keep the model they name.
+    pub fn set_ivf_model_for_field(
+        &mut self,
+        field: &str,
+        model: &std::sync::Arc<lucene_ivf::SharedModel>,
+    ) {
+        crate::ivf_vectors::register_model(model.clone());
+        let models = &mut self.cfg_mut().ivf_models;
+        models.retain(|(name, _)| name != field);
+        models.push((field.to_string(), model.id().to_string()));
+    }
+
     pub fn set_doc_values_format_for_field(
         &mut self,
         field: &str,
@@ -5731,6 +5754,7 @@ impl<'d> IndexWriter<'d> {
                 zstd_dictionary_min_bytes:
                     lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
                 knn_vectors_formats: Vec::new(),
+                ivf_models: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),
                 ivf_clusters: std::sync::Arc::default(),

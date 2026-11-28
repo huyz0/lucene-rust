@@ -96,6 +96,52 @@ pub(crate) struct IvfGroupWriter {
     params: IvfParams,
     factory: Box<dyn QuantizerFactory>,
     any: bool,
+    /// Whether the instance is an [`KnnVectorsFormat::IvfModel`] one: every
+    /// field then needs a model in `models`.
+    model_format: bool,
+    /// The shared model of each field number that has one.
+    models: Vec<(i32, Arc<lucene_ivf::SharedModel>)>,
+}
+
+static MODELS: std::sync::RwLock<Vec<Arc<lucene_ivf::SharedModel>>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Makes `model` the one fields naming its id are opened under, by every
+/// reader in this process: a segment records only the model's id and
+/// checksum, and a reader refuses the field when no model of that id and
+/// checksum is registered. A later registration of an id replaces the
+/// earlier one.
+pub fn register_model(model: Arc<lucene_ivf::SharedModel>) {
+    let mut models = MODELS.write().unwrap_or_else(|e| e.into_inner());
+    models.retain(|m| m.id() != model.id());
+    models.push(model);
+}
+
+/// The registered model of each of `names` (field number, field name) that
+/// `configured` (field name, model id) routes to one.
+pub(crate) fn models_for<'a>(
+    configured: &[(String, String)],
+    names: impl IntoIterator<Item = (i32, &'a str)>,
+) -> Vec<(i32, Arc<lucene_ivf::SharedModel>)> {
+    names
+        .into_iter()
+        .filter_map(|(number, name)| {
+            let (_, id) = configured.iter().find(|(field, _)| field == name)?;
+            Some((number, model(id)?))
+        })
+        .collect()
+}
+
+/// Forgets the model registered under `id`.
+pub fn unregister_model(id: &str) {
+    let mut models = MODELS.write().unwrap_or_else(|e| e.into_inner());
+    models.retain(|m| m.id() != id);
+}
+
+/// The model registered under `id`.
+pub fn model(id: &str) -> Option<Arc<lucene_ivf::SharedModel>> {
+    let models = MODELS.read().unwrap_or_else(|e| e.into_inner());
+    models.iter().find(|m| m.id() == id).cloned()
 }
 
 /// The quantizer factory of an [`IVF_QUANTIZERS`] wire number: OSQ at 1
@@ -135,6 +181,24 @@ impl IvfGroupWriter {
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
     ) -> Result<Option<Self>> {
+        if let Some((rerank_encoding, quantizer)) = format.ivf_model_params() {
+            KnnVectorsFormat::ivf_model(rerank_encoding, quantizer)
+                .map_err(|e| lucene_ivf::Error::IllegalArgument(e.0))?;
+            let factory = quantizer_factory(quantizer).ok_or_else(|| {
+                lucene_ivf::Error::IllegalArgument(format!("unknown IVF quantizer {quantizer}"))
+            })?;
+            return Ok(Some(IvfGroupWriter {
+                writer: IvfWriter::new(segment_id, suffix),
+                params: IvfParams {
+                    rerank_encoding: rerank_encoding_of(rerank_encoding),
+                    ..IvfParams::default()
+                },
+                factory,
+                any: false,
+                model_format: true,
+                models: Vec::new(),
+            }));
+        }
         let Some((target_cluster_size, rerank_encoding, quantizer)) = format.ivf_params() else {
             return Ok(None);
         };
@@ -147,17 +211,22 @@ impl IvfGroupWriter {
             writer: IvfWriter::new(segment_id, suffix),
             params: IvfParams {
                 target_cluster_size: target_cluster_size as usize,
-                rerank_encoding: match rerank_encoding {
-                    1 => VectorEncoding::F16,
-                    2 => VectorEncoding::Bf16,
-                    3 => VectorEncoding::Int8,
-                    _ => VectorEncoding::F32,
-                },
+                rerank_encoding: rerank_encoding_of(rerank_encoding),
                 ..IvfParams::default()
             },
             factory,
             any: false,
+            model_format: false,
+            models: Vec::new(),
         }))
+    }
+
+    /// Names the shared model of field `number`: its vectors are written
+    /// against that model's centroids and quantizer, not clustered afresh.
+    pub(crate) fn with_model(mut self, number: i32, model: Arc<lucene_ivf::SharedModel>) -> Self {
+        self.models.retain(|(n, _)| *n != number);
+        self.models.push((number, model));
+        self
     }
 
     /// Writes `field`, clustered from the `sources` when one holds most of
@@ -190,6 +259,38 @@ impl IvfGroupWriter {
             || vectors.iter().all(|v| v.abs() <= 65_504.0)
     }
 
+    /// Writes `field` against its shared model: each vector goes to the
+    /// model's nearest centroid and is coded by the model's quantizer, so a
+    /// merge gathers lists rather than clustering.
+    fn add_model_vectors(
+        &mut self,
+        field: &IvfField<'_>,
+        model: &Arc<lucene_ivf::SharedModel>,
+        fits_half: bool,
+    ) -> Result<()> {
+        let params = if self.params.rerank_encoding == VectorEncoding::F16 && !fits_half {
+            IvfParams {
+                rerank_encoding: VectorEncoding::F32,
+                ..self.params
+            }
+        } else {
+            self.params
+        };
+        self.writer.add_field_with_model(
+            &FieldVectors {
+                number: field.number,
+                similarity: util_similarity(field.similarity),
+                dimension: field.dimension,
+                docs: field.docs,
+                vectors: field.vectors,
+            },
+            model,
+            &params,
+        )?;
+        self.any = true;
+        Ok(())
+    }
+
     fn add_vectors(
         &mut self,
         field: &IvfField<'_>,
@@ -197,6 +298,16 @@ impl IvfGroupWriter {
         prepared: bool,
         fits_half: bool,
     ) -> Result<()> {
+        if let Some((_, model)) = self.models.iter().find(|(n, _)| *n == field.number) {
+            let model = model.clone();
+            return self.add_model_vectors(field, &model, fits_half);
+        }
+        if self.model_format {
+            return Err(lucene_ivf::Error::IllegalArgument(format!(
+                "field {} has no shared model",
+                field.number
+            )));
+        }
         // A merge decodes the vectors once and its writer holds a second
         // copy besides its codes: about 2.5 times the vectors.
         let _admitted = (!sources.is_empty()).then(|| {
@@ -453,7 +564,17 @@ impl lucene_codecs::buffer_lists::ClusterRouter for BufferRouter {
     }
 }
 
-/// Opens an instance's IVF index from its three files.
+fn rerank_encoding_of(wire: u8) -> VectorEncoding {
+    match wire {
+        1 => VectorEncoding::F16,
+        2 => VectorEncoding::Bf16,
+        3 => VectorEncoding::Int8,
+        _ => VectorEncoding::F32,
+    }
+}
+
+/// Opens an instance's IVF index from its three files; a field of a shared
+/// model is opened under the one [`register_model`] holds.
 ///
 /// # Errors
 /// Files that do not decode.
@@ -464,13 +585,14 @@ pub fn open(
     segment_id: &[u8; ID_LENGTH],
     suffix: &str,
 ) -> Result<IvfReader> {
-    IvfReader::open(
+    IvfReader::open_with_models(
         meta,
         postings,
         vectors,
         segment_id,
         suffix,
         &QuantizerRegistry::with_builtins(),
+        &model,
     )
 }
 
