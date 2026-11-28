@@ -115,6 +115,13 @@ def derive_test_case(src: str) -> str:
         r"        String name = Codec\.getDefault\(\)\.getName\(\);\n.*?            codecName = \"default\";\n        \}\n",
         "        codecName = \"default\";\n",
     )
+    # These tests read Lucene's history operation by operation; the hot tier keeps only no-ops for
+    # the updates it drops, so they run with it off (verify_engine proves it against the Java engine).
+    p.sub(
+        "            .put(IndexSettings.INDEX_SOFT_DELETES_RETENTION_OPERATIONS_SETTING.getKey(), between(0, 1000))\n",
+        "            .put(IndexSettings.INDEX_SOFT_DELETES_RETENTION_OPERATIONS_SETTING.getKey(), between(0, 1000))\n"
+        "            .put(AcceleratedEngineSupport.HOT_TIER_MAX_MEMORY.getKey(), \"0b\")\n",
+    )
     # The plugin loads liblucene_ffi in its constructor; the tests have no plugin.
     p.sub(
         "public abstract class AcceleratedEngineTestCase extends OpenSearchTestCase {\n",

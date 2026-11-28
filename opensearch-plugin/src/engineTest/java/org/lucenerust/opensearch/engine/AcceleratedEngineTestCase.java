@@ -233,6 +233,7 @@ public abstract class AcceleratedEngineTestCase extends OpenSearchTestCase {
                 between(10, 10 * IndexSettings.MAX_REFRESH_LISTENERS_PER_SHARD.get(Settings.EMPTY))
             )
             .put(IndexSettings.INDEX_SOFT_DELETES_RETENTION_OPERATIONS_SETTING.getKey(), between(0, 1000))
+            .put(AcceleratedEngineSupport.HOT_TIER_MAX_MEMORY.getKey(), "0b")
             .build();
     }
 
