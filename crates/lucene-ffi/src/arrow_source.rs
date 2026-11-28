@@ -173,7 +173,17 @@ fn parse_request(json: &str) -> Result<ScanOptions, FfiStatus> {
 /// Opens the index in directory `path` as the table `spec` (JSON) declares.
 pub(crate) fn open_table(path: &str, spec: &str) -> Result<u64, FfiStatus> {
     let spec = parse_spec(spec)?;
-    let reader = DirectoryReader::open(&FsDirectory::open(path.to_string())).map_err(invalid)?;
+    let mut reader =
+        DirectoryReader::open(&FsDirectory::open(path.to_string())).map_err(invalid)?;
+    // An engine soft-deletes the earlier version of an updated or deleted
+    // document and keeps it on disk; a search never sees it, nor may a scan.
+    let soft = reader
+        .segment_readers()
+        .iter()
+        .find_map(|leaf| leaf.soft_deletes_field().map(str::to_string));
+    if let Some(field) = soft {
+        reader = reader.soft_deletes_wrapper(&field).map_err(invalid)?;
+    }
     let snapshot = Arc::new(Snapshot::new(reader, spec).map_err(invalid)?);
     Ok(lock_recovering(tables()).insert_checked(Arc::new(Table {
         snapshot,
@@ -486,6 +496,61 @@ mod tests {
         assert_eq!(n, 3);
         assert_eq!(ffi_arrow_table_close(h), 0);
         assert_ne!(ffi_arrow_table_close(h), 0, "a closed handle is refused");
+    }
+
+    /// The index of an engine soft-deletes the earlier version of an updated
+    /// document and keeps it on disk: a scan must see what a search sees.
+    #[test]
+    fn soft_deleted_documents_are_not_rows() {
+        use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo};
+        use lucene_index::buffered_updates::{DocValuesUpdate, Term};
+
+        let dir = TempDir::new("arrow-soft");
+        let fs = FsDirectory::open(dir.path_str());
+        let v = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&fs, Vec::new(), "Lucene104", v).unwrap();
+        w.enable_explicit_documents().unwrap();
+        w.register_field(
+            FieldInfo::new("__soft_deletes", 0)
+                .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::None, -1)
+                .with_soft_deletes_field(true),
+        )
+        .unwrap();
+        let doc = |id: &str, price: i64| {
+            let mut d = Document::new();
+            d.add(StringField::new("id", id.to_string(), Store::Yes));
+            d.add(NumericDocValuesField::new("price", price));
+            d
+        };
+        for i in 0..10 {
+            w.add_fields_documents(&[doc(&format!("d{i}"), i)]).unwrap();
+        }
+        w.commit().unwrap();
+        let soft = DocValuesUpdate::Numeric {
+            term: Term::new("id", "d3"),
+            field: "__soft_deletes".to_string(),
+            value: Some(1),
+        };
+        w.soft_update_fields_documents(Term::new("id", "d3"), &[doc("d3", 100)], &[soft])
+            .unwrap();
+        w.commit().unwrap();
+        drop(w);
+
+        let h = open(&dir);
+        assert_eq!(
+            rows(h, "", 0, 1),
+            10,
+            "nine untouched rows and d3's new version"
+        );
+        let old = r#"{"filters":[{"column":"price","op":"=","value":3}]}"#;
+        assert_eq!(rows(h, old, 0, 1), 0, "the replaced version is gone");
+        let new = r#"{"filters":[{"column":"price","op":"=","value":100}]}"#;
+        assert_eq!(rows(h, new, 0, 1), 1);
+        assert_eq!(ffi_arrow_table_close(h), 0);
     }
 
     #[test]
