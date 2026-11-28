@@ -28,7 +28,10 @@
 //!   more than the budget; what it cannot hold goes through the normal path
 //!   at the normal cost.
 //! - **Order.** A shard's lock is held while the operations it holds are applied, so an
-//!   older operation never lands after a newer one for the same row.
+//!   older operation never lands after a newer one for the same row. A plain
+//!   add of a row (an index right after a delete, which an engine adds rather
+//!   than updates) applies that row's held operation first
+//!   ([`HotTier::settle`]); a reader is not current while any operation is held.
 //!
 //! - **Errors.** `apply` failing (a document limit, an I/O error) fails the
 //!   cut that drains, as a failing write fails; the failed operation is not
@@ -385,6 +388,8 @@ pub struct HotTier {
     sample_at: AtomicUsize,
     no_spill_until: AtomicU64,
     admit: u8,
+    /// The field of the terms the held rows are keyed by (the first one offered).
+    term_field: std::sync::OnceLock<String>,
 }
 
 /// Takes `n` bytes of the node's pool, when `limit` (0: none) leaves room.
@@ -472,6 +477,7 @@ impl HotTier {
             refused: AtomicU64::new(0),
             sample_at: AtomicUsize::new(0),
             no_spill_until: AtomicU64::new(0),
+            term_field: std::sync::OnceLock::new(),
         }
     }
 
@@ -658,6 +664,12 @@ impl HotTier {
         apply: &mut dyn FnMut(HeldOp) -> Result<(), E>,
     ) -> Result<Offer, E> {
         self.offered.fetch_add(1, Ordering::Relaxed);
+        // Rows are keyed by the bytes of one field's terms: an update by any
+        // other field's term is not held.
+        if self.term_field.get_or_init(|| op.term.field.clone()) != &op.term.field {
+            self.through.fetch_add(1, Ordering::Relaxed);
+            return Ok(Offer::Through { op, dropped: None });
+        }
         self.maybe_age();
         let h = hash(&op.term.bytes);
         let heat = self.bump(h);
@@ -807,6 +819,39 @@ impl HotTier {
         self.docs_down(docs);
         r?;
         self.spilled.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
+    }
+
+    /// The field of the terms the held rows are keyed by; `None` before any
+    /// update was offered.
+    pub fn term_field(&self) -> Option<&str> {
+        self.term_field.get().map(String::as_str)
+    }
+
+    /// Applies the held operation of the row keyed `key`, if there is one:
+    /// what a plain add of that row does first, so the add lands after the
+    /// held update that came before it and no delete of that update reaches
+    /// the added document. Returns whether an operation was applied.
+    pub fn settle<E>(
+        &self,
+        key: &[u8],
+        apply: &mut dyn FnMut(HeldOp) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        if self.rows.load(Ordering::Acquire) == 0 {
+            return Ok(false);
+        }
+        let mut s = lock(&self.shards[(hash(key) as usize) % SHARDS]);
+        let Some(op) = s.rows.remove(key) else {
+            return Ok(false);
+        };
+        self.rows_down();
+        let (bytes, docs) = (op.bytes, op.docs.len());
+        // Applied with the shard held, counted until it is applied.
+        let r = apply(op);
+        self.release(bytes);
+        self.docs_down(docs);
+        r?;
+        self.drained.fetch_add(1, Ordering::Relaxed);
         Ok(true)
     }
 
@@ -974,6 +1019,80 @@ mod tests {
         assert_eq!(tier.bytes(), tier.stats().sketch_bytes);
         assert_eq!(applied.len(), 1);
         assert_eq!(applied.values().next().unwrap(), &vec![9u8]);
+    }
+
+    /// A plain add of a row applies the row's held update first, once.
+    #[test]
+    fn settling_a_row_applies_its_held_update_and_only_that() {
+        let tier = HotTier::build(cfg(1 << 22), 3);
+        let mut applied = Applied::new();
+        let key = |id: u32| format!("d{id}").into_bytes();
+        let settle = |tier: &HotTier, applied: &mut Applied, id: u32| {
+            let mut apply = |held: HeldOp| -> Result<(), Infallible> {
+                applied
+                    .entry(held.term.bytes.clone())
+                    .or_default()
+                    .push(version_of(&held));
+                Ok(())
+            };
+            match tier.settle(&key(id), &mut apply) {
+                Ok(done) => done,
+                Err(never) => match never {},
+            }
+        };
+        assert_eq!(tier.term_field(), None);
+        // Nothing held: nothing to apply.
+        assert!(!settle(&tier, &mut applied, 1));
+        for v in 1..=5 {
+            run(&tier, &mut applied, 1, v, 100);
+            run(&tier, &mut applied, 2, v, 100);
+        }
+        assert_eq!(tier.term_field(), Some("_id"));
+        applied.clear();
+        let held = tier.bytes();
+        assert!(settle(&tier, &mut applied, 1));
+        // Row 1's latest version, applied; row 2 is still held.
+        assert_eq!(applied.get(&key(1)), Some(&vec![5u8]));
+        assert!(!applied.contains_key(&key(2)));
+        assert_eq!(tier.stats().held_rows, 1);
+        assert!(tier.bytes() < held);
+        // A second settle of the same row has nothing left, and a row never
+        // held is not found.
+        assert!(!settle(&tier, &mut applied, 1));
+        assert!(!settle(&tier, &mut applied, 99));
+        assert_eq!(drain(&tier, &mut applied), 1);
+        assert_eq!(tier.bytes(), tier.stats().sketch_bytes);
+    }
+
+    #[test]
+    fn a_failed_settle_reports_the_error() {
+        let tier = HotTier::build(cfg(1 << 22), 3);
+        let mut applied = Applied::new();
+        for v in 1..=4 {
+            run(&tier, &mut applied, 1, v, 100);
+        }
+        let mut fail = |_: HeldOp| -> Result<(), &'static str> { Err("disk full") };
+        assert_eq!(tier.settle(b"d1", &mut fail), Err("disk full"));
+        assert!(tier.is_empty());
+    }
+
+    /// Rows are keyed by the bytes of one field's terms: an update by another
+    /// field's term goes straight through.
+    #[test]
+    fn an_update_by_another_terms_field_is_not_held() {
+        let tier = HotTier::build(cfg(1 << 22), 3);
+        let mut applied = Applied::new();
+        run(&tier, &mut applied, 1, 1, 100);
+        for _ in 0..6 {
+            let mut apply = |_: HeldOp| -> Result<(), Infallible> { Ok(()) };
+            let mut o = op(1, 2, 100);
+            o.term = Term::new("other", b"d1".to_vec());
+            assert!(matches!(
+                tier.offer(o, &mut apply),
+                Ok(Offer::Through { dropped: None, .. })
+            ));
+        }
+        assert!(tier.is_empty());
     }
 
     #[test]

@@ -1540,6 +1540,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         vectors: Option<Vec<Vec<DocumentVector>>>,
     ) -> Result<SeqNo> {
+        if delete.is_none() {
+            self.settle_held_rows(&docs)?;
+        }
         let cfg = self.cfg();
         // Every fallible lookup runs before anything is buffered, so a
         // refused document leaves nothing behind.
@@ -2835,6 +2838,12 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
 
     fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {
         if self.pending_doc_count() > 0 {
+            return Ok(false);
+        }
+        // An update the hot tier holds is in no buffer yet: a reader is not
+        // current while one waits, or a refresh would find nothing to do and
+        // leave it unsearchable.
+        if self.hot.get().is_some_and(|h| !h.is_empty()) {
             return Ok(false);
         }
         {
