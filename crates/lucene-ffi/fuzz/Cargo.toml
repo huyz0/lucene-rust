@@ -21,6 +21,7 @@ lucene-spatial3d = { path = "../../lucene-spatial3d" }
 lucene-index = { path = "../../lucene-index" }
 lucene-store = { path = "../../lucene-store" }
 lucene-ml = { path = "../../lucene-ml" }
+
 [workspace]
 members = ["."]
 
