@@ -45,7 +45,7 @@ import org.opensearch.search.sort.SortBuilder;
  * <p>It is a request-level shortcut for what the search would anyway do natively. Anything else is left to
  * OpenSearch untouched: query-string parameters that could change the answer, an alias, wildcard or list that
  * resolves to several indices or has a filtered alias, an index that is not a single-shard accelerated index, one with realtime search, derived source, k-NN vectors (the k-NN source-excludes processor is part of its search), nested
- * fields, per-index accelerated search off, a query the native encoder refuses (or a shape slower than Lucene's),
+ * fields, per-index accelerated search off, a request past the index's {@code max_result_window} or {@code max_docvalue_fields_search}, a query-string value the search action refuses, a query the native encoder refuses (or a shape slower than Lucene's),
  * and every body feature other than {@code query}, {@code size}, {@code from}, {@code track_total_hits}, {@code
  * _source}, {@code min_score}, {@code search_after} and field, score, script or geo-distance {@code sort} keys with {@code from + size} up
  * to 100 (aggregations, highlight, stored or doc-value fields, nested sorts ...), an index with a read block or a default search
@@ -100,7 +100,7 @@ final class DirectSearch {
      * resolves to exactly one index with no filtered alias on it (a filter would narrow the documents searched).
      * Null leaves the request to OpenSearch.
      */
-    private String concrete(String expression) {
+    private String concrete(String expression, org.opensearch.action.support.IndicesOptions options) {
         if (shards.containsKey(expression)) {
             return expression;
         }
@@ -110,7 +110,7 @@ final class DirectSearch {
             return null;
         }
         org.opensearch.cluster.ClusterState state = clusterService.state();
-        String[] concrete = names.concreteIndexNames(state, org.opensearch.action.support.IndicesOptions.strictExpandOpenAndForbidClosedIgnoreThrottled(), expression);
+        String[] concrete = names.concreteIndexNames(state, options, expression);
         org.opensearch.cluster.metadata.IndexMetadata meta = concrete.length == 1 ? state.metadata().index(concrete[0]) : null;
         if (meta == null) {
             return null;
@@ -182,7 +182,10 @@ final class DirectSearch {
             || request.hasContent() == false) {
             return false;
         }
-        String index = concrete(path.substring(1, path.length() - "/_search".length()));
+        String index = concrete(
+            path.substring(1, path.length() - "/_search".length()),
+            org.opensearch.action.support.IndicesOptions.fromRequest(request, org.opensearch.action.support.IndicesOptions.strictExpandOpenAndForbidClosedIgnoreThrottled())
+        );
         IndexShard shard = index == null ? null : shards.get(index);
         IndexService service = services.get(index);
         if (shard == null || service == null || shard.state() != org.opensearch.index.shard.IndexShardState.STARTED || plainParams(request) == false) {
@@ -211,6 +214,12 @@ final class DirectSearch {
         int size = source.size() < 0 ? 10 : source.size();
         int from = Math.max(source.from(), 0);
         if (from + size > MAX_SIZE || source.searchAfter() != null && (source.sorts() == null || from > 0)) {
+            return false;
+        }
+        // The limits the search action enforces and this path would otherwise skip: the index's result window and
+        // the number of doc-value fields a request may ask for.
+        if (from + size > service.getIndexSettings().getMaxResultWindow()
+            || source.docValueFields() != null && source.docValueFields().size() > service.getIndexSettings().getMaxDocvalueFields()) {
             return false;
         }
         Integer tracked = source.trackTotalHitsUpTo();
@@ -310,6 +319,14 @@ final class DirectSearch {
                 return false;
             }
         }
+        // The values the search action refuses stay its to refuse.
+        if (request.hasParam("batched_reduce_size") && request.paramAsInt("batched_reduce_size", 512) < 2
+            || request.hasParam("max_concurrent_shard_requests") && request.paramAsInt("max_concurrent_shard_requests", 5) < 1
+            || request.hasParam("pre_filter_shard_size") && request.paramAsInt("pre_filter_shard_size", 1) < 1) {
+            return false;
+        }
+        request.paramAsBoolean("request_cache", true);
+        request.paramAsBoolean("ccs_minimize_roundtrips", true);
         String preference = request.param("preference");
         return preference == null || preference.startsWith("_") == false || preference.equals("_local") || preference.startsWith("_primary");
     }
