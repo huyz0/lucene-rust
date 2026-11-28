@@ -93,7 +93,12 @@ Node settings (static):
 | `plugins.accelerated.sql.enabled` | `true` | serve the endpoint |
 | `plugins.accelerated.sql.direct` | `true` | answer from the REST layer when this node holds the index; never used with the security plugin, which sees the request through the transport action instead |
 | `plugins.accelerated.sql.max_rows` | `10000` | the most rows a statement may return; a statement that returns more fails |
-| `plugins.accelerated.sql.memory_limit` | `512mb` | what one table's operators (sorts, aggregations) may hold at once |
+| `plugins.accelerated.sql.memory_limit` | `512mb` | what one table's operators (sorts, aggregations) may hold at once; also bounds the groups a group-by may make (256 bytes each) |
+| `plugins.accelerated.sql.timeout` | `30s` | how long a statement may run before it stops with a 408; `0` for no limit |
+
+What a statement allocates in the library, on every path (the router, the aggregation kernels and DataFusion's scans), is charged to the
+node's `request` circuit breaker while it runs, as a search's is: a statement the breaker refuses fails with a 429, and so does a
+group-by with more groups than `memory_limit` allows. A statement stops at its next checkpoint when its time limit passes.
 
 ### Hot rows (update coalescing)
 

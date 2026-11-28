@@ -117,8 +117,28 @@ pub fn fixture_with(
     fixture_docs(corpus(n), segments, delete, spec, config)
 }
 
+/// The `price` of a document that has none.
+pub const NO_PRICE: i64 = i64::MIN;
+
+/// As [`fixture_docs`] with `price` indexed as OpenSearch does when `points`.
+pub fn fixture_docs_points(
+    docs: Vec<Doc>,
+    segments: usize,
+    delete: &[usize],
+    points: bool,
+) -> Fixture {
+    build(
+        docs,
+        segments,
+        delete,
+        spec(),
+        &SqlConfig::default(),
+        points,
+    )
+}
+
 /// As [`fixture_with`] over `docs`; a document with an empty `cat` has no
-/// `cat` field.
+/// `cat` field, one with [`NO_PRICE`] no `price`.
 pub fn fixture_docs(
     docs: Vec<Doc>,
     segments: usize,
@@ -160,7 +180,8 @@ fn build(
             let mut doc = Document::new();
             doc.add(StringField::new("id", d.id.clone(), Store::Yes));
             doc.add(TextField::new("body", d.body.clone(), Store::No));
-            if points {
+            if d.price == NO_PRICE {
+            } else if points {
                 doc.add(LongField::new("price", d.price, Store::No));
             } else {
                 doc.add(NumericDocValuesField::new("price", d.price));

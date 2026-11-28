@@ -327,7 +327,7 @@ fn router_and_standard_statements_are_counted() {
     // SAFETY: room for two values.
     unsafe { ffi_jvm_sql_stats(before.as_mut_ptr()) };
     run(&s, &t, "SELECT id FROM t WHERE id = 'doc-001'").unwrap();
-    run(&s, &t, "SELECT count(*) FROM t WHERE price > 3").unwrap();
+    run(&s, &t, "SELECT DISTINCT price FROM t").unwrap();
     let mut after = [0u64; 2];
     // SAFETY: room for two values.
     unsafe { ffi_jvm_sql_stats(after.as_mut_ptr()) };
@@ -371,8 +371,8 @@ fn sql_overhead() {
         us[us.len() / 2]
     };
     println!(
-        "{:14} {:>10} {:>12} {:>12}",
-        "statement", "engine us", "json us", "ffi call us"
+        "{:14} {:>10} {:>12} {:>12} {:>12}",
+        "statement", "engine us", "json us", "ffi call us", "scoped us"
     );
     for (name, sql) in statements {
         let a = p50(&mut || {
@@ -384,6 +384,16 @@ fn sql_overhead() {
         let c = p50(&mut || {
             run(&s, &t, sql).unwrap();
         });
-        println!("{name:14} {a:>10.1} {b:>12.1} {c:>12.1}");
+        // The same call inside a request memory scope, as the plugin opens one.
+        let d = p50(&mut || {
+            // SAFETY: a label of 3 valid bytes; the end call has room for 4 values.
+            unsafe {
+                crate::memory::ffi_memory_scope_begin(1, 0, b"sql".as_ptr(), 3);
+                run(&s, &t, sql).unwrap();
+                let mut out = [0i64; 4];
+                crate::memory::ffi_memory_scope_end(out.as_mut_ptr(), 4);
+            }
+        });
+        println!("{name:14} {a:>10.1} {b:>12.1} {c:>12.1} {d:>12.1}");
     }
 }

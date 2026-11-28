@@ -87,6 +87,21 @@ public final class AcceleratedSql {
         Setting.Property.NodeScope
     );
 
+    /** Node setting: how long a statement may run before it is stopped; 0 for no limit. */
+    public static final Setting<org.opensearch.common.unit.TimeValue> TIMEOUT = Setting.timeSetting(
+        "plugins.accelerated.sql.timeout",
+        org.opensearch.common.unit.TimeValue.timeValueSeconds(30),
+        org.opensearch.common.unit.TimeValue.ZERO,
+        Setting.Property.NodeScope
+    );
+
+    private static volatile long timeoutNanos;
+
+    /** Sets the statement time limit from {@link #TIMEOUT}. */
+    static void configureTimeout(org.opensearch.common.unit.TimeValue timeout) {
+        timeoutNanos = timeout.nanos();
+    }
+
     /** The table each recent statement reads, so a repeated statement is not parsed twice. */
     private static final Map<String, String> TABLE_NAMES = new ConcurrentHashMap<>();
 
@@ -189,6 +204,7 @@ public final class AcceleratedSql {
         ) {
             super(Action.NAME, threadPool, clusterService, transportService, actionFilters, resolver, Request::new, ThreadPool.Names.SEARCH);
             this.indices = indices;
+            NativeMemory.rememberBreakers(indices.getCircuitBreakerService());
         }
 
         @Override
@@ -280,8 +296,24 @@ public final class AcceleratedSql {
                         RestStatus.BAD_REQUEST
                     );
                 }
-                NativeMemory.queryStarted(0);
-                byte[] json = NativeSql.query(acquired.handle(), table.blob(), sql);
+                // The statement's native memory is charged to the request breaker, and it stops at
+                // the time limit.
+                NativeMemory.queryStarted(timeoutNanos);
+                byte[] json;
+                try (NativeMemory.Scope memory = NativeMemory.open(NativeMemory.breakerService(), () -> false, "accelerated_sql")) {
+                    try {
+                        json = NativeSql.query(acquired.handle(), table.blob(), sql);
+                    } catch (NativeSql.Failure f) {
+                        // The request breaker's own refusal when it stopped the statement.
+                        RuntimeException stopped = f.status() == NativeBridge.MEMORY_LIMIT ? memory.stopped(f.status(), f.getMessage()) : null;
+                        if (stopped != null) {
+                            throw stopped;
+                        }
+                        throw f;
+                    } finally {
+                        NativeMemory.queryStarted(0);
+                    }
+                }
                 stats.sqlStatement(System.nanoTime() - start);
                 return json;
             } catch (NativeSql.Failure e) {
@@ -291,7 +323,8 @@ public final class AcceleratedSql {
 
         private static RestStatus status(NativeSql.Failure e) {
             return switch (e.status()) {
-                case NativeBridge.MEMORY_LIMIT -> RestStatus.TOO_MANY_REQUESTS;
+                case NativeBridge.MEMORY_LIMIT, NativeBridge.TOO_MANY_BUCKETS -> RestStatus.TOO_MANY_REQUESTS;
+                case NativeBridge.CANCELLED -> RestStatus.REQUEST_TIMEOUT;
                 case NativeBridge.INVALID_ARGUMENT, NativeBridge.SEARCH, NativeBridge.DECODE -> RestStatus.BAD_REQUEST;
                 default -> RestStatus.INTERNAL_SERVER_ERROR;
             };

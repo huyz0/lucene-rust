@@ -41,6 +41,9 @@ pub struct Snapshot {
     /// host offers one: a group-by then reuses what an earlier pass over the
     /// same segment collected.
     agg_identities: Option<Vec<Option<SegmentIdentity>>>,
+    /// The most groups a `GROUP BY` may make; set from the engine's memory
+    /// limit.
+    group_limit: std::sync::atomic::AtomicUsize,
 }
 
 /// The segments of a snapshot opened for one search.
@@ -108,6 +111,7 @@ impl Snapshot {
             keyword_dense,
             long_points,
             agg_identities: None,
+            group_limit: std::sync::atomic::AtomicUsize::new(usize::MAX),
         })
     }
 
@@ -123,6 +127,29 @@ impl Snapshot {
     #[cfg(feature = "sql")]
     pub(crate) fn agg_identities(&self) -> Option<&[Option<SegmentIdentity>]> {
         self.agg_identities.as_deref()
+    }
+
+    /// Bounds the groups a `GROUP BY` may make; one more fails the statement.
+    pub fn set_group_limit(&self, groups: usize) {
+        self.group_limit
+            .store(groups, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "sql")]
+    pub(crate) fn group_limit(&self) -> usize {
+        self.group_limit.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether every segment that has `column` holds doc values for it, which
+    /// an `ORDER BY` reads.
+    pub(crate) fn has_doc_values(&self, column: usize) -> bool {
+        self.reader
+            .segment_readers()
+            .iter()
+            .zip(&self.field_numbers)
+            .all(|(leaf, numbers)| {
+                numbers[column].is_none_or(|n| leaf.doc_values_for_field(n).is_some())
+            })
     }
 
     /// The table declaration.

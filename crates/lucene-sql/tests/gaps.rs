@@ -51,7 +51,6 @@ fn near_miss_shapes_are_not_routed() {
         "SELECT id FROM t WHERE knn(body, '1') ORDER BY _score DESC LIMIT 5",
         "SELECT id FROM t WHERE other(body, 'a') ORDER BY _score DESC LIMIT 5",
         "SELECT body FROM t WHERE match_text(body, 'a') ORDER BY _score DESC LIMIT 5",
-        "SELECT id FROM t WHERE match_text(body, 'a') ORDER BY _score DESC LIMIT 5 OFFSET 1",
         "SELECT id FROM t WHERE match_text(body, 'a') ORDER BY _score DESC FETCH FIRST 5 ROWS ONLY",
         "SELECT DISTINCT id FROM t WHERE id = 'a'",
         "WITH x AS (SELECT 1) SELECT id FROM t WHERE id = 'a'",
@@ -69,7 +68,6 @@ fn near_miss_shapes_are_not_routed() {
         "SELECT cat, sum(cat) FROM t GROUP BY cat",
         "SELECT cat, sum(price) FILTER (WHERE price > 1) FROM t GROUP BY cat",
         "SELECT cat, sum(price) OVER () FROM t GROUP BY cat",
-        "SELECT cat AS c, count(*) FROM t GROUP BY cat",
         "SELECT cat, foo(price) FROM t GROUP BY cat",
         "SELECT cat, sum(price, 2) FROM t GROUP BY cat",
         "SELECT cat, sum(*) FROM t GROUP BY cat",
@@ -77,7 +75,6 @@ fn near_miss_shapes_are_not_routed() {
         "SELECT cat, sum(nope) FROM t GROUP BY cat",
         "SELECT cat, count(*) FROM t GROUP BY cat LIMIT 3",
         "SELECT cat, count(*) FROM t GROUP BY cat -- 'x'",
-        "SELECT cat, count(*) FROM t WHERE id = 'a' GROUP BY cat",
         "SELECT cat, count(*) FROM t GROUP BY nope",
     ];
     for sql in not {
@@ -87,6 +84,8 @@ fn near_miss_shapes_are_not_routed() {
         "SELECT count(*) FROM t GROUP BY cat",
         "SELECT cat FROM t GROUP BY cat",
         "SELECT SUM(price), Cat FROM t GROUP BY CAT",
+        "SELECT cat AS c, count(*) FROM t GROUP BY cat",
+        "SELECT cat, count(*) FROM t WHERE id = 'a' GROUP BY cat",
     ];
     for sql in yes {
         assert!(

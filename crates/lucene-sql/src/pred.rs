@@ -37,6 +37,14 @@ pub enum Pred {
         /// The vector as written.
         vector: String,
     },
+    /// `column IN ('a', 'b', ...)` on a key or keyword column: documents with
+    /// any of the values.
+    Any {
+        /// Column index.
+        column: usize,
+        /// The terms.
+        values: Vec<String>,
+    },
     /// A comparison of a long column with an integer, as the inclusive range
     /// it selects (documents without a value never match, as in SQL).
     Range {
@@ -47,6 +55,29 @@ pub enum Pred {
         /// The highest value selected.
         upper: i64,
     },
+    /// `column IS NOT NULL`.
+    Present {
+        /// Column index.
+        column: usize,
+    },
+    /// `column IS NULL`.
+    Missing {
+        /// Column index.
+        column: usize,
+    },
+    /// `column LIKE 'prefix%'` on a key or keyword column.
+    Prefix {
+        /// Column index.
+        column: usize,
+        /// The prefix.
+        prefix: String,
+    },
+    /// The negation of one condition on one column: the documents that have
+    /// a value for the column and do not meet the condition (a document
+    /// without a value is unknown, which `WHERE` drops).
+    Not(Box<Pred>),
+    /// Any of the alternatives, each the conjunction of its predicates.
+    Or(Vec<Vec<Pred>>),
 }
 
 impl Pred {
@@ -65,7 +96,7 @@ impl Pred {
                 column: *column,
                 vector: lit.to_string(),
             },
-            Pred::Range { .. } => self.clone(),
+            _ => self.clone(),
         }
     }
 
@@ -75,7 +106,7 @@ impl Pred {
             Pred::Term { value, .. } => value,
             Pred::Match { text, .. } => text,
             Pred::Knn { vector, .. } => vector,
-            Pred::Range { .. } => "",
+            _ => "",
         }
     }
 
@@ -128,7 +159,18 @@ fn parse_range(spec: &TableSpec, op: Operator, left: &Expr, right: &Expr) -> Opt
         _ => return None,
     };
     let column = column_index(spec, col, |k| *k == ColumnKind::Long)?;
-    let (lower, upper) = match op {
+    let (lower, upper) = range_of(op, v)?;
+    Some(Pred::Range {
+        column,
+        lower,
+        upper,
+    })
+}
+
+/// The inclusive range of the values `x` with `x op v`. An empty range is
+/// `lower > upper`; `None` for an operator that is not a comparison.
+pub fn range_of(op: Operator, v: i64) -> Option<(i64, i64)> {
+    Some(match op {
         Operator::Eq => (v, v),
         Operator::Gt => (
             v.saturating_add(1),
@@ -141,11 +183,6 @@ fn parse_range(spec: &TableSpec, op: Operator, left: &Expr, right: &Expr) -> Opt
         ),
         Operator::LtEq => (i64::MIN, v),
         _ => return None,
-    };
-    Some(Pred::Range {
-        column,
-        lower,
-        upper,
     })
 }
 
@@ -170,6 +207,10 @@ pub fn parse(spec: &TableSpec, e: &Expr) -> Option<Pred> {
         {
             parse_range(spec, b.op, &b.left, &b.right)
         }
+        Expr::InList(l) if !l.negated && !l.list.is_empty() => Some(Pred::Any {
+            column: column_index(spec, &l.expr, ColumnKind::is_term_indexed)?,
+            values: l.list.iter().map(literal_str).collect::<Option<Vec<_>>>()?,
+        }),
         Expr::BinaryExpr(b) if b.op == Operator::Eq => {
             let (col, lit) = match (&*b.left, &*b.right) {
                 (c @ Expr::Column(_), l) | (l, c @ Expr::Column(_)) => (c, l),

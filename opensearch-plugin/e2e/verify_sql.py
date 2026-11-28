@@ -131,6 +131,11 @@ def main():
     check("a join is a 400", err is None, err)
     _, err = sql("SELEC", expect=400)
     check("a statement that does not parse is a 400", err is None, err)
+    # One statement of tens of thousands of terms must be refused, not recurse the node's stack away.
+    _, err = sql("SELECT n FROM sqlt WHERE n = 1" + " OR n = 0" * 20000, expect=400)
+    check("a statement of 20000 terms is a 400", err is None, err)
+    _, err = sql("SELECT n FROM sqlt WHERE n = 1" + " OR n = 0" * 400 + " LIMIT 1")
+    check("a statement of 400 terms runs", err is None, err)
     status, out = req("POST", "/_plugins/accelerated/sql", {"nothing": 1})
     check("a request without a query is a 400", status == 400, (status, out))
     status, _ = req("POST", "/_plugins/accelerated/sql?format=csv", {"query": "SELECT 1 FROM sqlt"})

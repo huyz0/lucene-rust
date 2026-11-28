@@ -183,7 +183,7 @@ fn filtered_knn_filters_before_it_takes_the_nearest() {
         "SELECT id, cat, _score FROM t WHERE knn(vec, '{}') AND cat = 'c03' ORDER BY _score DESC LIMIT {k}",
         vec_text(q)
     );
-    assert!(shape(&f, &sql).is_none());
+    assert!(matches!(shape(&f, &sql), Some(Shape::Knn { .. })));
     let got = run(&f, &sql);
     assert_eq!(got.len(), k);
     assert!(got.iter().all(|r| r[1] == "c03"));
@@ -213,18 +213,11 @@ fn near_misses_fall_back_with_the_same_rows() {
     let f = fixture(N, 3, &[]);
     let id = id_of(42);
     let near = [
-        format!("SELECT id, price FROM t WHERE id = '{id}' AND price > 0"),
         format!("SELECT id AS key, price FROM t WHERE id = '{id}'"),
-        format!("SELECT id, price FROM t WHERE id = '{id}' LIMIT 1"),
-        format!("SELECT id, price FROM t WHERE id IN ('{id}')"),
-        format!("SELECT id, price FROM t WHERE price = 3 AND id = '{id}'"),
         "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score LIMIT 5".to_string(),
         "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score DESC".to_string(),
-        "SELECT id, _score FROM t WHERE match_text(body, 'w1') AND cat = 'c01' ORDER BY _score DESC LIMIT 5"
+        "SELECT id, _score FROM t WHERE match_text(body, 'w1') AND cat > 'c01' ORDER BY _score DESC LIMIT 5"
             .to_string(),
-        "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score DESC LIMIT 5 OFFSET 2"
-            .to_string(),
-        "SELECT cat, count(*) FROM t WHERE price > 500 GROUP BY cat".to_string(),
         "SELECT cat, count(*) FROM t GROUP BY cat HAVING count(*) > 1".to_string(),
         "SELECT cat, count(*) FROM t GROUP BY cat ORDER BY cat".to_string(),
         "SELECT cat, sum(price + 1) FROM t GROUP BY cat".to_string(),
@@ -246,6 +239,22 @@ fn near_misses_fall_back_with_the_same_rows() {
 }
 
 #[test]
+fn filters_the_router_now_translates_agree_with_the_standard_path() {
+    let f = fixture(N, 3, &[]);
+    let id = id_of(42);
+    for sql in [
+        format!("SELECT id, price FROM t WHERE id = '{id}' AND price > 0"),
+        format!("SELECT id, price FROM t WHERE id = '{id}' LIMIT 1"),
+        format!("SELECT id, price FROM t WHERE id IN ('{id}')"),
+        format!("SELECT id, price FROM t WHERE price = 3 AND id = '{id}'"),
+        "SELECT cat, count(*) FROM t WHERE price <> 500 GROUP BY cat".to_string(),
+    ] {
+        assert!(shape(&f, &sql).is_some(), "should route: {sql}");
+        assert_eq!(sorted(run(&f, &sql)), sorted(standard(&f, &sql)), "{sql}");
+    }
+}
+
+#[test]
 fn routed_shapes_ignore_spacing_case_and_extra_parentheses_in_the_tree_not_the_text() {
     let f = fixture(300, 2, &[]);
     for sql in [
@@ -255,8 +264,8 @@ fn routed_shapes_ignore_spacing_case_and_extra_parentheses_in_the_tree_not_the_t
     ] {
         let routed = shape(&f, sql).is_some();
         assert_eq!(run(&f, sql), standard(&f, sql), "{sql}");
-        // Parentheses are another node: not recognised, still correct.
-        assert_eq!(routed, !sql.contains('('), "{sql}");
+        // Parentheses are a node of the tree the filters see through.
+        assert!(routed, "{sql}");
     }
     // A literal that merely looks like SQL is data.
     let weird = "SELECT id, price FROM t WHERE id = 'x'' OR ''1''=''1'";

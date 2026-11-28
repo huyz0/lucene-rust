@@ -9,6 +9,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::error::{Error, Result};
@@ -51,6 +52,11 @@ impl Default for SqlConfig {
         }
     }
 }
+
+/// What the group-by kernels are assumed to hold per group (its buckets, their
+/// metric states and the result arrays), to turn the memory limit into the most
+/// groups a statement may make.
+const GROUP_BYTES: usize = 256;
 
 /// Which path answered a statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +166,7 @@ impl SqlEngine {
         config: &SqlConfig,
         runtime: Arc<tokio::runtime::Runtime>,
     ) -> Result<Self> {
+        snapshot.set_group_limit((config.memory_limit / GROUP_BYTES).max(1));
         let ctx = Self::context_for(&snapshot, config, true)?;
         let plain = Self::context_for(&snapshot, config, false)?;
         Ok(Self {
@@ -191,6 +198,10 @@ impl SqlEngine {
             builder = builder.with_optimizer_rule(Arc::new(GroupByKernelRule));
         }
         let ctx = SessionContext::new_with_state(builder.build());
+        crate::bounded::bound_functions(
+            &ctx,
+            crate::bounded::Limits::from_memory_limit(config.memory_limit),
+        );
         ctx.register_udf(match_text_udf());
         ctx.register_udf(knn_udf());
         ctx.register_table(
@@ -228,6 +239,7 @@ impl SqlEngine {
     /// # Errors
     /// A statement that does not parse or plan, or an unreadable index.
     pub async fn query(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         if let Some(batch) = self.router.run(sql)? {
             return Ok(vec![batch]);
         }
@@ -245,6 +257,7 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn standard(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         if let Some(plans) = &self.plans {
             match plans.run(&self.ctx, read_only(), sql, self.max_rows).await {
                 Ok(Some(batches)) => return Ok(batches),
@@ -261,6 +274,7 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn uncached(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        crate::statement::check_operators(sql)?;
         match self.run_on(&self.ctx, sql).await {
             Err(Error::DataFusion(e)) if is_inexact(&e) => self.plain_run(sql).await,
             other => other,
@@ -273,7 +287,9 @@ impl SqlEngine {
 
     async fn run_on(&self, ctx: &SessionContext, sql: &str) -> Result<Vec<RecordBatch>> {
         let df = ctx.sql_with_options(sql, read_only()).await?;
-        collect_bounded(df.execute_stream().await?, self.max_rows).await
+        let plan = df.create_physical_plan().await?;
+        let stream = execute_stream(plan, crate::scope::task_ctx(ctx))?;
+        collect_bounded(stream, self.max_rows).await
     }
 
     /// [`Self::query`] from synchronous code; must not be called from inside a
@@ -291,6 +307,8 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub fn query_traced(&self, sql: &str) -> Result<(Vec<RecordBatch>, Path)> {
+        crate::statement::check_operators(sql)?;
+        crate::scope::stop()?;
         if let Some(batch) = self.router.run(sql)? {
             return Ok((vec![batch], Path::Router));
         }
@@ -310,6 +328,7 @@ impl SqlEngine {
         self: &Arc<Self>,
         sql: &str,
     ) -> Result<Box<dyn RecordBatchReader + Send>> {
+        crate::statement::check_operators(sql)?;
         if let Some(batch) = self.router.run(sql)? {
             let schema = batch.schema();
             return Ok(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)));
@@ -331,7 +350,8 @@ impl SqlEngine {
     ) -> Result<(SchemaRef, SendableRecordBatchStream)> {
         let df = ctx.sql_with_options(sql, read_only()).await?;
         let schema: SchemaRef = Arc::new(df.schema().as_arrow().clone());
-        Ok((schema, df.execute_stream().await?))
+        let plan = df.create_physical_plan().await?;
+        Ok((schema, execute_stream(plan, crate::scope::task_ctx(ctx))?))
     }
 
     /// [`Self::standard`] from synchronous code.
@@ -353,6 +373,7 @@ pub(crate) async fn collect_bounded(
     let mut rows = 0usize;
     let mut out = Vec::new();
     while let Some(batch) = stream.next().await {
+        crate::scope::stop()?;
         let batch = batch?;
         rows = rows.saturating_add(batch.num_rows());
         if rows > max_rows {
