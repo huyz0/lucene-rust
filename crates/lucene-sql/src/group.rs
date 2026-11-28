@@ -11,10 +11,8 @@ use lucene_aggs::bucket_aggs::{aggregate_tree_cached, AggNode, AggResult, Global
 use lucene_aggs::metric_aggs::{
     MetricState, Source, ValueKind, NEED_COUNT, NEED_MIN_MAX, NEED_SUM,
 };
-use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery};
 
 use crate::error::{Error, Result};
-use crate::native::filter_clauses;
 use crate::pred::Pred;
 use crate::snapshot::Snapshot;
 use crate::spec::ColumnKind;
@@ -121,16 +119,7 @@ impl Snapshot {
             order: TermsOrder::KeyAsc,
             subs,
         };
-        let filter = filter_clauses(self, preds);
-        let query = BooleanQuery {
-            must: if filter.is_empty() {
-                vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(self.max_doc()))]
-            } else {
-                Vec::new()
-            },
-            filter,
-            ..BooleanQuery::default()
-        };
+        let query = self.filter_query(preds);
         let ords: HashMap<String, Arc<_>> = HashMap::from([(
             key_col.name.clone(),
             self.reader().global_ords(&key_col.name)?,

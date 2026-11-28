@@ -41,7 +41,6 @@ pub(crate) fn any_of(field: &str, terms: &[String]) -> BooleanQuery {
     }
 }
 
-#[cfg(feature = "sql")]
 /// `filters` as one clause every document must match, scoring nothing.
 pub(crate) fn all_of_clauses(filters: Vec<Clause>) -> Clause {
     Clause::Boolean(Box::new(BooleanQuery {
@@ -51,21 +50,39 @@ pub(crate) fn all_of_clauses(filters: Vec<Clause>) -> Clause {
 }
 
 #[cfg(feature = "sql")]
-/// The non-scoring predicates as filter clauses.
+/// The non-scoring predicates as filter clauses. Ranges on one column are
+/// intersected into one clause, so a `BETWEEN` is a single range the point
+/// tree can answer (and count) without visiting documents.
 pub(crate) fn filter_clauses(snapshot: &Snapshot, preds: &[Pred]) -> Vec<Clause> {
     let name = |c: usize| snapshot.spec().columns()[c].name.as_str();
-    preds
-        .iter()
-        .filter_map(|p| match p {
-            Pred::Term { column, value } => Some(term_clause(name(*column), value)),
+    let mut ranges: Vec<(usize, i64, i64)> = Vec::new();
+    let mut clauses = Vec::new();
+    for p in preds {
+        match p {
+            Pred::Term { column, value } => clauses.push(term_clause(name(*column), value)),
+            Pred::Any { column, values } => {
+                clauses.push(Clause::Boolean(Box::new(any_of(name(*column), values))));
+            }
             Pred::Range {
                 column,
                 lower,
                 upper,
-            } => Some(range_clause(snapshot, *column, *lower, *upper)),
-            _ => None,
-        })
-        .collect()
+            } => match ranges.iter_mut().find(|r| r.0 == *column) {
+                Some(r) => {
+                    r.1 = r.1.max(*lower);
+                    r.2 = r.2.min(*upper);
+                }
+                None => ranges.push((*column, *lower, *upper)),
+            },
+            Pred::Match { .. } | Pred::Knn { .. } => {}
+        }
+    }
+    clauses.extend(
+        ranges
+            .into_iter()
+            .map(|(c, lo, hi)| range_clause(snapshot, c, lo, hi)),
+    );
+    clauses
 }
 
 #[cfg(feature = "sql")]
@@ -84,6 +101,37 @@ pub(crate) fn range_clause(snapshot: &Snapshot, column: usize, lower: i64, upper
         }
     }
     Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(values)))
+}
+
+#[cfg(feature = "sql")]
+impl Snapshot {
+    /// The query matching every live document that meets all the
+    /// non-scoring predicates in `preds`.
+    pub(crate) fn filter_query(&self, preds: &[Pred]) -> BooleanQuery {
+        let filter = filter_clauses(self, preds);
+        BooleanQuery {
+            must: if filter.is_empty() {
+                vec![Clause::MatchAllDocs(
+                    lucene_search::query::MatchAllDocsQuery::new(self.max_doc()),
+                )]
+            } else {
+                Vec::new()
+            },
+            filter,
+            ..BooleanQuery::default()
+        }
+    }
+
+    /// How many live documents meet all the non-scoring predicates in
+    /// `preds`; a range on a long column with points and a term on its own
+    /// are counted from the index without visiting documents.
+    ///
+    /// # Errors
+    /// The index is unreadable.
+    pub fn count(&self, preds: &[Pred]) -> Result<u64> {
+        let query = self.filter_query(preds);
+        self.with_searcher(|s| Ok(s.searcher.count(&query)?))
+    }
 }
 
 impl Snapshot {
@@ -117,9 +165,35 @@ impl Snapshot {
     /// # Errors
     /// `field` is not a text column, or the index is unreadable.
     pub fn match_top_k(&self, field: &str, text: &str, k: usize) -> Result<Vec<Hit>> {
+        self.match_with(field, text, k, Vec::new())
+    }
+
+    /// [`Self::match_top_k`] among the documents meeting every non-scoring
+    /// predicate in `preds`.
+    ///
+    /// # Errors
+    /// As [`Self::match_top_k`].
+    #[cfg(feature = "sql")]
+    pub fn match_top_k_where(
+        &self,
+        field: &str,
+        text: &str,
+        k: usize,
+        preds: &[Pred],
+    ) -> Result<Vec<Hit>> {
+        self.match_with(field, text, k, filter_clauses(self, preds))
+    }
+
+    fn match_with(
+        &self,
+        field: &str,
+        text: &str,
+        k: usize,
+        filters: Vec<Clause>,
+    ) -> Result<Vec<Hit>> {
         self.column_of(field, "text", |k| *k == ColumnKind::Text)?;
         let terms = self.spec().text_analyzer(field).terms(text);
-        self.with_searcher(|s| match_in(s, field, &terms, k))
+        self.with_searcher(|s| match_in(s, field, &terms, k, filters))
     }
 
     /// The `k` live documents nearest `vector` in the vector column `field`,
@@ -129,9 +203,36 @@ impl Snapshot {
     /// `field` is not a vector column, the vector has the wrong dimension, or
     /// the index is unreadable.
     pub fn knn_top_k(&self, field: &str, vector: &[f32], k: usize) -> Result<Vec<Hit>> {
+        self.knn_with(field, vector, k, Vec::new())
+    }
+
+    /// [`Self::knn_top_k`] among the documents meeting every non-scoring
+    /// predicate in `preds`.
+    ///
+    /// # Errors
+    /// As [`Self::knn_top_k`].
+    #[cfg(feature = "sql")]
+    pub fn knn_top_k_where(
+        &self,
+        field: &str,
+        vector: &[f32],
+        k: usize,
+        preds: &[Pred],
+    ) -> Result<Vec<Hit>> {
+        self.knn_with(field, vector, k, filter_clauses(self, preds))
+    }
+
+    fn knn_with(
+        &self,
+        field: &str,
+        vector: &[f32],
+        k: usize,
+        filters: Vec<Clause>,
+    ) -> Result<Vec<Hit>> {
         let c = self.column_of(field, "vector", |k| matches!(k, ColumnKind::Vector { .. }))?;
         check_dimension(self, c, vector)?;
-        self.with_searcher(|s| knn_in(s, field, vector, k, None))
+        let filter = (!filters.is_empty()).then(|| all_of_clauses(filters));
+        self.with_searcher(|s| knn_in(s, field, vector, k, filter.as_ref()))
     }
 
     /// The columns `projection` names (indices into the table: declared
@@ -174,11 +275,14 @@ pub(crate) fn match_in(
     field: &str,
     terms: &[String],
     k: usize,
+    filters: Vec<Clause>,
 ) -> Result<Vec<Hit>> {
     if terms.is_empty() || k == 0 {
         return Ok(Vec::new());
     }
-    let top = s.searcher.search(&any_of(field, terms), k)?;
+    let mut query = any_of(field, terms);
+    query.filter = filters;
+    let top = s.searcher.search(&query, k)?;
     Ok(top
         .score_docs
         .iter()

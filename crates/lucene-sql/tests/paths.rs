@@ -183,7 +183,7 @@ fn filtered_knn_filters_before_it_takes_the_nearest() {
         "SELECT id, cat, _score FROM t WHERE knn(vec, '{}') AND cat = 'c03' ORDER BY _score DESC LIMIT {k}",
         vec_text(q)
     );
-    assert!(shape(&f, &sql).is_none());
+    assert!(matches!(shape(&f, &sql), Some(Shape::Knn { .. })));
     let got = run(&f, &sql);
     assert_eq!(got.len(), k);
     assert!(got.iter().all(|r| r[1] == "c03"));
@@ -220,11 +220,11 @@ fn near_misses_fall_back_with_the_same_rows() {
         format!("SELECT id, price FROM t WHERE price = 3 AND id = '{id}'"),
         "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score LIMIT 5".to_string(),
         "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score DESC".to_string(),
-        "SELECT id, _score FROM t WHERE match_text(body, 'w1') AND cat = 'c01' ORDER BY _score DESC LIMIT 5"
+        "SELECT id, _score FROM t WHERE match_text(body, 'w1') AND cat > 'c01' ORDER BY _score DESC LIMIT 5"
             .to_string(),
         "SELECT id, _score FROM t WHERE match_text(body, 'w1') ORDER BY _score DESC LIMIT 5 OFFSET 2"
             .to_string(),
-        "SELECT cat, count(*) FROM t WHERE price > 500 GROUP BY cat".to_string(),
+        "SELECT cat, count(*) FROM t WHERE price <> 500 GROUP BY cat".to_string(),
         "SELECT cat, count(*) FROM t GROUP BY cat HAVING count(*) > 1".to_string(),
         "SELECT cat, count(*) FROM t GROUP BY cat ORDER BY cat".to_string(),
         "SELECT cat, sum(price + 1) FROM t GROUP BY cat".to_string(),

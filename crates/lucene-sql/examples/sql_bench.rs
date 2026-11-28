@@ -13,8 +13,8 @@ use lucene_aggs::bucket_aggs::{aggregate_tree, AggNode, AggResult, Globals, Term
 use lucene_aggs::metric_aggs::{Source, ValueKind, NEED_SUM};
 use lucene_codecs::field_infos::VectorSimilarityFunction;
 use lucene_index::document::{
-    Document, KeywordField, KnnFloatVectorField, NumericDocValuesField, Store, StringField,
-    TextField,
+    Document, KeywordField, KnnFloatVectorField, LongField, NumericDocValuesField, Store,
+    StringField, TextField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
@@ -66,6 +66,11 @@ fn build(path: &str, docs: usize, segments: usize) {
         d.add(NumericDocValuesField::new(
             "price",
             (next(&mut st) % 10_000) as i64,
+        ));
+        d.add(LongField::new(
+            "ts",
+            (next(&mut st) % 1_000_000) as i64,
+            Store::No,
         ));
         d.add(KeywordField::new(
             "cat",
@@ -137,7 +142,11 @@ fn main() {
     // The direct API.
     let dir: &'static MmapDirectory = Box::leak(Box::new(MmapDirectory::open(path.clone())));
     let reader: &'static DirectoryReader = Box::leak(Box::new(DirectoryReader::open(dir).unwrap()));
-    let opened = Box::leak(Box::new(reader.open_segments().unwrap()));
+    let opened = Box::leak(Box::new({
+        let mut o = reader.open_segments().unwrap();
+        o.open_points().unwrap();
+        o
+    }));
     let segments = Box::leak(opened.as_open_segments().into_boxed_slice());
     let owned = Box::leak(Box::new(
         reader.field_norms_by_field(&["body".to_string()]).unwrap(),
@@ -187,6 +196,7 @@ fn main() {
     let spec = TableSpec::new("t")
         .key("id")
         .long("price")
+        .long("ts")
         .keyword("cat")
         .text("body")
         .vector("vec", DIM);
@@ -393,6 +403,102 @@ fn main() {
         }));
     });
     sum.push(("group-by", d, r, c, u));
+
+    let range_q = |lo: i64, hi: i64| BooleanQuery {
+        filter: vec![Clause::from(
+            lucene_search::document::long_point::new_range_query("ts", lo, hi).unwrap(),
+        )],
+        ..BooleanQuery::default()
+    };
+    let bounds: Vec<(i64, i64)> = (0..64)
+        .map(|_| {
+            let lo = (next(&mut st) % 900_000) as i64;
+            (lo, lo + 10_000)
+        })
+        .collect();
+    let wide: Vec<(i64, i64)> = (0..64)
+        .map(|_| {
+            let lo = (next(&mut st) % 400_000) as i64;
+            (lo, lo + 500_000)
+        })
+        .collect();
+
+    for (name, bs) in [("range count 1%", &bounds), ("range count 50%", &wide)] {
+        println!("\n== {name}");
+        let sql = |i: usize| {
+            let (lo, hi) = bs[i % 64];
+            format!("SELECT count(*) FROM t WHERE ts BETWEEN {lo} AND {hi}")
+        };
+        let d = time("direct API (count)", secs, |i| {
+            let (lo, hi) = bs[i % 64];
+            sink(searcher.count(&range_q(lo, hi)).unwrap());
+        });
+        let r = time("engine (SQL text)", secs, |i| both(sql(i)));
+        let c = time("DataFusion, cached plan", secs, |i| df_cached(sql(i)));
+        let u = time("DataFusion, planned from text", secs, |i| df_text(sql(i)));
+        sum.push((name, d, r, c, u));
+    }
+
+    println!("\n== filter count");
+    let cats: Vec<String> = (0..64)
+        .map(|_| format!("c{:03}", next(&mut st) % 100))
+        .collect();
+    let sql = |i: usize| format!("SELECT count(*) FROM t WHERE cat = '{}'", cats[i % 64]);
+    let d = time("direct API (count)", secs, |i| {
+        sink(searcher.count(&term_q("cat", &cats[i % 64])).unwrap());
+    });
+    let r = time("engine (SQL text)", secs, |i| both(sql(i)));
+    let c = time("DataFusion, cached plan", secs, |i| df_cached(sql(i)));
+    let u = time("DataFusion, planned from text", secs, |i| df_text(sql(i)));
+    sum.push(("filter count", d, r, c, u));
+
+    println!("\n== filtered group-by (ts 1%)");
+    let gsql = |i: usize| {
+        let (lo, hi) = bounds[i % 64];
+        format!(
+            "SELECT cat, count(*), sum(price) FROM t WHERE ts BETWEEN {lo} AND {hi} GROUP BY cat"
+        )
+    };
+    let d = time("direct API (kernels)", secs.min(4.0), |i| {
+        let node = AggNode::Terms {
+            field: "cat".into(),
+            missing: None,
+            accepted: None,
+            zero_buckets: false,
+            shard_size: 1000,
+            order: TermsOrder::KeyAsc,
+            subs: vec![AggNode::Metric {
+                field: "price".into(),
+                missing: None,
+                kind: ValueKind::Long,
+                source: Source::DocValues,
+                needs: NEED_SUM,
+                script: None,
+            }],
+        };
+        let (lo, hi) = bounds[i % 64];
+        let ords: HashMap<String, _> = HashMap::from([("cat".to_string(), cat_global.clone())]);
+        let slices = vec![(0..segments.len()).collect::<Vec<_>>()];
+        let out = aggregate_tree(
+            segments,
+            reader.segment_readers(),
+            &range_q(lo, hi),
+            &[node],
+            &Globals::new(&ords),
+            &slices,
+            None,
+        )
+        .unwrap();
+        sink(matches!(out[0][0], AggResult::Terms { .. }));
+    });
+    let r = time("engine (SQL text)", secs.min(4.0), |i| both(gsql(i)));
+    let c = time("DataFusion, cached plan", secs.min(4.0), |i| {
+        df_cached(gsql(i))
+    });
+    let u = time("DataFusion, planned from text", secs.min(4.0), |i| {
+        df_text(gsql(i))
+    });
+    sum.push(("filtered group-by", d, r, c, u));
 
     println!(
         "\n{:<20}{:>11}{:>11}{:>9}{:>11}{:>9}{:>13}{:>9}",
