@@ -198,6 +198,10 @@ impl SqlEngine {
             builder = builder.with_optimizer_rule(Arc::new(GroupByKernelRule));
         }
         let ctx = SessionContext::new_with_state(builder.build());
+        crate::bounded::bound_functions(
+            &ctx,
+            crate::bounded::Limits::from_memory_limit(config.memory_limit),
+        );
         ctx.register_udf(match_text_udf());
         ctx.register_udf(knn_udf());
         ctx.register_table(

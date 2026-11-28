@@ -30,6 +30,9 @@ fn main() {
     let path = &a[1];
     let limit_mb: usize = a.get(2).map_or(512, |s| s.parse().unwrap());
     let statements = [
+        "SELECT length(repeat('a', 100000000))",
+        "SELECT length(lpad(cat, 1000000000, 'x')) FROM t LIMIT 1",
+        "SELECT length(concat(repeat(concat(repeat('a', 1000), 'b'), 1000), 'b'))",
         "SELECT cat, count(*) c, avg(price) a FROM t GROUP BY cat ORDER BY c DESC LIMIT 5",
         "SELECT id, count(*) c FROM t GROUP BY id ORDER BY c DESC, id LIMIT 10",
         "SELECT cat, price, count(*) c FROM t GROUP BY cat, price ORDER BY c DESC, cat, price LIMIT 10",

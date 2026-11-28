@@ -11,6 +11,8 @@
 //! The table is declared with a [`spec::TableSpec`] and read through a
 //! [`snapshot::Snapshot`]; [`engine::SqlEngine`] ties them together.
 
+#[cfg(feature = "sql")]
+pub(crate) mod bounded;
 pub mod columns;
 #[cfg(feature = "sql")]
 pub mod engine;
