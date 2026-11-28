@@ -186,9 +186,41 @@ public final class NativeMemory {
 
     /** Opens a scope on this thread for {@code ctx}'s native calls; close it after them. */
     public static Scope open(SearchContext ctx, String label) {
-        CircuitBreaker breaker = requestBreaker(ctx);
+        return begin(requestBreaker(ctx), ctx::isCancelled, label);
+    }
+
+    /**
+     * Opens a scope on this thread for a request that has no search context (a SQL statement): its
+     * native memory is charged to the request breaker of {@code service} (none when null), and it
+     * stops at its next checkpoint once {@code cancelled} says so or the deadline set by {@link
+     * #queryStarted} passes.
+     */
+    public static Scope open(CircuitBreakerService service, java.util.function.BooleanSupplier cancelled, String label) {
+        CircuitBreaker breaker = null;
+        if (service != null) {
+            if (breakers == null) {
+                breakers = service;
+            }
+            breaker = service.getBreaker(CircuitBreaker.REQUEST);
+        }
+        return begin(breaker, cancelled, label);
+    }
+
+    /** Remembers the node's breakers for requests that have no search context to show them. */
+    static void rememberBreakers(CircuitBreakerService service) {
+        if (service != null && breakers == null) {
+            breakers = service;
+        }
+    }
+
+    /** The node's breakers, once a request has shown them; null before. */
+    public static CircuitBreakerService breakerService() {
+        return breakers;
+    }
+
+    private static Scope begin(CircuitBreaker breaker, java.util.function.BooleanSupplier cancelled, String label) {
         long token = TOKENS.incrementAndGet();
-        Scope s = new Scope(token, ctx, breaker, label);
+        Scope s = new Scope(token, cancelled, breaker, label);
         s.outer = CURRENT.get();
         CURRENT.set(s);
         OPEN.put(token, s);
@@ -279,7 +311,7 @@ public final class NativeMemory {
                 Thread.sleep(CANCEL_POLL_MILLIS);
                 syncFielddata();
                 for (Scope s : OPEN.values()) {
-                    if (s.cancelSent == false && s.ctx.isCancelled()) {
+                    if (s.cancelSent == false && s.cancelled.getAsBoolean()) {
                         s.cancelSent = true;
                         NativeLimits.memoryScopeCancel(s.token);
                     }
@@ -318,7 +350,7 @@ public final class NativeMemory {
     /** One request's native calls on one thread. */
     public static final class Scope implements AutoCloseable {
         final long token;
-        final SearchContext ctx;
+        final java.util.function.BooleanSupplier cancelled;
         final CircuitBreaker breaker;
         final String label;
         final AtomicLong charged = new AtomicLong();
@@ -330,9 +362,9 @@ public final class NativeMemory {
         private long peak;
         private boolean timedOut;
 
-        Scope(long token, SearchContext ctx, CircuitBreaker breaker, String label) {
+        Scope(long token, java.util.function.BooleanSupplier cancelled, CircuitBreaker breaker, String label) {
             this.token = token;
-            this.ctx = ctx;
+            this.cancelled = cancelled;
             this.breaker = breaker;
             this.label = label;
         }

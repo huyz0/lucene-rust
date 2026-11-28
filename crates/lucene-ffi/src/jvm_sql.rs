@@ -239,6 +239,12 @@ fn engine_for(handle: u64, table: &[u8]) -> Result<Arc<SqlEngine>, FfiStatus> {
 pub(crate) fn query_json(handle: u64, table: &[u8], sql: &str) -> Result<Vec<u8>, FfiStatus> {
     let engine = engine_for(handle, table)?;
     let (batches, path) = engine.query_traced(sql).map_err(|e| {
+        if let Some(stopped) = e.stopped() {
+            return lucene_engine::memory::exceeded(stopped);
+        }
+        if let lucene_sql::Error::Index(index) = e {
+            return lucene_engine::clauses::map_search_error(index);
+        }
         set_last_error(format!("{e}"));
         FfiStatus::Search
     })?;

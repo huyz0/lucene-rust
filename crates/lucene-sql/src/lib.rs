@@ -33,6 +33,8 @@ pub mod provider;
 pub mod router;
 #[cfg(feature = "sql")]
 pub mod rule;
+#[cfg(feature = "sql")]
+pub(crate) mod scope;
 pub mod snapshot;
 pub mod spec;
 #[cfg(feature = "sql")]

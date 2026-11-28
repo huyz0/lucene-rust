@@ -35,7 +35,31 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[error("the aggregation kernels cannot answer this exactly: {0}")]
 pub struct KernelInexact(pub String);
 
+impl From<lucene_util::memory::Exceeded> for Error {
+    fn from(e: lucene_util::memory::Exceeded) -> Self {
+        Error::Index(e.into())
+    }
+}
+
 impl Error {
+    /// The bound or cancel that stopped the statement, when one did: the
+    /// host's request breaker, the process bound, a cancelled task or the
+    /// statement's deadline.
+    pub fn stopped(&self) -> Option<&lucene_util::memory::Exceeded> {
+        match self {
+            Error::Index(lucene_search::Error::Memory(e)) => Some(e),
+            #[cfg(feature = "sql")]
+            Error::DataFusion(e) => match e.find_root() {
+                DataFusionError::External(inner) => match inner.downcast_ref::<Error>() {
+                    Some(Error::Index(lucene_search::Error::Memory(e))) => Some(e),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub(crate) fn unsupported(msg: impl Into<String>) -> Self {
         Error::Unsupported(msg.into())
     }

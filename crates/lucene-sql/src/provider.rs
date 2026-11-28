@@ -338,9 +338,10 @@ impl ExecutionPlan for SegScanExec {
     fn execute(
         &self,
         partition: usize,
-        _ctx: Arc<TaskContext>,
+        ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let batches = self.run(partition).map_err(|e| match e {
+        let scope = crate::scope::of(&ctx);
+        let batches = lucene_util::memory::within(scope.as_ref(), || self.run(partition)).map_err(|e| match e {
             Error::DataFusion(d) => d,
             other => external(other),
         })?;
@@ -360,6 +361,7 @@ impl SegScanExec {
             let hits =
                 snapshot.with_searcher(|s| search_hits(s, snapshot, &self.preds, self.fetch))?;
             for chunk in hits.chunks(WINDOW) {
+                crate::scope::stop()?;
                 let arrays = cols.for_docs(&self.projection, chunk)?;
                 out.push(self.batch(arrays, chunk.len())?);
             }
@@ -371,6 +373,7 @@ impl SegScanExec {
             let max = usize::try_from(leaf.max_doc).unwrap_or(0);
             let mut start = 0usize;
             while start < max && budget > 0 {
+                crate::scope::stop()?;
                 let n = WINDOW.min(max - start);
                 let live = leaf
                     .live_docs()

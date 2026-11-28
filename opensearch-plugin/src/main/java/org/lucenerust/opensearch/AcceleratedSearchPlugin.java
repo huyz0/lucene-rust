@@ -320,6 +320,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
         // fields are then read natively one layer lower, in the engine's searchers, under it.
         this.fetchWrapper = nativeFetch && security == false;
         AcceleratedSql.install(readers, stats);
+        AcceleratedSql.configureTimeout(AcceleratedSql.TIMEOUT.get(settings));
         NativeSql.configure(AcceleratedSql.MAX_ROWS.get(settings), AcceleratedSql.MEMORY_LIMIT.get(settings).getBytes(), 0);
         this.sqlDirect = AcceleratedSql.DIRECT.get(settings) && security == false
             ? new AcceleratedSql.Direct(clusterService::get, resolver::get) : null;
@@ -779,6 +780,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
             AcceleratedSql.DIRECT,
             AcceleratedSql.MAX_ROWS,
             AcceleratedSql.MEMORY_LIMIT,
+            AcceleratedSql.TIMEOUT,
             FETCH_ENABLED,
             HIGHLIGHT_ENABLED,
             org.lucenerust.opensearch.highlight.ExtendedHighlighting.ENABLED,

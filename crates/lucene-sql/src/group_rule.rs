@@ -283,12 +283,13 @@ impl ExecutionPlan for GroupScanExec {
     fn execute(
         &self,
         _partition: usize,
-        _ctx: Arc<TaskContext>,
+        ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let grouped = self
-            .snapshot
-            .group_by(self.key, &self.aggs, &self.preds)
-            .map_err(external)?
+        let scope = crate::scope::of(&ctx);
+        let grouped = lucene_util::memory::within(scope.as_ref(), || {
+            self.snapshot.group_by(self.key, &self.aggs, &self.preds)
+        })
+        .map_err(external)?
             .ok_or_else(|| {
                 external(KernelInexact(
                     "a document has no group key, or a sum or extreme is beyond 2^53".into(),

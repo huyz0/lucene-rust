@@ -136,7 +136,7 @@ impl Snapshot {
                 s.leaves,
                 &query,
                 &[node],
-                &Globals::new(&ords),
+                &Globals::new(&ords).with_bucket_limit(self.group_limit()),
                 &slices,
                 None,
                 request.as_ref(),

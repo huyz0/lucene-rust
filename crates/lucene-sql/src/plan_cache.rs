@@ -144,7 +144,7 @@ impl PlanCache {
             })?
             .data;
         let fresh = reset_plan_states(bound)?;
-        let stream = execute_stream(fresh, ctx.task_ctx())?;
+        let stream = execute_stream(fresh, crate::scope::task_ctx(ctx))?;
         Ok(Some(collect_bounded(stream, max_rows).await?))
     }
 }
