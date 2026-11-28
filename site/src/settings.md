@@ -35,7 +35,7 @@ a setting the plugin adds is not named in this documentation.
 | `index.codec.adaptive_doc_values` | `auto` | columnar numeric doc values: smaller indices, much faster group-bys on log data |
 | `index.codec.stored_fields.recompress_on_merge` | `off` | `on` or `non_force`: 9-28% smaller stored fields for about 14% of logs indexing throughput, same LZ4 format |
 | `index.merge.reorder.*` | disabled | document reordering at merge for smaller postings; forced merges ~3x slower |
-| `index.hot_tier.max_memory`, `min_update_rate`, node `indices.hot_tier.max_memory` (`2%` of heap) | `0` (off), `1.0` (`8mb` turns it on) | opt-in: rows updated faster than the rate keep only their latest version in a bounded buffer; dropped updates leave a no-op with their sequence number |
+| `index.hot_tier.max_memory`, `min_update_rate`, node `indices.hot_tier.max_memory` (`2%` of heap) | `8mb`, `1.0` (`0` = off) | on by default: rows updated faster than the rate keep only their latest version in a bounded buffer; dropped updates leave a no-op with their sequence number |
 | `index.segment_partition.field` | unset | segments sorted by a tenant or similar field, so filtered queries read only their share |
 | `index.knn.target_recall` | `0` (off) | the vector search adapts its effort to a recall target |
 | `script.js.enabled` | `false` | `"lang": "js"` scripts |
