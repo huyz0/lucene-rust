@@ -37,6 +37,7 @@ Standard library only.
 import argparse
 import json
 import nodectl
+import os
 import random
 import subprocess
 import sys
@@ -48,6 +49,11 @@ BASE = "http://localhost:9200"
 FAILURES = []
 CHECKS = [0]
 JAVA, RUST = "eng_java", "eng_rust"
+# Every Rust index this run creates has the hot tier on at this budget (E2E_HOT_TIER=0 or empty:
+# off), so the run proves its updates against the Java engine whatever the default is.
+HOT_TIER = os.environ.get("E2E_HOT_TIER", "8mb")
+if HOT_TIER in ("", "0"):
+    HOT_TIER = ""
 
 
 def req(method, path, body=None, ndjson=False, ok=(200, 201)):
@@ -183,6 +189,8 @@ def create(index, rust, extra=None, mapping=None):
     settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.engine.accelerated": bool(rust)}
     settings["analysis"] = ANALYSIS
+    if rust and HOT_TIER:
+        settings["index.hot_tier.max_memory"] = HOT_TIER
     settings.update(extra or {})
     must("PUT", f"/{index}", {"settings": settings, "mappings": mapping or MAPPING})
 
