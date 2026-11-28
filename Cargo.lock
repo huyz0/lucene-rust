@@ -2930,6 +2930,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "lucene-util",
+ "rayon",
  "thiserror 2.0.21",
 ]
 

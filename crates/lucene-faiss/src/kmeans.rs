@@ -6,11 +6,13 @@
 use rayon::prelude::*;
 
 use crate::distance::dot;
+use crate::error::{Error, Result};
 use crate::format::{Flat, Metric};
 use lucene_util::gemm;
 
 const ITERATIONS: usize = 25;
-const MAX_POINTS_PER_CENTROID: usize = 256;
+/// Faiss's default `max_points_per_centroid`.
+pub const MAX_POINTS_PER_CENTROID: usize = 256;
 
 /// Small deterministic generator (SplitMix64) for sampling and seeding.
 pub(crate) struct Rng(pub(crate) u64);
@@ -82,12 +84,69 @@ fn normalize(v: &mut [f32]) {
     }
 }
 
-/// Trains `nlist` centroids over `x` (`n` vectors of `d` floats).
+/// Trains `nlist` centroids over `x` (`n` vectors of `d` floats) on at most
+/// 256 points a centroid.
 pub(crate) fn train(x: &[f32], d: usize, nlist: usize, metric: Metric, seed: u64) -> Flat {
+    train_capped(x, d, nlist, metric, MAX_POINTS_PER_CENTROID, seed)
+}
+
+/// Faiss's `Clustering` over `x` (`n` vectors of `d` floats): `k` centroids
+/// by 25 Lloyd iterations over a random sample of at most
+/// `points_per_centroid * k` points (`max_points_per_centroid`; Faiss warns
+/// below 39 and uses 256), seeded from distinct sample points, empty clusters
+/// split from a populated one, and, for [`Metric::InnerProduct`], spherical
+/// (every centroid renormalised each iteration). The result is the same for
+/// the same `seed`.
+///
+/// # Errors
+/// [`Error::Invalid`] for a zero dimension, `k` or `points_per_centroid`, a
+/// sample that is not whole vectors, or fewer points than centroids (Faiss's
+/// `nx >= k` check, in its message's shape).
+pub fn cluster(
+    x: &[f32],
+    d: usize,
+    k: usize,
+    metric: Metric,
+    points_per_centroid: usize,
+    seed: u64,
+) -> Result<Flat> {
+    if d == 0 {
+        return Err(Error::Invalid("dimension must be positive".into()));
+    }
+    if !x.len().is_multiple_of(d) {
+        return Err(Error::Invalid(format!(
+            "sample of {} floats is not a whole number of {d}-dimensional vectors",
+            x.len()
+        )));
+    }
+    if k == 0 {
+        return Err(Error::Invalid("number of clusters must be positive".into()));
+    }
+    if points_per_centroid == 0 {
+        return Err(Error::Invalid(
+            "points per centroid must be positive".into(),
+        ));
+    }
+    let n = x.len() / d;
+    if n < k {
+        return Err(Error::Invalid(format!(
+            "Number of training points ({n}) should be at least as large as number of clusters ({k})"
+        )));
+    }
+    Ok(train_capped(x, d, k, metric, points_per_centroid, seed))
+}
+
+fn train_capped(
+    x: &[f32],
+    d: usize,
+    nlist: usize,
+    metric: Metric,
+    points_per_centroid: usize,
+    seed: u64,
+) -> Flat {
     let n = x.len() / d;
     let mut rng = Rng(seed);
-    // Sample at most `nlist * 256` points.
-    let want = nlist.saturating_mul(MAX_POINTS_PER_CENTROID).min(n);
+    let want = nlist.saturating_mul(points_per_centroid).min(n);
     let mut order: Vec<usize> = (0..n).collect();
     for i in 0..want {
         let j = i + rng.below(n - i);

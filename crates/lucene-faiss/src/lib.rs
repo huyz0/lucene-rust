@@ -22,7 +22,7 @@ pub mod format;
 mod heap;
 // ARITH: indices run over the training set and `k <= n` (checked by the caller); counts are bounded by the input slice length.
 #[allow(clippy::arithmetic_side_effects)]
-mod kmeans;
+pub mod kmeans;
 // ARITH: ids and list positions come from an index `read_index` validated (sizes against the remaining bytes, ids against `ntotal`); loops run over those bounds.
 #[allow(clippy::arithmetic_side_effects)]
 pub mod search;
