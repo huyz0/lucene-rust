@@ -18,7 +18,9 @@ use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, MergeSource, Vec
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Input;
 use lucene_util::quantization::ScalarEncoding;
+use lucene_vector_quant::flat::FlatFactory;
 use lucene_vector_quant::osq::OsqFactory;
+use lucene_vector_quant::pq::PqFactory;
 use lucene_vector_quant::rabitq::ExRabitqFactory;
 use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
@@ -114,6 +116,10 @@ pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
         4..=10 => Some(Box::new(ExRabitqFactory::new(quantizer - 2))),
         11 => Some(Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq())))),
         12 => Some(Box::new(lucene_ivf::AutoQuantizer::with_defaults())),
+        // Only a shared model's fields use these: `read` takes `m` from the
+        // state, and `flat` has none.
+        13 => Some(Box::new(PqFactory::new(1))),
+        14 => Some(Box::new(FlatFactory)),
         _ => None,
     }
 }
@@ -486,6 +492,8 @@ mod tests {
                 "rot-osq"
             } else if *name == "auto" {
                 "auto"
+            } else if matches!(*name, "pq" | "flat") {
+                name
             } else {
                 "osq"
             };

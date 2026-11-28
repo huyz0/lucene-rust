@@ -384,6 +384,8 @@ fn a_merge_writes_the_layout_over_the_merged_graph() {
 #[test]
 fn bad_parameters_are_refused() {
     assert!(KnnVectorsFormat::hnsw_disk(IVF_QUANTIZERS.len() as u8, 16, 100).is_err());
+    assert!(KnnVectorsFormat::hnsw_disk(13, 16, 100).is_err());
+    assert!(KnnVectorsFormat::hnsw_disk(14, 16, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_disk(IVF_AUTO_QUANTIZER, 16, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_disk(0, 0, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_disk(0, 16, 0).is_err());

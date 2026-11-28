@@ -51,11 +51,27 @@ pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 /// dimension), `erq2` to `erq8` (Extended RaBitQ at 2 to 8 bits) and
 /// `rabitq` (1-bit RaBitQ: `bbq` after a random rotation); `auto` (IVF only:
 /// picked per segment from the field's own vectors,
-/// `lucene_ivf::AutoQuantizer`).
-pub const IVF_QUANTIZERS: [&str; 13] = [
+/// `lucene_ivf::AutoQuantizer`); `pq` (product quantization of the residual
+/// against the cluster centroid) and `flat` (no codes, exact scores from the
+/// vectors), both only for a field of a shared model
+/// ([`is_model_quantizer`]).
+pub const IVF_QUANTIZERS: [&str; 15] = [
     "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8",
-    "rabitq", "auto",
+    "rabitq", "auto", "pq", "flat",
 ];
+
+/// The [`IVF_QUANTIZERS`] wire number of `pq`.
+pub const IVF_PQ_QUANTIZER: u8 = 13;
+
+/// The [`IVF_QUANTIZERS`] wire number of `flat`.
+pub const IVF_FLAT_QUANTIZER: u8 = 14;
+
+/// Whether `quantizer` is one only a field of a shared model uses (`pq`,
+/// `flat`): a quantizer trained per segment needs no model, and these need
+/// the model's codebooks or centroids.
+pub fn is_model_quantizer(quantizer: u8) -> bool {
+    matches!(quantizer, IVF_PQ_QUANTIZER | IVF_FLAT_QUANTIZER)
+}
 
 /// The [`IVF_QUANTIZERS`] wire number of `auto`, which picks an IVF field's
 /// codes per segment and has no graph-walk form.
@@ -192,6 +208,12 @@ impl KnnVectorsFormat {
         if usize::from(quantizer) >= IVF_QUANTIZERS.len() {
             return Err(InvalidFormat(format!("unknown IVF quantizer {quantizer}")));
         }
+        if is_model_quantizer(quantizer) {
+            return Err(InvalidFormat(format!(
+                "IVF quantizer {} needs a shared model",
+                IVF_QUANTIZERS[usize::from(quantizer)]
+            )));
+        }
         Ok(KnnVectorsFormat::Ivf {
             target_cluster_size,
             rerank_encoding,
@@ -220,7 +242,10 @@ impl KnnVectorsFormat {
         beam_width: i32,
     ) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
-        if usize::from(quantizer) >= IVF_QUANTIZERS.len() || quantizer == IVF_AUTO_QUANTIZER {
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len()
+            || quantizer == IVF_AUTO_QUANTIZER
+            || is_model_quantizer(quantizer)
+        {
             return Err(InvalidFormat(format!("unknown HNSW quantizer {quantizer}")));
         }
         Ok(KnnVectorsFormat::HnswQuantized {
@@ -243,7 +268,10 @@ impl KnnVectorsFormat {
     /// [`Self::hnsw`] accepts and a known quantizer.
     pub fn hnsw_disk(quantizer: u8, max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
-        if usize::from(quantizer) >= IVF_QUANTIZERS.len() || quantizer == IVF_AUTO_QUANTIZER {
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len()
+            || quantizer == IVF_AUTO_QUANTIZER
+            || is_model_quantizer(quantizer)
+        {
             return Err(InvalidFormat(format!(
                 "unknown disk HNSW quantizer {quantizer}"
             )));

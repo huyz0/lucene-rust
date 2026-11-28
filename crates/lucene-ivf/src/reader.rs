@@ -13,11 +13,12 @@ use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 
 use crate::calibrate::Calibration;
 use crate::kmeans::NO_CLUSTER;
+use crate::model::{Resident, SharedModel};
 use crate::routing::{Router, Routing};
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT, VERSION_PARTITIONS,
-    VERSION_ROUTING_TREE, VERSION_VECTOR_ENCODING,
+    VERSION_ROUTING_TREE, VERSION_SHARED_MODEL, VERSION_VECTOR_ENCODING,
 };
 
 /// A file read by byte range: a memory-mapped or in-memory file, or a blob
@@ -379,17 +380,11 @@ pub struct IvfField {
     count: usize,
     /// Bytes of one stored vector in `encoding`.
     vector_bytes: usize,
-    quantizer: Box<dyn Quantizer>,
-    centroids: Vec<f32>,
-    /// The centroids as the quantizer encodes and scores against them
-    /// (`Quantizer::prepare_centroid`), `prepared_len` floats each, mapped
-    /// once at open; empty when the quantizer uses centroids as they are.
-    prepared: Vec<f32>,
-    prepared_len: usize,
-    /// Ranks the centroids for a query.
-    router: Router,
-    /// Each centroid's parent in the routing tree stored with the field.
-    tree_parents: Option<Vec<u32>>,
+    /// The quantizer, centroids and router: the field's own, or those of
+    /// the shared model it names.
+    res: Arc<Resident>,
+    /// The model the field's centroids and quantizer come from, if shared.
+    model: Option<Arc<SharedModel>>,
     /// `cluster count + 1` prefix sums of the clusters' entry counts:
     /// cluster `c`'s entries are `starts[c]..starts[c + 1]`.
     starts: Vec<usize>,
@@ -429,7 +424,7 @@ impl IvfField {
         number: i32,
         similarity: Similarity,
         dimension: usize,
-        quantizer: Box<dyn Quantizer>,
+        quantizer: Arc<dyn Quantizer>,
         centroids: Vec<f32>,
         entry_sizes: &[usize],
         postings_offset: usize,
@@ -443,7 +438,6 @@ impl IvfField {
             starts.push(total);
         }
         let (block_starts, _) = block_layout(quantizer.as_ref(), &starts)?;
-        let (prepared, prepared_len) = prepare_centroids(quantizer.as_ref(), &centroids, dimension);
         Ok(IvfField {
             number,
             similarity,
@@ -451,12 +445,15 @@ impl IvfField {
             dimension,
             count: slot_docs.len(),
             vector_bytes: 0,
-            quantizer,
-            prepared,
-            prepared_len,
-            router: Router::new(&centroids, dimension, similarity, Routing::Exact, None),
-            tree_parents: None,
-            centroids,
+            res: Arc::new(Resident::new(
+                quantizer,
+                centroids,
+                dimension,
+                similarity,
+                Routing::Exact,
+                None,
+            )),
+            model: None,
             starts,
             primary_starts: Vec::new(),
             block_starts,
@@ -469,6 +466,18 @@ impl IvfField {
             radii: Vec::new(),
             calibration: None,
         })
+    }
+
+    /// The shared model the field's centroids and quantizer come from, if it
+    /// names one.
+    pub fn model(&self) -> Option<&SharedModel> {
+        self.model.as_deref()
+    }
+
+    /// Whether the field stores no codes: a probed cluster's full-precision
+    /// vectors are scored exactly ([`lucene_vector_quant::flat`]).
+    pub(crate) fn is_flat(&self) -> bool {
+        self.res.quantizer.name() == lucene_vector_quant::flat::NAME
     }
 
     /// The search depth calibrated when the field was written, if it was.
@@ -546,13 +555,13 @@ impl IvfField {
 
     /// The quantizer the codes were made with.
     pub fn quantizer(&self) -> &dyn Quantizer {
-        self.quantizer.as_ref()
+        self.res.quantizer.as_ref()
     }
 
     /// Consumes an in-memory field built for calibration and returns its
     /// quantizer.
-    pub(crate) fn into_quantizer(self) -> Box<dyn Quantizer> {
-        self.quantizer
+    pub(crate) fn into_quantizer(self) -> Arc<dyn Quantizer> {
+        Arc::clone(&self.res.quantizer)
     }
 
     /// Cluster `c`'s centroid.
@@ -561,12 +570,12 @@ impl IvfField {
     ///
     /// When `c` is not below [`IvfField::clusters`].
     pub fn centroid(&self, c: usize) -> &[f32] {
-        crate::kmeans::row(&self.centroids, self.dimension, c)
+        crate::kmeans::row(&self.res.centroids, self.dimension, c)
     }
 
     /// Every centroid, `clusters * dimension` floats.
     pub(crate) fn centroids(&self) -> &[f32] {
-        &self.centroids
+        &self.res.centroids
     }
 
     /// Cluster `c`'s centroid as the quantizer encodes and scores against it
@@ -577,11 +586,15 @@ impl IvfField {
     ///
     /// When `c` is not below [`IvfField::clusters`].
     pub fn prepared_centroid(&self, c: usize) -> Option<&[f32]> {
-        if self.prepared_len == 0 {
+        if self.res.prepared_len == 0 {
             assert!(c < self.clusters(), "cluster {c} out of range");
             return None;
         }
-        Some(crate::kmeans::row(&self.prepared, self.prepared_len, c))
+        Some(crate::kmeans::row(
+            &self.res.prepared,
+            self.res.prepared_len,
+            c,
+        ))
     }
 
     /// Points `scorer` at cluster `c`'s codes, through the prepared centroid
@@ -655,6 +668,13 @@ impl IvfField {
         self.vectors_offset + s * self.vector_len()
     }
 }
+
+/// The bit of a field's similarity byte in `.ivm` that marks a field of a
+/// shared model.
+pub(crate) const SHARED_FLAG: u8 = 0x80;
+
+/// Finds the shared model a field names by its id.
+pub type ModelResolver<'a> = dyn Fn(&str) -> Option<Arc<SharedModel>> + 'a;
 
 /// A reader over one segment's IVF files.
 pub struct IvfReader {
@@ -740,36 +760,25 @@ fn add(a: usize, b: usize, what: &str) -> Result<usize> {
         .map_or_else(|| corrupt(format!("{what} overflows")), Ok)
 }
 
-/// `centroids` (rows of `dimension` floats) through
-/// `Quantizer::prepare_centroid`, laid end to end, and the length of one; empty
-/// and 0 unless the quantizer prepares every centroid to one non-zero length.
-fn prepare_centroids(
-    quantizer: &dyn Quantizer,
-    centroids: &[f32],
-    dimension: usize,
-) -> (Vec<f32>, usize) {
-    let rows = centroids.chunks_exact(dimension.max(1));
-    let clusters = rows.len();
-    let prepared: Vec<Vec<f32>> = rows.map_while(|c| quantizer.prepare_centroid(c)).collect();
-    let len = prepared.first().map_or(0, Vec::len);
-    if len == 0 || prepared.len() != clusters || prepared.iter().any(|p| p.len() != len) {
-        return (Vec::new(), 0);
-    }
-    (prepared.concat(), len)
-}
-
 /// Reads one field's meta entry and checks its regions against the files.
 fn read_field(
     input: &mut SliceInput<'_>,
     version: i32,
     registry: &QuantizerRegistry,
+    models: &ModelResolver<'_>,
     postings_end: usize,
     vectors_end: usize,
 ) -> Result<IvfField> {
     let mut number = [0u8; 4];
     input.read_bytes(&mut number)?;
     let number = i32::from_le_bytes(number);
-    let ordinal = input.read_byte()?;
+    let mut ordinal = input.read_byte()?;
+    // From `VERSION_SHARED_MODEL`, the similarity byte's top bit says the
+    // field names a shared model; older files never set it.
+    let shared = version >= VERSION_SHARED_MODEL && ordinal & SHARED_FLAG != 0;
+    if shared {
+        ordinal &= !SHARED_FLAG;
+    }
     let Some(similarity) = similarity_from_ordinal(ordinal) else {
         return corrupt(format!("field {number}: unknown similarity {ordinal}"));
     };
@@ -787,20 +796,50 @@ fn read_field(
         return corrupt(format!("field {number}: zero dimension"));
     }
     let count = read_count(input, "vector count")?;
-    let name = input.read_string()?;
-    let state_len = read_count(input, "state length")?;
-    if state_len > input.remaining() {
-        return corrupt(format!(
-            "field {number}: state of {state_len} bytes past the end"
-        ));
-    }
-    let mut state = vec![0u8; state_len];
-    input.read_bytes(&mut state)?;
-    let quantizer = registry.get(&name)?.read(dimension, similarity, &state)?;
+    let mut model = None;
+    let quantizer: Arc<dyn Quantizer> = if shared {
+        let id = input.read_string()?;
+        let mut crc = [0u8; 4];
+        input.read_bytes(&mut crc)?;
+        let crc = u32::from_le_bytes(crc);
+        let Some(m) = models(&id) else {
+            return Err(Error::IllegalArgument(format!(
+                "field {number} names shared model [{id}], which the reader was not given"
+            )));
+        };
+        if m.crc() != crc || m.dimension() != dimension || m.similarity() != similarity {
+            return corrupt(format!(
+                "field {number}: shared model [{id}] changed: the segment records checksum \
+                 {crc:08x}, dimension {dimension}, {similarity:?}; the model is {:08x}, {}, {:?}",
+                m.crc(),
+                m.dimension(),
+                m.similarity()
+            ));
+        }
+        let q = m.quantizer_arc();
+        model = Some(m);
+        q
+    } else {
+        let name = input.read_string()?;
+        let state_len = read_count(input, "state length")?;
+        if state_len > input.remaining() {
+            return corrupt(format!(
+                "field {number}: state of {state_len} bytes past the end"
+            ));
+        }
+        let mut state = vec![0u8; state_len];
+        input.read_bytes(&mut state)?;
+        Arc::from(registry.get(&name)?.read(dimension, similarity, &state)?)
+    };
     let nlist = read_count(input, "cluster count")?;
     // Each cluster's entry count takes at least a byte of what is left, which
-    // bounds the allocations below by the meta file's size.
-    if (nlist == 0) != (count == 0) || nlist > count || nlist > input.remaining() {
+    // bounds the allocations below by the meta file's size. A shared model's
+    // clusters may hold no vector of this segment.
+    let shape_ok = match &model {
+        Some(m) => nlist == m.nlist(),
+        None => (nlist == 0) == (count == 0) && nlist <= count,
+    };
+    if !shape_ok || nlist > input.remaining() {
         return corrupt(format!(
             "field {number}: {nlist} clusters for {count} vectors"
         ));
@@ -808,20 +847,23 @@ fn read_field(
     let postings_offset = read_offset(input, "postings offset")?;
     let vectors_offset = read_offset(input, "vectors offset")?;
     let doc_table_offset = read_offset(input, "doc table offset")?;
-    let centroid_bytes = mul(mul(nlist, dimension, "centroids")?, 4, "centroids")?;
-    if centroid_bytes > input.remaining() {
-        return corrupt(format!("field {number}: centroids past the end"));
-    }
-    let mut centroids = Vec::with_capacity(centroid_bytes / 4);
-    for _ in 0..centroid_bytes / 4 {
-        centroids.push(read_f32(input)?);
+    let mut centroids = Vec::new();
+    if model.is_none() {
+        let centroid_bytes = mul(mul(nlist, dimension, "centroids")?, 4, "centroids")?;
+        if centroid_bytes > input.remaining() {
+            return corrupt(format!("field {number}: centroids past the end"));
+        }
+        centroids.reserve(centroid_bytes / 4);
+        for _ in 0..centroid_bytes / 4 {
+            centroids.push(read_f32(input)?);
+        }
     }
     let mut starts = Vec::with_capacity(nlist.saturating_add(1));
     let mut total = 0usize;
     starts.push(0);
     for _ in 0..nlist {
         let size = read_count(input, "cluster size")?;
-        if size == 0 {
+        if size == 0 && model.is_none() {
             return corrupt(format!("field {number}: empty cluster"));
         }
         total = add(total, size, "cluster sizes")?;
@@ -923,6 +965,9 @@ fn read_field(
         false
     };
     let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
+    if tree_parents.is_some() && model.is_some() {
+        return corrupt(format!("field {number}: a shared-model field with a tree"));
+    }
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
     }
@@ -938,7 +983,17 @@ fn read_field(
             "field {number}: vectors or doc table out of bounds"
         ));
     }
-    let (prepared, prepared_len) = prepare_centroids(quantizer.as_ref(), &centroids, dimension);
+    let res = match &model {
+        Some(m) => Arc::clone(&m.resident),
+        None => Arc::new(Resident::new(
+            quantizer,
+            centroids,
+            dimension,
+            similarity,
+            Routing::Auto,
+            tree_parents,
+        )),
+    };
     Ok(IvfField {
         number,
         similarity,
@@ -946,18 +1001,8 @@ fn read_field(
         dimension,
         count,
         vector_bytes,
-        quantizer,
-        prepared,
-        prepared_len,
-        router: Router::new(
-            &centroids,
-            dimension,
-            similarity,
-            Routing::Auto,
-            tree_parents.as_deref(),
-        ),
-        tree_parents,
-        centroids,
+        res,
+        model,
         starts,
         primary_starts,
         block_starts,
@@ -1273,30 +1318,33 @@ impl IvfField {
     /// The `nprobe` clusters nearest to `query`, nearest first (see
     /// [`Router::route`]).
     pub(crate) fn probe_order(&self, query: &[f32], nprobe: usize) -> Vec<usize> {
-        self.router.route(&self.centroids, query, nprobe)
+        self.res.router.route(&self.res.centroids, query, nprobe)
     }
 
-    /// Rebuilds the router (the default is [`Routing::Auto`]).
+    /// Rebuilds the router (the default is [`Routing::Auto`]). A field of a
+    /// shared model gets a router of its own; the model's is untouched.
     pub fn set_routing(&mut self, routing: Routing) {
-        self.router = Router::new(
-            &self.centroids,
+        let r = &self.res;
+        let router = Router::new(
+            &r.centroids,
             self.dimension,
             self.similarity,
             routing,
-            self.tree_parents.as_deref(),
+            r.tree_parents.as_deref(),
         );
+        Arc::make_mut(&mut self.res).router = router;
     }
 
     /// Routes with the tree whose centroid `c` has parent `parents[c]`, as
     /// [`Routing::Auto`] (calibration at write time searches this way).
     pub(crate) fn set_tree(&mut self, parents: Option<Vec<u32>>) {
-        self.tree_parents = parents;
+        Arc::make_mut(&mut self.res).tree_parents = parents;
         self.set_routing(Routing::Auto);
     }
 
     /// Whether the field stores a routing tree.
     pub fn has_routing_tree(&self) -> bool {
-        self.tree_parents.is_some()
+        self.res.tree_parents.is_some()
     }
 
     /// An upper bound on the exact score of every entry of cluster `c` for
@@ -1345,8 +1393,8 @@ impl IvfField {
         order: Order,
         stats: &mut SearchStats,
     ) -> Result<Vec<Candidate>> {
-        let mut scorer = self.quantizer.query_scorer(query);
-        let uses_centroid = self.quantizer.uses_centroid();
+        let mut scorer = self.res.quantizer.query_scorer(query);
+        let uses_centroid = self.res.quantizer.uses_centroid();
         if !uses_centroid {
             self.target(scorer.as_mut(), 0);
         }
@@ -1366,11 +1414,16 @@ impl IvfField {
         let floor = shared.and_then(SharedThreshold::floor);
         let blocks: Vec<(usize, usize)> = probes
             .iter()
+            .filter(|&&c| self.cluster_size(c) > 0)
             .filter(|&&c| floor.is_none_or(|f| self.cluster_bound(query, query_norm, c) >= f))
             .map(|&c| self.block_range(c))
             .collect();
         postings.prefetch_ranges(&blocks);
         for &c in probes {
+            // A shared model's list this segment has no vector in.
+            if self.cluster_size(c) == 0 {
+                continue;
+            }
             if let Some(floor) = shared.and_then(SharedThreshold::floor) {
                 if self.cluster_bound(query, query_norm, c) < floor {
                     stats.clusters_skipped += 1;
@@ -1480,6 +1533,37 @@ impl IvfReader {
         suffix: &str,
         registry: &QuantizerRegistry,
     ) -> Result<Self> {
+        Self::open_with_models(
+            meta,
+            postings,
+            vectors,
+            segment_id,
+            suffix,
+            registry,
+            &|_| None,
+        )
+    }
+
+    /// [`IvfReader::open`] for an index that may hold fields of shared models
+    /// ([`crate::SharedModel`]): `models` gives the model a field names by
+    /// its id. A field's centroids and quantizer are then the model's, shared
+    /// with every other field of that model.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfReader::open`]; and a field naming a model `models` does not
+    /// give ([`Error::IllegalArgument`]), or one whose checksum, dimension or
+    /// similarity differs from what the segment recorded
+    /// ([`Error::Corrupted`]): codes are never read under another codebook.
+    pub fn open_with_models(
+        meta: &[u8],
+        postings: Arc<dyn RangeSource>,
+        vectors: Arc<dyn RangeSource>,
+        segment_id: &[u8; ID_LENGTH],
+        suffix: &str,
+        registry: &QuantizerRegistry,
+        models: &ModelResolver<'_>,
+    ) -> Result<Self> {
         let (postings_version, postings_end) =
             check_source(postings.as_ref(), POSTINGS_CODEC, segment_id, suffix)?;
         let (vectors_version, vectors_end) =
@@ -1503,7 +1587,14 @@ impl IvfReader {
         let field_count = read_count(&mut input, "field count")?;
         let mut fields: Vec<IvfField> = Vec::new();
         for _ in 0..field_count {
-            let mut field = read_field(&mut input, version, registry, postings_end, vectors_end)?;
+            let mut field = read_field(
+                &mut input,
+                version,
+                registry,
+                models,
+                postings_end,
+                vectors_end,
+            )?;
             if fields.iter().any(|f| f.number == field.number) {
                 return corrupt(format!("field {} recorded twice", field.number));
             }
@@ -1864,15 +1955,41 @@ impl IvfReader {
             Probes::Auto => f.auto_nprobe(),
         };
         let (rerank, early_stop) = match params.rerank {
+            _ if f.is_flat() => (0, false),
             Rerank::Fixed(n) => (n, false),
             Rerank::Bounded { cap } => (cap, true),
             Rerank::Auto => (f.auto_rerank(params.k), true),
         };
         let probes = match among {
-            Some(clusters) => f.router.route_among(&f.centroids, &query, clusters, nprobe),
+            Some(clusters) => f
+                .res
+                .router
+                .route_among(&f.res.centroids, &query, clusters, nprobe),
             None => f.probe_order(&query, nprobe),
         };
         let spread = grouping.map_or(1, |g| g.spread.max(1));
+        if f.is_flat() {
+            let candidates = self.scan_flat(
+                f,
+                &query,
+                &probes,
+                params.k.saturating_mul(spread),
+                accept,
+                shared,
+                &mut stats,
+            )?;
+            let hits = match grouping {
+                Some(g) => {
+                    let mut top = GroupTop::new(params.k, g.per_group, g.group);
+                    for c in candidates {
+                        top.offer(c);
+                    }
+                    to_hits(top.into_sorted())
+                }
+                None => to_hits(candidates.into_iter().take(params.k).collect()),
+            };
+            return Ok(SearchOutput { hits, stats });
+        }
         let candidates = f.scan(
             self.postings.as_ref(),
             &query,
@@ -1902,6 +2019,99 @@ impl IvfReader {
             (None, _) => self.rerank(f, &query, &candidates, params.k, shared, &mut stats)?,
         };
         Ok(SearchOutput { hits, stats })
+    }
+
+    /// The best `size` entries of the probed clusters of a codeless field,
+    /// scored exactly from their full-precision vectors, best first, among
+    /// the documents `accept` lets through. A cluster's vectors are
+    /// contiguous in `.ivv` (slots `starts[c]..starts[c + 1]`, there being no
+    /// spill), so each probed cluster is one range read; the postings are not
+    /// read. Clusters that cannot beat `shared` are skipped.
+    // ARITH: a cluster's slots are `starts[c]..starts[c + 1]`, below the
+    // vector count, and its vectors lie inside the region checked at open.
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+    fn scan_flat(
+        &self,
+        f: &IvfField,
+        query: &[f32],
+        probes: &[usize],
+        size: usize,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        shared: Option<&SharedThreshold>,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<Candidate>> {
+        let mut top = Gather::List(Shortlist::new(size.min(f.entries())));
+        let query_norm = simd::dot_f32(query, query).sqrt();
+        let width = f.vector_len();
+        let floor = shared.and_then(SharedThreshold::floor);
+        let ranges: Vec<(usize, usize)> = probes
+            .iter()
+            .filter(|&&c| f.cluster_size(c) > 0)
+            .filter(|&&c| floor.is_none_or(|fl| f.cluster_bound(query, query_norm, c) >= fl))
+            .map(|&c| (f.vector_offset(f.starts[c]), f.cluster_size(c) * width))
+            .collect();
+        self.vectors.prefetch_ranges(&ranges);
+        let mut scratch = vec![0f32; f.dimension];
+        for &c in probes {
+            let n = f.cluster_size(c);
+            if n == 0 {
+                continue;
+            }
+            if let Some(floor) = shared.and_then(SharedThreshold::floor) {
+                if f.cluster_bound(query, query_norm, c) < floor {
+                    stats.clusters_skipped += 1;
+                    continue;
+                }
+            }
+            let first = f.starts[c];
+            let verdicts: Option<Vec<(i32, bool)>> = match accept {
+                Some(a) => {
+                    let mut v = Vec::with_capacity(n);
+                    for slot in first..first + n {
+                        let doc = f.slot_doc(c, slot as u32)?;
+                        v.push((doc, a(doc)));
+                    }
+                    Some(v)
+                }
+                None => None,
+            };
+            let accepted = verdicts
+                .as_ref()
+                .map_or(n, |v| v.iter().filter(|d| d.1).count());
+            stats.accepted += accepted;
+            if accepted == 0 {
+                stats.clusters_empty += 1;
+                continue;
+            }
+            stats.clusters_scanned += 1;
+            let bytes = self.vectors.read(f.vector_offset(first), n * width)?;
+            for (i, raw) in bytes.chunks_exact(width).enumerate() {
+                let slot = first + i;
+                let doc = match &verdicts {
+                    Some(v) if !v[i].1 => continue,
+                    Some(v) => v[i].0,
+                    None => f.slot_doc(c, slot as u32)?,
+                };
+                let score = match vector_util::le_f32s(raw) {
+                    Some(v) if f.encoding == VectorEncoding::F32 => f.similarity.score(query, v),
+                    _ => {
+                        f.encoding.decode(raw, f.slot_centroid(slot), &mut scratch);
+                        f.similarity.score(query, &scratch)
+                    }
+                };
+                if top.competitive(score) {
+                    top.offer(Candidate {
+                        score,
+                        doc,
+                        slot: slot as u32,
+                        bound: 0.0,
+                    });
+                }
+            }
+        }
+        let candidates = top.into_order(Order::Score);
+        stats.candidates = candidates.len();
+        Ok(candidates)
     }
 
     /// The best `k` of `candidates` by exact score. Candidates go in order

@@ -221,8 +221,13 @@ fn half_float_rerank_vectors_still_return_exact_scores() {
 /// into the `.ivm` state.
 #[test]
 fn every_quantizer_writes_its_codes_and_keeps_exact_scores() {
-    use lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS;
+    use lucene_codecs::per_field_knn_vectors::{is_model_quantizer, IVF_QUANTIZERS};
     for (number, name) in IVF_QUANTIZERS.iter().enumerate() {
+        // `pq` and `flat` are a shared model's: a segment trains neither.
+        if is_model_quantizer(number as u8) {
+            assert!(KnnVectorsFormat::ivf_quantized(128, 1, number as u8).is_err());
+            continue;
+        }
         let tmp = TempDir::new(&format!("knn-ivf-{name}"));
         let dir = FsDirectory::open(&tmp);
         build(

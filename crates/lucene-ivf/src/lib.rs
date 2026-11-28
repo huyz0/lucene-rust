@@ -41,7 +41,7 @@
 //!
 //! | file | holds | access |
 //! |---|---|---|
-//! | `.ivm` meta | per field: similarity, rerank vector encoding, dimension, the quantizer's name and state, every centroid, cluster size and radius, the calibrated search depth | read whole at open; small enough to keep in memory |
+//! | `.ivm` meta | per field: similarity, rerank vector encoding, dimension, the quantizer's name and state, every centroid, cluster size and radius, the calibrated search depth; for a field of a shared model, the model's id and checksum in place of the quantizer and centroids | read whole at open; small enough to keep in memory |
 //! | `.ivp` postings | per cluster, contiguous: its slots (`u32` LE, ascending) then its codes as one block in the quantizer's layout (`Quantizer::write_block`: interleaved 32 at a time for fast scan with BBQ) | one range read per probed cluster |
 //! | `.ivv` vectors | full-precision vectors in cluster order, in the field's [`VectorEncoding`] (`f32`, `f16`, `bf16`, or 8-bit residuals from the cluster centroid with a per-vector scale; [`IvfParams::rerank_encoding`]), then a document-to-slot table | one small range read per reranked candidate |
 //!
@@ -60,6 +60,7 @@ pub mod calibrate;
 pub mod encoding;
 pub mod kmeans;
 pub mod merge;
+pub mod model;
 pub mod reader;
 pub mod routing;
 pub mod writer;
@@ -68,12 +69,13 @@ pub use auto::{AutoQuantizer, AUTO_MIN_VECTORS};
 pub use calibrate::{Calibration, DEFAULT_CALIBRATION_RECALL};
 pub use encoding::VectorEncoding;
 pub use merge::{
-    merge_field, merge_field_with_prepared_vectors, merge_field_with_vectors, MergeClustering,
-    MergeSource,
+    merge_field, merge_field_with_model, merge_field_with_prepared_vectors,
+    merge_field_with_vectors, MergeClustering, MergeSource,
 };
+pub use model::SharedModel;
 pub use reader::{
-    segment_nprobe, Grouping, IvfField, IvfReader, Probes, RangeSource, Rerank, ScoredDoc,
-    SearchOutput, SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION,
+    segment_nprobe, Grouping, IvfField, IvfReader, ModelResolver, Probes, RangeSource, Rerank,
+    ScoredDoc, SearchOutput, SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION,
     DEFAULT_RERANK_MULTIPLE,
 };
 pub use routing::Routing;
@@ -117,8 +119,13 @@ pub const VERSION_ROUTING_TREE: i32 = 4;
 /// partition (`IvfWriter::add_partitioned_field`). Version 1 to 4 fields
 /// were not.
 pub const VERSION_PARTITIONS: i32 = 5;
+/// A field of a shared model ([`SharedModel`]) in `.ivm`: its similarity byte
+/// has its top bit set, and the quantizer's name and state and the centroids
+/// are replaced by the model's id and checksum. Version 1 to 5 fields hold
+/// their own.
+pub const VERSION_SHARED_MODEL: i32 = 6;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_PARTITIONS;
+pub const VERSION_CURRENT: i32 = VERSION_SHARED_MODEL;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]

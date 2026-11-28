@@ -52,11 +52,14 @@ use rayon::prelude::*;
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::DataOutput;
-use lucene_vector_quant::QuantizerFactory;
+use std::sync::Arc;
+
+use lucene_vector_quant::{Quantizer, QuantizerFactory};
 
 use crate::calibrate::{self, DEFAULT_CALIBRATION_RECALL};
 use crate::kmeans::{self, KMeansParams, SplitMix64};
 use crate::merge::MergeClustering;
+use crate::model::SharedModel;
 use crate::reader::{IvfField, DEFAULT_PROBE_FRACTION};
 use crate::routing;
 use crate::{
@@ -405,7 +408,7 @@ fn write_count(out: &mut Vec<u8>, v: usize) -> Result<()> {
 /// A candidate quantizer an [`crate::AutoQuantizer`] field was encoded
 /// with: its postings, what calibration found and the bytes per query.
 struct Candidate {
-    quantizer: Box<dyn lucene_vector_quant::Quantizer>,
+    quantizer: Arc<dyn lucene_vector_quant::Quantizer>,
     postings: Vec<u8>,
     evaluation: calibrate::Evaluation,
     cost: f64,
@@ -657,6 +660,43 @@ impl IvfWriter {
         })
     }
 
+    /// Writes `field` against the shared `model`: each vector goes to the
+    /// model's nearest centroid (a block matrix product, ties to the lower
+    /// centroid), its codes are the model quantizer's against that centroid,
+    /// and the field's `.ivm` entry names the model (id and checksum) and
+    /// holds only the cluster sizes and radii: no centroids, no quantizer
+    /// state. A cluster the segment has no vector for stays, empty, so a
+    /// list has the same number in every segment of the model. `params`'
+    /// clustering, quantizer, calibration and routing fields are not used;
+    /// `rerank_encoding` is.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`], and [`Error::IllegalArgument`] when the
+    /// field's dimension or similarity differs from the model's or
+    /// `params.spill` is set (a spilled entry needs the second list's
+    /// codes against a centroid the writer would have to choose).
+    pub fn add_field_with_model(
+        &mut self,
+        field: &FieldVectors<'_>,
+        model: &Arc<SharedModel>,
+        params: &IvfParams,
+    ) -> Result<()> {
+        // The factory is not used: the model holds the quantizer.
+        self.add_prepared_in(
+            field,
+            false,
+            &lucene_vector_quant::flat::FlatFactory,
+            params,
+            false,
+            &mut |_, _| kmeans::Clustering {
+                centroids: Vec::new(),
+                assignments: Vec::new(),
+            },
+            Some(model),
+        )
+    }
+
     /// Checks `field`, clusters its prepared vectors (unit-normalized for
     /// `Cosine`) with `clusterer`, then quantizes and writes it.
     // ARITH: every index and count below is bounded by the field's vector
@@ -688,6 +728,52 @@ impl IvfWriter {
         partitioned: bool,
         clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
+        self.add_prepared_in(
+            field,
+            prepared,
+            factory,
+            params,
+            partitioned,
+            clusterer,
+            None,
+        )
+    }
+
+    /// [`IvfWriter::add_prepared`] for a field of `model` when given: its
+    /// vectors go to the model's nearest centroids (`clusterer` is not
+    /// called), its codes are the model quantizer's, and its meta entry
+    /// names the model instead of holding centroids and quantizer state.
+    // ARITH: as `add_clustered`.
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+    pub(crate) fn add_prepared_in(
+        &mut self,
+        field: &FieldVectors<'_>,
+        prepared: bool,
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+        partitioned: bool,
+        clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
+        model: Option<&Arc<SharedModel>>,
+    ) -> Result<()> {
+        if let Some(m) = model {
+            if (m.dimension(), m.similarity()) != (field.dimension, field.similarity) {
+                return Err(Error::IllegalArgument(format!(
+                    "field {}: model [{}] is {} dimensions, {:?}; the field is {}, {:?}",
+                    field.number,
+                    m.id(),
+                    m.dimension(),
+                    m.similarity(),
+                    field.dimension,
+                    field.similarity
+                )));
+            }
+            if params.spill.is_some() {
+                return Err(Error::IllegalArgument(format!(
+                    "field {}: a field of a shared model is not spilled",
+                    field.number
+                )));
+            }
+        }
         if params
             .calibration_recall
             .is_some_and(|t| !(t > 0.0 && t <= 1.0))
@@ -710,7 +796,15 @@ impl IvfWriter {
         } else {
             kmeans::Metric::L2
         };
-        let clustering = checked_clustering(clusterer(&vectors, metric), n, dim)?;
+        let clustering = match model {
+            // Clusters that hold none of this segment's vectors stay: the
+            // model's list numbers are the same in every segment.
+            Some(m) => kmeans::Clustering {
+                centroids: m.centroids().to_vec(),
+                assignments: m.assign(&vectors),
+            },
+            None => checked_clustering(clusterer(&vectors, metric), n, dim)?,
+        };
         let nlist = clustering.len(dim);
         // Encoded before anything is written, so a refused field leaves the
         // writer as it was; int8 encodes the residual from the primary
@@ -802,7 +896,7 @@ impl IvfWriter {
             .enumerate()
             .flat_map(|(c, e)| e.iter().map(move |&slot| (c as u32, slot)))
             .collect();
-        let tree = (nlist >= params.routing_tree_min.max(2))
+        let tree = (model.is_none() && nlist >= params.routing_tree_min.max(2))
             .then(|| routing::tree_parents(&clustering.centroids, dim, field.similarity));
         let sizes_of_entries: Vec<usize> = entries.iter().map(Vec::len).collect();
         let slot_docs: Vec<i32> = order.iter().map(|&i| i as i32).collect();
@@ -813,78 +907,34 @@ impl IvfWriter {
         let calibration_seed = params.kmeans.seed ^ 0xca1_1b8a_7e5e_ed00;
         // The quantizer, its postings and, when it was picked by calibrating
         // every candidate, the chosen one's calibration.
-        let (quantizer, postings, picked) = match factory.candidates() {
-            Some(candidates) if n >= crate::auto::AUTO_MIN_VECTORS && candidates.len() > 1 => {
-                let truths =
-                    calibrate::Truths::sample(&vectors, dim, field.similarity, calibration_seed);
-                let mut best: Option<Candidate> = None;
-                for candidate in candidates {
-                    let quantizer = candidate.train(dim, field.similarity, &sample)?;
-                    let code_len = quantizer.code_len();
-                    let postings = encode_postings(
-                        quantizer.as_ref(),
-                        &clustering.centroids,
-                        dim,
-                        &entries,
-                        &flat,
-                        &order,
+        let (quantizer, postings, picked) = if let Some(m) = model {
+            let q = m.quantizer_arc();
+            let postings = encode_postings(
+                q.as_ref(),
+                &clustering.centroids,
+                dim,
+                &entries,
+                &flat,
+                &order,
+                &vectors,
+            );
+            (q, postings, None)
+        } else {
+            match factory.candidates() {
+                Some(candidates) if n >= crate::auto::AUTO_MIN_VECTORS && candidates.len() > 1 => {
+                    let truths = calibrate::Truths::sample(
                         &vectors,
-                    );
-                    let mut probe = IvfField::in_memory(
-                        field.number,
-                        field.similarity,
                         dim,
-                        quantizer,
-                        clustering.centroids.clone(),
-                        &sizes_of_entries,
-                        0,
-                        slot_docs.clone(),
-                    )?;
-                    probe.set_tree(tree.clone());
-                    let Some(e) = truths
-                        .as_ref()
-                        .map(|t| {
-                            calibrate::evaluate(
-                                &probe,
-                                &postings,
-                                &vectors,
-                                &clusters_of,
-                                target,
-                                t,
-                            )
-                        })
-                        .transpose()?
-                        .flatten()
-                    else {
-                        continue;
-                    };
-                    let cost = e.scanned * code_len as f64 + e.reranked * vector_cost as f64;
-                    let better = best.as_ref().is_none_or(|b| {
-                        let (b, c) = (&b.evaluation, b.cost);
-                        match (e.reached, b.reached) {
-                            (true, false) => true,
-                            (false, true) => false,
-                            (true, true) => cost < c,
-                            (false, false) => {
-                                e.recall > b.recall || (e.recall == b.recall && cost < c)
-                            }
-                        }
-                    });
-                    if better {
-                        best = Some(Candidate {
-                            quantizer: probe.into_quantizer(),
-                            postings,
-                            evaluation: e,
-                            cost,
-                        });
-                    }
-                }
-                match best {
-                    Some(b) => (b.quantizer, b.postings, Some(b.evaluation.calibration)),
-                    None => {
-                        let q = candidates[0].train(dim, field.similarity, &sample)?;
+                        field.similarity,
+                        calibration_seed,
+                    );
+                    let mut best: Option<Candidate> = None;
+                    for candidate in candidates {
+                        let quantizer: Arc<dyn Quantizer> =
+                            Arc::from(candidate.train(dim, field.similarity, &sample)?);
+                        let code_len = quantizer.code_len();
                         let postings = encode_postings(
-                            q.as_ref(),
+                            quantizer.as_ref(),
                             &clustering.centroids,
                             dim,
                             &entries,
@@ -892,22 +942,87 @@ impl IvfWriter {
                             &order,
                             &vectors,
                         );
-                        (q, postings, None)
+                        let mut probe = IvfField::in_memory(
+                            field.number,
+                            field.similarity,
+                            dim,
+                            quantizer,
+                            clustering.centroids.clone(),
+                            &sizes_of_entries,
+                            0,
+                            slot_docs.clone(),
+                        )?;
+                        probe.set_tree(tree.clone());
+                        let Some(e) = truths
+                            .as_ref()
+                            .map(|t| {
+                                calibrate::evaluate(
+                                    &probe,
+                                    &postings,
+                                    &vectors,
+                                    &clusters_of,
+                                    target,
+                                    t,
+                                )
+                            })
+                            .transpose()?
+                            .flatten()
+                        else {
+                            continue;
+                        };
+                        let cost = e.scanned * code_len as f64 + e.reranked * vector_cost as f64;
+                        let better = best.as_ref().is_none_or(|b| {
+                            let (b, c) = (&b.evaluation, b.cost);
+                            match (e.reached, b.reached) {
+                                (true, false) => true,
+                                (false, true) => false,
+                                (true, true) => cost < c,
+                                (false, false) => {
+                                    e.recall > b.recall || (e.recall == b.recall && cost < c)
+                                }
+                            }
+                        });
+                        if better {
+                            best = Some(Candidate {
+                                quantizer: probe.into_quantizer(),
+                                postings,
+                                evaluation: e,
+                                cost,
+                            });
+                        }
+                    }
+                    match best {
+                        Some(b) => (b.quantizer, b.postings, Some(b.evaluation.calibration)),
+                        None => {
+                            let q: Arc<dyn Quantizer> =
+                                Arc::from(candidates[0].train(dim, field.similarity, &sample)?);
+                            let postings = encode_postings(
+                                q.as_ref(),
+                                &clustering.centroids,
+                                dim,
+                                &entries,
+                                &flat,
+                                &order,
+                                &vectors,
+                            );
+                            (q, postings, None)
+                        }
                     }
                 }
-            }
-            _ => {
-                let q = factory.train(dim, field.similarity, &sample)?;
-                let postings = encode_postings(
-                    q.as_ref(),
-                    &clustering.centroids,
-                    dim,
-                    &entries,
-                    &flat,
-                    &order,
-                    &vectors,
-                );
-                (q, postings, None)
+                _ => {
+                    let q: Arc<dyn Quantizer> =
+                        Arc::from(factory.train(dim, field.similarity, &sample)?);
+                    let postings = encode_postings(
+                        q.as_ref(),
+                        &clustering.centroids,
+                        dim,
+                        &entries,
+                        &flat,
+                        &order,
+                        &vectors,
+                    );
+                    (q, postings, None)
+                }
             }
         };
         let postings_offset = self.postings.len();
@@ -982,6 +1097,7 @@ impl IvfWriter {
         let name = quantizer.name().to_string();
         let state = quantizer.state();
         let calibration = match params.calibration_recall {
+            _ if model.is_some() => None,
             Some(_) if picked.is_some() => picked,
             Some(target) => {
                 let mut probe = IvfField::in_memory(
@@ -1009,19 +1125,36 @@ impl IvfWriter {
 
         let m = &mut self.fields;
         m.write_bytes(&field.number.to_le_bytes());
-        m.write_byte(similarity_ordinal(field.similarity));
+        m.write_byte(
+            similarity_ordinal(field.similarity)
+                | if model.is_some() {
+                    crate::reader::SHARED_FLAG
+                } else {
+                    0
+                },
+        );
         m.write_byte(encoding.ordinal());
         write_count(m, dim)?;
         write_count(m, n)?;
-        m.write_string(&name);
-        write_count(m, state.len())?;
-        m.write_bytes(&state);
+        match model {
+            Some(model) => {
+                m.write_string(model.id());
+                m.write_bytes(&model.crc().to_le_bytes());
+            }
+            None => {
+                m.write_string(&name);
+                write_count(m, state.len())?;
+                m.write_bytes(&state);
+            }
+        }
         write_count(m, nlist)?;
         write_len(m, postings_offset);
         write_len(m, vectors_offset);
         write_len(m, doc_table_offset);
-        for x in &clustering.centroids {
-            m.write_bytes(&x.to_le_bytes());
+        if model.is_none() {
+            for x in &clustering.centroids {
+                m.write_bytes(&x.to_le_bytes());
+            }
         }
         for e in &entries {
             write_count(m, e.len())?;
