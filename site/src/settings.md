@@ -18,6 +18,17 @@ a setting the plugin adds is not named in this documentation.
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false` rolls the node back to OpenSearch's engine |
 | `search.accelerated.direct.enabled` | node, at start | `true` | answer plain searches on a single-shard accelerated index from the REST layer (2-3x on cheap shapes; skips tasks and search stats, never on with the security plugin) |
 
+## SQL
+
+Read-only SQL at `/_plugins/accelerated/sql` (GET or POST, `{"query": "..."}`, `format=jdbc|json`), next to and not instead of the stock `/_plugins/_sql`. One table per statement, an index with one shard.
+
+| Setting | Scope | Default | Meaning |
+|---|---|---|---|
+| `plugins.accelerated.sql.enabled` | node | `true` | serve the endpoint |
+| `plugins.accelerated.sql.direct` | node, at start | `true` | run statements from the REST layer on a started local shard (skips tasks and the security plugin's checks, so never on with the security plugin; there statements go through a security-checked transport action) |
+| `plugins.accelerated.sql.max_rows` | node | 10000 | the most rows a statement may return; add a `LIMIT` |
+| `plugins.accelerated.sql.memory_limit` | node | 512 MB | bytes the fallback engine's operators may hold |
+
 ## Memory
 
 | Setting | Scope | Default | Meaning |

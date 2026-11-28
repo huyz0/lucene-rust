@@ -19,6 +19,8 @@ datafusion = { version = "56", default-features = false, features = ["sql"], opt
 # interface the export hands to pyarrow, Polars and DuckDB.
 arrow = { version = "60", default-features = false, features = ["ffi"] }
 thiserror.workspace = true
+itoa = "1"
+ryu = "1"
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"], optional = true }
@@ -31,4 +33,5 @@ default = ["sql"]
 sql = ["dep:datafusion", "dep:async-trait", "dep:futures", "dep:tokio"]
 
 [dev-dependencies]
+serde_json = "1"
 lucene-util = { path = "../lucene-util", features = ["test-support"] }

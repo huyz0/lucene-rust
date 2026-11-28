@@ -168,7 +168,7 @@ fn columns_the_index_lacks_read_as_null() {
     // The group-by cannot use a keyword the segments lack.
     assert!(f
         .snapshot()
-        .group_by(6, &[lucene_sql::group::AggFn::CountStar])
+        .group_by(6, &[lucene_sql::group::AggFn::CountStar], &[])
         .unwrap()
         .is_none());
     let g = run(&f, "SELECT nokw, count(*) FROM t GROUP BY nokw");
@@ -215,6 +215,7 @@ fn a_memory_limit_stops_a_statement_instead_of_growing() {
         worker_threads: 0,
         target_partitions: 1,
         plan_cache: true,
+        ..SqlConfig::default()
     };
     let f = fixture_with(3000, 1, &[], spec(), &config);
     let r = f
@@ -304,4 +305,35 @@ fn the_top_k_rule_reaches_through_projections_and_only_for_score_desc() {
         "SELECT id, _score FROM t WHERE {w} ORDER BY _score DESC LIMIT 5"
     ));
     assert!(p.contains("fetch=5"), "{p}");
+}
+
+#[test]
+fn a_statement_with_more_rows_than_the_limit_fails_instead_of_collecting() {
+    let config = SqlConfig {
+        worker_threads: 0,
+        max_rows: 100,
+        ..SqlConfig::default()
+    };
+    let f = fixture_with(3000, 1, &[], spec(), &config);
+    let err = f
+        .engine
+        .query_blocking("SELECT id, price FROM t ORDER BY price, id")
+        .unwrap_err();
+    assert!(err.to_string().contains("more than 100 rows"), "{err}");
+    let ok = f
+        .engine
+        .query_blocking("SELECT id, price FROM t ORDER BY price, id LIMIT 100")
+        .unwrap();
+    assert_eq!(ok.iter().map(|b| b.num_rows()).sum::<usize>(), 100);
+}
+
+#[test]
+fn an_empty_result_keeps_its_schema() {
+    let f = fixture_with(10, 1, &[], spec(), &SqlConfig::default());
+    let batches = f
+        .engine
+        .query_blocking("SELECT id, price FROM t WHERE price > 1000000000 ORDER BY price")
+        .unwrap();
+    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+    assert_eq!(batches[0].schema().fields().len(), 2);
 }

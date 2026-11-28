@@ -9,8 +9,8 @@
 //! The rule fires only where the answer is the one SQL gives: one keyword
 //! group column that every document has (SQL would otherwise print a NULL
 //! group), `count(*)` and `count`/`sum`/`min`/`max`/`avg` of a long column, no
-//! `DISTINCT`, `FILTER` or `ORDER BY` inside an aggregate, and a scan with no
-//! predicates and no limit. Sums and extremes the kernels' `f64` cannot hold
+//! `DISTINCT`, `FILTER` or `ORDER BY` inside an aggregate, and a scan with only
+//! equality and range predicates and no limit. Sums and extremes the kernels' `f64` cannot hold
 //! exactly are caught when the statement runs ([`KernelInexact`]); the engine
 //! then plans the statement again without this rule.
 
@@ -35,6 +35,7 @@ use datafusion::physical_plan::{
 
 use crate::error::{external, KernelInexact};
 use crate::group::AggFn;
+use crate::pred::{self, Pred};
 use crate::provider::LuceneTable;
 use crate::snapshot::Snapshot;
 use crate::spec::ColumnKind;
@@ -90,7 +91,7 @@ fn rewrite_aggregate(agg: &Aggregate) -> Result<Option<LogicalPlan>> {
     let LogicalPlan::TableScan(scan) = &*agg.input else {
         return Ok(None);
     };
-    if !scan.filters.is_empty() || scan.fetch.is_some() {
+    if scan.fetch.is_some() {
         return Ok(None);
     }
     let provider = source_as_provider(&scan.source)?;
@@ -98,6 +99,14 @@ fn rewrite_aggregate(agg: &Aggregate) -> Result<Option<LogicalPlan>> {
         return Ok(None);
     };
     let snapshot = table.snapshot();
+    let Some(preds) = scan
+        .filters
+        .iter()
+        .map(|e| pred::parse(snapshot.spec(), e).filter(|p| !p.is_scoring()))
+        .collect::<Option<Vec<Pred>>>()
+    else {
+        return Ok(None);
+    };
     let [Expr::Column(key)] = agg.group_expr.as_slice() else {
         return Ok(None);
     };
@@ -132,6 +141,7 @@ fn rewrite_aggregate(agg: &Aggregate) -> Result<Option<LogicalPlan>> {
         snapshot: snapshot.clone(),
         key: key_index,
         aggs,
+        preds,
         schema: Arc::new(Schema::new(fields)),
     });
     let new_scan = LogicalPlan::TableScan(
@@ -180,6 +190,7 @@ struct GroupTable {
     snapshot: Arc<Snapshot>,
     key: usize,
     aggs: Vec<AggFn>,
+    preds: Vec<Pred>,
     schema: SchemaRef,
 }
 
@@ -208,6 +219,7 @@ impl TableProvider for GroupTable {
             snapshot: self.snapshot.clone(),
             key: self.key,
             aggs: self.aggs.clone(),
+            preds: self.preds.clone(),
             schema: self.schema.clone(),
             props: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(self.schema.clone()),
@@ -223,6 +235,7 @@ struct GroupScanExec {
     snapshot: Arc<Snapshot>,
     key: usize,
     aggs: Vec<AggFn>,
+    preds: Vec<Pred>,
     schema: SchemaRef,
     props: Arc<PlanProperties>,
 }
@@ -235,7 +248,11 @@ impl fmt::Debug for GroupScanExec {
 
 impl DisplayAs for GroupScanExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GroupScanExec: key={}, aggs={:?}", self.key, self.aggs)
+        write!(
+            f,
+            "GroupScanExec: key={}, aggs={:?}, preds={:?}",
+            self.key, self.aggs, self.preds
+        )
     }
 }
 
@@ -270,7 +287,7 @@ impl ExecutionPlan for GroupScanExec {
     ) -> Result<SendableRecordBatchStream> {
         let grouped = self
             .snapshot
-            .group_by(self.key, &self.aggs)
+            .group_by(self.key, &self.aggs, &self.preds)
             .map_err(external)?
             .ok_or_else(|| {
                 external(KernelInexact(

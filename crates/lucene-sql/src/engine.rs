@@ -34,6 +34,9 @@ pub struct SqlConfig {
     /// Keep physical plans by statement shape so a repeated shape is not
     /// planned again.
     pub plan_cache: bool,
+    /// Rows a statement may return; one more fails it, so a statement with no
+    /// `LIMIT` over a big table does not collect the table.
+    pub max_rows: usize,
 }
 
 impl Default for SqlConfig {
@@ -44,8 +47,18 @@ impl Default for SqlConfig {
             worker_threads: cpus,
             target_partitions: cpus,
             plan_cache: true,
+            max_rows: 10_000,
         }
     }
+}
+
+/// Which path answered a statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Path {
+    /// A hot shape, answered by the native API directly.
+    Router,
+    /// DataFusion.
+    Standard,
 }
 
 /// The batches of a statement as DataFusion produces them.
@@ -101,8 +114,9 @@ pub struct SqlEngine {
     /// The same tables without the aggregation-kernel rule, for statements
     /// the kernels cannot answer exactly.
     plain: SessionContext,
-    runtime: tokio::runtime::Runtime,
+    runtime: Arc<tokio::runtime::Runtime>,
     plans: Option<PlanCache>,
+    max_rows: usize,
 }
 
 fn read_only() -> SQLOptions {
@@ -118,16 +132,36 @@ impl SqlEngine {
     /// # Errors
     /// DataFusion could not register the table or start its runtime.
     pub fn new(snapshot: Arc<Snapshot>, config: &SqlConfig) -> Result<Self> {
-        let ctx = Self::context_for(&snapshot, config, true)?;
-        let plain = Self::context_for(&snapshot, config, false)?;
-        let runtime = if config.worker_threads == 0 {
+        Self::with_runtime(snapshot, config, Arc::new(Self::runtime_for(config)?))
+    }
+
+    /// The runtime `config` asks for, to share between engines.
+    ///
+    /// # Errors
+    /// The runtime could not start.
+    pub fn runtime_for(config: &SqlConfig) -> Result<tokio::runtime::Runtime> {
+        if config.worker_threads == 0 {
             tokio::runtime::Builder::new_current_thread().build()
         } else {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(config.worker_threads)
                 .build()
         }
-        .map_err(|e| Error::unsupported(format!("starting the runtime: {e}")))?;
+        .map_err(|e| Error::unsupported(format!("starting the runtime: {e}")))
+    }
+
+    /// An engine over `snapshot` running its scans on `runtime`, which many
+    /// engines (one per snapshot) can share.
+    ///
+    /// # Errors
+    /// DataFusion could not register the table.
+    pub fn with_runtime(
+        snapshot: Arc<Snapshot>,
+        config: &SqlConfig,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Result<Self> {
+        let ctx = Self::context_for(&snapshot, config, true)?;
+        let plain = Self::context_for(&snapshot, config, false)?;
         Ok(Self {
             router: Router::new(snapshot.clone()),
             snapshot,
@@ -135,6 +169,7 @@ impl SqlEngine {
             plain,
             runtime,
             plans: config.plan_cache.then(PlanCache::default),
+            max_rows: config.max_rows,
         })
     }
 
@@ -211,7 +246,7 @@ impl SqlEngine {
     /// As [`Self::query`].
     pub async fn standard(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         if let Some(plans) = &self.plans {
-            match plans.run(&self.ctx, read_only(), sql).await {
+            match plans.run(&self.ctx, read_only(), sql, self.max_rows).await {
                 Ok(Some(batches)) => return Ok(batches),
                 Ok(None) => {}
                 Err(Error::DataFusion(e)) if is_inexact(&e) => return self.plain_run(sql).await,
@@ -226,20 +261,19 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub async fn uncached(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        let run = async {
-            let df = self.ctx.sql_with_options(sql, read_only()).await?;
-            df.collect().await
-        };
-        match run.await {
-            Ok(batches) => Ok(batches),
-            Err(e) if is_inexact(&e) => self.plain_run(sql).await,
-            Err(e) => Err(e.into()),
+        match self.run_on(&self.ctx, sql).await {
+            Err(Error::DataFusion(e)) if is_inexact(&e) => self.plain_run(sql).await,
+            other => other,
         }
     }
 
     async fn plain_run(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        let df = self.plain.sql_with_options(sql, read_only()).await?;
-        Ok(df.collect().await?)
+        self.run_on(&self.plain, sql).await
+    }
+
+    async fn run_on(&self, ctx: &SessionContext, sql: &str) -> Result<Vec<RecordBatch>> {
+        let df = ctx.sql_with_options(sql, read_only()).await?;
+        collect_bounded(df.execute_stream().await?, self.max_rows).await
     }
 
     /// [`Self::query`] from synchronous code; must not be called from inside a
@@ -248,10 +282,20 @@ impl SqlEngine {
     /// # Errors
     /// As [`Self::query`].
     pub fn query_blocking(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        self.query_traced(sql).map(|(batches, _)| batches)
+    }
+
+    /// [`Self::query_blocking`], also saying which path answered. The result
+    /// always has a batch, so its schema is known when no row matched.
+    ///
+    /// # Errors
+    /// As [`Self::query`].
+    pub fn query_traced(&self, sql: &str) -> Result<(Vec<RecordBatch>, Path)> {
         if let Some(batch) = self.router.run(sql)? {
-            return Ok(vec![batch]);
+            return Ok((vec![batch], Path::Router));
         }
-        self.runtime.block_on(self.standard(sql))
+        let batches = self.runtime.block_on(self.standard(sql))?;
+        Ok((batches, Path::Standard))
     }
 
     /// The rows of `sql` as a stream, for a consumer that reads Arrow batches
@@ -297,4 +341,29 @@ impl SqlEngine {
     pub fn standard_blocking(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         self.runtime.block_on(self.standard(sql))
     }
+}
+
+/// Collects `stream`, failing when it holds more than `max_rows` rows.
+pub(crate) async fn collect_bounded(
+    mut stream: datafusion::execution::SendableRecordBatchStream,
+    max_rows: usize,
+) -> Result<Vec<RecordBatch>> {
+    use futures::StreamExt;
+    let schema = stream.schema();
+    let mut rows = 0usize;
+    let mut out = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        rows = rows.saturating_add(batch.num_rows());
+        if rows > max_rows {
+            return Err(Error::unsupported(format!(
+                "the result has more than {max_rows} rows; add a LIMIT"
+            )));
+        }
+        out.push(batch);
+    }
+    if out.is_empty() {
+        out.push(RecordBatch::new_empty(schema));
+    }
+    Ok(out)
 }

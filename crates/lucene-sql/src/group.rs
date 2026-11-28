@@ -6,13 +6,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
-use lucene_aggs::bucket_aggs::{aggregate_tree, AggNode, AggResult, Globals, TermsOrder};
+use lucene_aggs::bucket_aggs::segment_cache::{AggSegmentCache, CacheRequest};
+use lucene_aggs::bucket_aggs::{aggregate_tree_cached, AggNode, AggResult, Globals, TermsOrder};
 use lucene_aggs::metric_aggs::{
     MetricState, Source, ValueKind, NEED_COUNT, NEED_MIN_MAX, NEED_SUM,
 };
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery};
 
 use crate::error::{Error, Result};
+use crate::native::filter_clauses;
+use crate::pred::Pred;
 use crate::snapshot::Snapshot;
 use crate::spec::ColumnKind;
 
@@ -57,7 +60,7 @@ pub struct Grouped {
 }
 
 impl Snapshot {
-    /// Groups every live document by the keyword column `key` and computes
+    /// Groups every live document matching the equality and range `preds` by the keyword column `key` and computes
     /// `aggs` per group on the aggregation kernels.
     ///
     /// Returns `None` when the kernels cannot give exactly the answer a SQL
@@ -68,7 +71,7 @@ impl Snapshot {
     /// # Errors
     /// `key` is not a keyword column, an aggregated column is not a long
     /// column, or the index is unreadable.
-    pub fn group_by(&self, key: usize, aggs: &[AggFn]) -> Result<Option<Grouped>> {
+    pub fn group_by(&self, key: usize, aggs: &[AggFn], preds: &[Pred]) -> Result<Option<Grouped>> {
         let spec = self.spec();
         let key_col = spec
             .columns()
@@ -118,8 +121,14 @@ impl Snapshot {
             order: TermsOrder::KeyAsc,
             subs,
         };
+        let filter = filter_clauses(self, preds);
         let query = BooleanQuery {
-            must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(self.max_doc()))],
+            must: if filter.is_empty() {
+                vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(self.max_doc()))]
+            } else {
+                Vec::new()
+            },
+            filter,
             ..BooleanQuery::default()
         };
         let ords: HashMap<String, Arc<_>> = HashMap::from([(
@@ -127,8 +136,13 @@ impl Snapshot {
             self.reader().global_ords(&key_col.name)?,
         )]);
         let slices = vec![(0..self.segment_count()).collect::<Vec<_>>()];
+        let cache = AggSegmentCache::global();
+        let request = self
+            .agg_identities()
+            .filter(|_| cache.budget() > 0 && preds.is_empty())
+            .map(|segments| CacheRequest { cache, segments });
         let mut out = self.with_searcher(|s| {
-            Ok(aggregate_tree(
+            Ok(aggregate_tree_cached(
                 s.segments,
                 s.leaves,
                 &query,
@@ -136,6 +150,7 @@ impl Snapshot {
                 &Globals::new(&ords),
                 &slices,
                 None,
+                request.as_ref(),
             )?)
         })?;
         let Some(AggResult::Terms { buckets, subs }) = out.pop().and_then(|mut r| r.pop()) else {

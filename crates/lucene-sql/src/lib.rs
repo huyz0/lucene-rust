@@ -22,6 +22,8 @@ pub mod group;
 pub mod group_rule;
 pub mod native;
 #[cfg(feature = "sql")]
+pub mod output;
+#[cfg(feature = "sql")]
 pub mod plan_cache;
 #[cfg(feature = "sql")]
 pub mod pred;
@@ -33,9 +35,15 @@ pub mod router;
 pub mod rule;
 pub mod snapshot;
 pub mod spec;
+#[cfg(feature = "sql")]
+pub mod statement;
 pub use arrow;
 #[cfg(feature = "sql")]
-pub use engine::{SqlConfig, SqlEngine};
+pub use engine::{Path, SqlConfig, SqlEngine};
+
+/// The runtime engines run their scans on, shared between engines.
+#[cfg(feature = "sql")]
+pub type Runtime = tokio::runtime::Runtime;
 pub use error::{Error, Result};
 pub use snapshot::Snapshot;
 pub use spec::TableSpec;

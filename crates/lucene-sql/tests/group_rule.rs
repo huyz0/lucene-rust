@@ -70,10 +70,11 @@ fn deleted_documents_do_not_count() {
 }
 
 #[test]
-fn a_filter_or_other_aggregate_keeps_the_standard_plan() {
+fn a_filter_the_scan_cannot_answer_or_other_aggregate_keeps_the_standard_plan() {
     let f = fixture(N, 2, &[]);
     for sql in [
-        "SELECT cat, count(*) FROM t WHERE price > 10 GROUP BY cat",
+        "SELECT cat, count(*) FROM t WHERE price + 1 > 10 GROUP BY cat",
+        "SELECT cat, count(*) FROM t WHERE price > 10 OR cat = 'c01' GROUP BY cat",
         "SELECT cat, count(distinct price) FROM t GROUP BY cat",
         "SELECT price, count(*) FROM t GROUP BY price",
     ] {

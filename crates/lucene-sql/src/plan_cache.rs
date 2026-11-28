@@ -25,9 +25,10 @@ use std::sync::{Arc, Mutex};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::physical_plan::execution_plan::reset_plan_states;
-use datafusion::physical_plan::{collect, displayable, ExecutionPlan};
+use datafusion::physical_plan::{displayable, execute_stream, ExecutionPlan};
 use datafusion::prelude::{SQLOptions, SessionContext};
 
+use crate::engine::collect_bounded;
 use crate::error::Result;
 use crate::provider::SegScanExec;
 use crate::router::templatize_with;
@@ -90,6 +91,7 @@ impl PlanCache {
         ctx: &SessionContext,
         options: SQLOptions,
         sql: &str,
+        max_rows: usize,
     ) -> Result<Option<Vec<RecordBatch>>> {
         let Some((template, lits)) = templatize_with(sql, marker) else {
             return Ok(None);
@@ -140,7 +142,8 @@ impl PlanCache {
             })?
             .data;
         let fresh = reset_plan_states(bound)?;
-        Ok(Some(collect(fresh, ctx.task_ctx()).await?))
+        let stream = execute_stream(fresh, ctx.task_ctx())?;
+        Ok(Some(collect_bounded(stream, max_rows).await?))
     }
 }
 

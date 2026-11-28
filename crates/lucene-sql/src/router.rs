@@ -556,7 +556,7 @@ impl Router {
                 aggs,
                 names,
             } => {
-                let Some(g) = snap.group_by(*key, aggs)? else {
+                let Some(g) = snap.group_by(*key, aggs, &[])? else {
                     return Ok(None);
                 };
                 let arrays: Vec<ArrayRef> = items

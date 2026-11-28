@@ -105,6 +105,7 @@ mod jvm_highlight_fvh;
 mod jvm_highlight_plain;
 mod jvm_knn;
 mod jvm_reader;
+mod jvm_sql;
 mod live;
 mod memory;
 mod ml;

@@ -8,8 +8,8 @@ use datafusion::arrow::util::display::array_value_to_string;
 use lucene_codecs::field_infos::VectorSimilarityFunction;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
-    Document, KeywordField, KnnFloatVectorField, NumericDocValuesField, Store, StringField,
-    TextField,
+    Document, KeywordField, KnnFloatVectorField, LongField, NumericDocValuesField, Store,
+    StringField, TextField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
@@ -126,6 +126,30 @@ pub fn fixture_docs(
     spec: TableSpec,
     config: &SqlConfig,
 ) -> Fixture {
+    build(docs, segments, delete, spec, config, false)
+}
+
+/// As [`fixture`] with `price` indexed as OpenSearch does: a point and a
+/// sorted-numeric doc value.
+pub fn fixture_points(n: usize, segments: usize, delete: &[usize]) -> Fixture {
+    build(
+        corpus(n),
+        segments,
+        delete,
+        spec(),
+        &SqlConfig::default(),
+        true,
+    )
+}
+
+fn build(
+    docs: Vec<Doc>,
+    segments: usize,
+    delete: &[usize],
+    spec: TableSpec,
+    config: &SqlConfig,
+    points: bool,
+) -> Fixture {
     let dir = TempDir::new("sql");
     let n = docs.len();
     {
@@ -136,7 +160,11 @@ pub fn fixture_docs(
             let mut doc = Document::new();
             doc.add(StringField::new("id", d.id.clone(), Store::Yes));
             doc.add(TextField::new("body", d.body.clone(), Store::No));
-            doc.add(NumericDocValuesField::new("price", d.price));
+            if points {
+                doc.add(LongField::new("price", d.price, Store::No));
+            } else {
+                doc.add(NumericDocValuesField::new("price", d.price));
+            }
             if !d.cat.is_empty() {
                 doc.add(KeywordField::new("cat", d.cat.clone(), Store::No));
             }
