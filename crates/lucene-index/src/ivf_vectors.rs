@@ -444,9 +444,32 @@ impl IvfGroupWriter {
 #[derive(Debug, Default)]
 pub(crate) struct ClusterSink {
     fields: std::sync::Mutex<Vec<(i32, Arc<BufferRouter>)>>,
+    /// Each field's shared model, by field name and model id
+    /// ([`IndexWriter::set_ivf_model_for_field`]).
+    ///
+    /// [`IndexWriter::set_ivf_model_for_field`]: crate::index_writer::IndexWriter::set_ivf_model_for_field
+    models: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl ClusterSink {
+    /// Routes `field` to the model registered as `id`.
+    pub(crate) fn set_model(&self, field: &str, id: &str) {
+        let mut models = self
+            .models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        models.retain(|(name, _)| name != field);
+        models.push((field.to_string(), id.to_string()));
+    }
+
+    /// The `(field name, model id)` routes.
+    pub(crate) fn models(&self) -> Vec<(String, String)> {
+        self.models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Keeps `clusters`, replacing their fields' earlier ones unless those
     /// have more than twice as many clusters: flushes finish in any order,
     /// and a small one (a refresh of a few documents) would leave later

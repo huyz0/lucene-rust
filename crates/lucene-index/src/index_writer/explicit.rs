@@ -1227,7 +1227,6 @@ impl IndexingConfig {
                         buf.graphs,
                         buf.old_to_new,
                         &self.ivf_clusters,
-                        &self.ivf_models,
                         &segment_id,
                     )?
                 };

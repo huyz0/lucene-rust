@@ -8,8 +8,7 @@ quantizer chosen by `IVF_QUANTIZERS`: `bbq`, `osq2`/`osq4`/`osq7`,
 `erq2`-`erq8`, `rabitq`), which the OpenSearch plugin's opt-in `extended`
 engine maps to (`method: ivf`). The same quantizers code
 `HnswQuantizedVectorsFormat`'s graph walks (`method: hnsw`). The quantizers reuse Lucene's
-(`OptimizedScalarQuantizer`, `ScalarQuantizer`). Benchmarks:
-`crates/lucene-ivf/examples/ivf_bench.rs`, `benchmarks/ivf/`.
+`OptimizedScalarQuantizer` and `ScalarQuantizer`. Benchmarks: `benchmarks/ivf/`.
 
 | Java | Rust | Status |
 |---|---|---|
