@@ -633,6 +633,7 @@ impl IndexingConfig {
             lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
             zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
             knn_vectors_formats: self.knn_vectors_formats.clone(),
+            ivf_models: self.ivf_clusters.models(),
             codec: self.codec.clone(),
             reorder,
             sorted_numeric_remap: plan.sorted_numeric_remap.clone(),

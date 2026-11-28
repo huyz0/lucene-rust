@@ -35,6 +35,8 @@ pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
 /// [`KnnVectorsFormat::Ivf`]'s SPI name.
 pub const IVF_NAME: &str = "IvfVectorsFormat";
+/// [`KnnVectorsFormat::IvfModel`]'s SPI name.
+pub const IVF_MODEL_NAME: &str = "IvfModelVectorsFormat";
 /// [`KnnVectorsFormat::HnswQuantized`]'s SPI name.
 pub const HNSW_QUANTIZED_NAME: &str = "HnswQuantizedVectorsFormat";
 /// [`KnnVectorsFormat::HnswDisk`]'s SPI name.
@@ -114,6 +116,12 @@ pub enum KnnVectorsFormat {
         rerank_encoding: u8,
         quantizer: u8,
     },
+    /// [`Self::Ivf`]'s files for fields clustered by a shared model (a
+    /// `lucene_ivf::SharedModel` the writer holds by field name): the
+    /// clustering is the model's, so the format names only the model's
+    /// quantizer (`pq` or `flat`) and the rerank encoding. A segment's `.ivm`
+    /// records the model id; a reader needs the model to open the field.
+    IvfModel { rerank_encoding: u8, quantizer: u8 },
     /// This engine's quantized HNSW ([`HNSW_QUANTIZED_NAME`]): [`Self::Hnsw`]'s
     /// files, the graph built on the raw vectors, plus the
     /// [`IVF_QUANTIZERS`]`[quantizer]` code of every vector (`.vqm`/`.vqd`),
@@ -219,6 +227,37 @@ impl KnnVectorsFormat {
             rerank_encoding,
             quantizer,
         })
+    }
+
+    /// [`KnnVectorsFormat::IvfModel`], checked: a known rerank encoding and a
+    /// quantizer that lives in a shared model (`pq` or `flat`).
+    pub fn ivf_model(rerank_encoding: u8, quantizer: u8) -> Result<Self, InvalidFormat> {
+        if usize::from(rerank_encoding) >= IVF_RERANK_ENCODINGS.len() {
+            return Err(InvalidFormat(format!(
+                "unknown IVF rerank encoding {rerank_encoding}"
+            )));
+        }
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len() || !is_model_quantizer(quantizer) {
+            return Err(InvalidFormat(format!(
+                "IVF quantizer {quantizer} does not live in a shared model"
+            )));
+        }
+        Ok(KnnVectorsFormat::IvfModel {
+            rerank_encoding,
+            quantizer,
+        })
+    }
+
+    /// The `(rerank_encoding, quantizer)` of an [`KnnVectorsFormat::IvfModel`]
+    /// format, `None` for any other.
+    pub fn ivf_model_params(&self) -> Option<(u8, u8)> {
+        match *self.files_format() {
+            KnnVectorsFormat::IvfModel {
+                rerank_encoding,
+                quantizer,
+            } => Some((rerank_encoding, quantizer)),
+            _ => None,
+        }
     }
 
     /// The IVF parameters `(target_cluster_size, rerank_encoding,
@@ -365,6 +404,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
             KnnVectorsFormat::Ivf { .. } => IVF_NAME,
+            KnnVectorsFormat::IvfModel { .. } => IVF_MODEL_NAME,
             KnnVectorsFormat::HnswQuantized { .. } => HNSW_QUANTIZED_NAME,
             KnnVectorsFormat::HnswDisk { .. } => HNSW_DISK_NAME,
         }
@@ -403,6 +443,7 @@ impl KnnVectorsFormat {
             } => Some((max_conn, beam_width)),
             KnnVectorsFormat::ScalarQuantized { .. }
             | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::IvfModel { .. }
             | KnnVectorsFormat::Named { .. } => None,
         }
     }
@@ -414,6 +455,7 @@ impl KnnVectorsFormat {
             | KnnVectorsFormat::HnswHamming { .. }
             | KnnVectorsFormat::HnswHalfFloat { .. }
             | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::IvfModel { .. }
             | KnnVectorsFormat::HnswQuantized { .. }
             | KnnVectorsFormat::HnswDisk { .. }
             | KnnVectorsFormat::Named { .. } => None,
@@ -485,6 +527,10 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
             target_cluster_size: 384,
             rerank_encoding: 1,
             quantizer: 0,
+        },
+        KnnVectorsFormat::IvfModel {
+            rerank_encoding: 0,
+            quantizer: IVF_FLAT_QUANTIZER,
         },
         KnnVectorsFormat::HnswQuantized {
             quantizer: 4,
@@ -653,6 +699,29 @@ mod tests {
         assert_eq!(
             for_name(HNSW_DISK_NAME).map(|f| f.name()),
             Some(HNSW_DISK_NAME)
+        );
+    }
+
+    #[test]
+    fn ivf_model_format_names_its_quantizer_and_has_no_cluster_size() {
+        let pq = KnnVectorsFormat::ivf_model(1, IVF_PQ_QUANTIZER).unwrap();
+        assert_eq!(pq.name(), IVF_MODEL_NAME);
+        assert_eq!(pq.ivf_model_params(), Some((1, IVF_PQ_QUANTIZER)));
+        // The shared model, not the format, holds the clustering.
+        assert_eq!(pq.ivf_params(), None);
+        assert_eq!(pq.graph(), None);
+        assert_eq!(pq.quantization(), None);
+        let flat = KnnVectorsFormat::ivf_model(0, IVF_FLAT_QUANTIZER).unwrap();
+        assert_eq!(flat.ivf_model_params(), Some((0, IVF_FLAT_QUANTIZER)));
+        assert_eq!(KnnVectorsFormat::default().ivf_model_params(), None);
+        // Only a quantizer that lives in a model, and a known rerank encoding.
+        assert!(KnnVectorsFormat::ivf_model(0, 0).is_err());
+        assert!(KnnVectorsFormat::ivf_model(0, IVF_AUTO_QUANTIZER).is_err());
+        assert!(KnnVectorsFormat::ivf_model(0, 99).is_err());
+        assert!(KnnVectorsFormat::ivf_model(9, IVF_PQ_QUANTIZER).is_err());
+        assert_eq!(
+            for_name(IVF_MODEL_NAME).map(|f| f.name()),
+            Some(IVF_MODEL_NAME)
         );
     }
 }

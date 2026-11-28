@@ -5,6 +5,22 @@
 use super::*;
 
 impl IndexWriter<'_> {
+    /// Clusters the vectors of `field` by the shared `model` (its centroids
+    /// and quantizer), for a field routed to
+    /// [`per_field_knn_vectors::KnnVectorsFormat::IvfModel`] by
+    /// [`Self::set_knn_vectors_format_for_field`]. The model is registered
+    /// ([`crate::ivf_vectors::register_model`]) so the segments written can
+    /// be read back. Flushes and merges after this call write it; existing
+    /// segments keep the model they name.
+    pub fn set_ivf_model_for_field(
+        &mut self,
+        field: &str,
+        model: &std::sync::Arc<lucene_ivf::SharedModel>,
+    ) {
+        crate::ivf_vectors::register_model(model.clone());
+        self.cfg.ivf_clusters.set_model(field, model.id());
+    }
+
     /// Builds this flush's `.vec`/`.vemf`/`.vem`/`.vex` bytes for every field
     /// opted in through [`IndexWriter::set_vector_field`] --
     /// `Lucene99HnswVectorsWriter.flush`, whose two halves are
@@ -174,6 +190,10 @@ impl IndexWriter<'_> {
                 graphs,
                 old_to_new,
                 clusters,
+                &crate::ivf_vectors::models_for(
+                    &clusters.models(),
+                    names.iter().map(|(n, s)| (*n, s.as_str())),
+                ),
                 segment_id,
                 &suffix,
                 partitions,
@@ -280,6 +300,7 @@ impl IndexWriter<'_> {
         graphs: &[BufferGraphField],
         old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
+        ivf_models: &[(i32, std::sync::Arc<lucene_ivf::SharedModel>)],
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
         partitions: Option<crate::ivf_vectors::Partitions<'_>>,
@@ -327,7 +348,11 @@ impl IndexWriter<'_> {
         }
 
         let ivf = if indexes {
-            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
+            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?.map(|ivf| {
+                ivf_models.iter().fold(ivf, |ivf, (number, model)| {
+                    ivf.with_model(*number, model.clone())
+                })
+            })
         } else {
             None
         };
