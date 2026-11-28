@@ -84,12 +84,32 @@ scan so batches share it, 1M-row chunks in the Polars adapter (2 columns 101 →
 
 ## What loses, and what was tried
 
-- Keyword columns in Polars and DuckDB: their Parquet readers return
-  dictionary pages without building anything, while a dictionary array from the
-  index is converted (Polars to Categorical, DuckDB to its own dictionary
-  vector). Returning plain strings was slower in both (DuckDB 147 ms,
-  Polars 149 ms). A group-by on the keyword through DuckDB: 52 ms against
-  Parquet's 24 ms (the same query on long columns: 41 against 75 ms).
+- Keyword columns in Polars and DuckDB. Measured on the 10M-row index, 4
+  vCPUs, with the pieces timed apart:
+  - *The scan is not the gap.* Two keyword columns read into pyarrow take
+    24-28 ms (Parquet into pyarrow: 117 ms); DuckDB pulls the same two columns
+    through its Arrow scan in 10 ms.
+  - *Polars* gets the two columns as dictionary arrays and converts them to
+    `Categorical` in `from_arrow`: 15 ms for 20M values (40 ms when each 64K-row
+    batch is converted alone, which the adapter's 1M-row chunks avoid). Its
+    Parquet reader decodes dictionary pages straight into `String` in 26 ms.
+    Other ways to hand Polars the column were slower: plain `Utf8` 67-149 ms,
+    `Utf8View` 129 ms (arrow-rs validates every view; skipping that needs
+    `unsafe` and was not adopted), an `Enum` cast of the keys 53 ms.
+  - *DuckDB* spends the time in its aggregate, not the scan: a group-by on
+    both keywords costs 30 ns per row on one thread from the index's
+    dictionary arrays against 14 ns from Parquet, and the same 30 ns from a
+    pyarrow table already in memory, so it is how DuckDB handles Arrow
+    dictionaries and not our stream. 8- and 16-bit keys, plain strings (485 ms
+    against 374 ms) and `Utf8View` (408 ms) are no better. Streaming adds about
+    10 ms over an in-memory table (41 against 30 ms for one keyword).
+  - Skipping arrow-rs's per-batch key check in the dictionary array would take a
+    keyword column from 2.3 to 1.5 ns per row inside the library (pyarrow 28 to
+    24 ms) and changes nothing in Polars or DuckDB; it needs `unsafe` in a crate
+    that forbids it, so it was left out.
+  - Where this matters, a filter on the keyword (`host = ...`) or a projection
+    that leaves it out still wins: the keyword is answered by term search or
+    ordinals, not decoded.
 - A column scan of a stored key (`id`) is not in the tables: it is one
   stored-fields read per row.
 
