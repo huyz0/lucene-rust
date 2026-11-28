@@ -335,7 +335,7 @@ def _launch(name, wait=True, timeout=300):
         cmd += ["-E", f"transport.port={st['transport']}"]
     if not any(s.startswith(("discovery.", "cluster.initial_cluster_manager_nodes")) for s in st["settings"]):
         cmd += ["-E", "discovery.type=single-node"]
-    if os.path.isdir(os.path.join(d, "plugins", "opensearch-security")):
+    if os.path.isdir(os.path.join(d, "plugins", "opensearch-security")) and not os.environ.get("NODECTL_SECURITY"):
         cmd += ["-E", "plugins.security.disabled=true"]
     for s in st["settings"]:
         cmd += ["-E", s]
