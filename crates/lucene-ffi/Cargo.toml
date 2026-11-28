@@ -45,8 +45,22 @@ lucene-ml = { path = "../lucene-ml", default-features = false }
 libloading = "0.9"
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
+# The Arrow source (`arrow_source.rs`, feature `arrow`): the table export as a
+# C stream interface for pyarrow, Polars, DuckDB and the Spark connector.
+lucene-sql = { path = "../lucene-sql", default-features = false, optional = true }
+serde_json = { version = "1", optional = true }
+# The Spark connector's entry points (`arrow_jni.rs`, feature `spark`).
+jni = { version = "0.21", optional = true }
 
 [features]
+# The Arrow C stream export over a table of an index. Not in the plugin.
+arrow = ["dep:lucene-sql", "dep:serde_json"]
+# The same with SQL (`ffi_arrow_sql`): adds DataFusion to the library.
+arrow-sql = ["arrow", "lucene-sql/sql"]
+# JNI entry points for the Spark connector (`connectors/spark`): the same
+# streams, started from a JVM that imports them with Arrow Java's C data
+# interface.
+spark = ["arrow", "dep:jni"]
 default = [
     "crypto",
     "analysis-icu",

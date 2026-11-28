@@ -4,7 +4,7 @@
 //! directly; the DataFusion table provider calls them from its scans, so the
 //! two paths cannot disagree about what a predicate means.
 
-use datafusion::arrow::array::RecordBatch;
+use arrow::array::RecordBatch;
 use lucene_search::knn_search::{knn_top_hits, KnnTarget};
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 
@@ -31,15 +31,6 @@ pub(crate) fn any_of(field: &str, terms: &[String]) -> BooleanQuery {
         minimum_should_match: 1,
         ..BooleanQuery::default()
     }
-}
-
-/// `filters` (field, term) as one clause every document must match, scoring
-/// nothing.
-pub(crate) fn all_of(filters: &[(String, String)]) -> Clause {
-    Clause::Boolean(Box::new(BooleanQuery {
-        filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
-        ..BooleanQuery::default()
-    }))
 }
 
 impl Snapshot {
@@ -161,4 +152,27 @@ pub(crate) fn knn_in(
         filter,
     )?;
     Ok(hits.iter().map(|h| (h.doc_id, Some(h.score))).collect())
+}
+
+struct CollectAll(Vec<i32>);
+
+impl lucene_search::collector::ScoringCollector for CollectAll {
+    fn collect(&mut self, doc_id: i32, _score: f32) {
+        self.0.push(doc_id);
+    }
+}
+
+/// Every live document matching all of `filters` (field, term), by global
+/// doc id in ascending order.
+pub(crate) fn matching_docs(
+    s: &Searcher<'_, '_>,
+    filters: &[(String, String)],
+) -> Result<Vec<i32>> {
+    let q = BooleanQuery {
+        filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
+        ..BooleanQuery::default()
+    };
+    let mut c = CollectAll(Vec::new());
+    s.searcher.search_collector(&q, &mut c)?;
+    Ok(c.0)
 }

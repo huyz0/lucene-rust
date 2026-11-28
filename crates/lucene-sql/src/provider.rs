@@ -27,9 +27,20 @@ use lucene_search::query::BooleanQuery;
 
 use crate::columns::{Columns, WINDOW};
 use crate::error::{external, Error};
-use crate::native::{all_of, any_of, check_dimension, knn_in, term_clause, Hit};
+use crate::native::{any_of, check_dimension, knn_in, term_clause, Hit};
 use crate::pred::{self, Pred};
 use crate::snapshot::{Searcher, Snapshot};
+
+use lucene_search::query::Clause;
+
+/// `filters` (field, term) as one clause every document must match, scoring
+/// nothing.
+fn all_of(filters: &[(String, String)]) -> Clause {
+    Clause::Boolean(Box::new(BooleanQuery {
+        filter: filters.iter().map(|(f, t)| term_clause(f, t)).collect(),
+        ..BooleanQuery::default()
+    }))
+}
 
 /// Neighbours a `knn()` predicate yields when no `LIMIT` reached the scan.
 pub const KNN_DEFAULT_K: usize = 100;
