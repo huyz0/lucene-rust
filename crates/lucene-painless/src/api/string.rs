@@ -30,7 +30,9 @@ pub fn substring(s: &str, a: i32, b: i32) -> Result<String, Throw> {
         s.encode_utf16().count()
     } as i32;
     if a < 0 || b > len || a > b {
-        return Err(sioobe(format!("begin {a}, end {b}, length {len}")));
+        return Err(sioobe(format!(
+            "Range [{a}, {b}) out of bounds for length {len}"
+        )));
     }
     if s.is_ascii() {
         return Ok(s[a as usize..b as usize].to_string());
@@ -309,11 +311,6 @@ fn split_on_token(s: &str, token: &str, limit: i32) -> Result<Vec<String>, Throw
             }
         }
     }
-    if limit == 0 {
-        while out.last().is_some_and(String::is_empty) {
-            out.pop();
-        }
-    }
     let _ = compare::str_cmp;
     Ok(out)
 }
@@ -429,16 +426,34 @@ pub fn static_lookup(name: &str, arity: usize) -> Option<ApiFn> {
                     .join(&sep),
             ))
         },
-        ("format", 2) => |_vm, a| Ok(Value::string(format(&str_arg(&a[0])?, &varargs(&a[1]))?)),
-        ("format", 3) => |_vm, a| Ok(Value::string(format(&str_arg(&a[1])?, &varargs(&a[2]))?)),
+        ("format", 2) => |_vm, a| Ok(Value::string(format(&str_arg(&a[0])?, &varargs(&a[1])?)?)),
+        ("format", 3) => |_vm, a| Ok(Value::string(format(&str_arg(&a[1])?, &varargs(&a[2])?)?)),
         _ => return None,
     })
 }
 
-fn varargs(v: &Value) -> Vec<Value> {
+/// The `def[]` a `String.format` takes: a lone value that reaches it through a `def` is
+/// not an array, which the JVM refuses.
+fn varargs(v: &Value) -> Result<Vec<Value>, Throw> {
     match v {
-        Value::Array(a) => a.borrow().items.clone(),
-        other => vec![other.clone()],
+        Value::Array(a) => Ok(a.borrow().items.clone()),
+        Value::Null => Ok(Vec::new()),
+        other => {
+            let from = match other {
+                Value::Bool(_) => "boolean".to_string(),
+                Value::Byte(_) => "byte".into(),
+                Value::Short(_) => "short".into(),
+                Value::Char(_) => "char".into(),
+                Value::Int(_) => "int".into(),
+                Value::Long(_) => "long".into(),
+                Value::Float(_) => "float".into(),
+                Value::Double(_) => "double".into(),
+                o => format!("class {}", o.class_name()),
+            };
+            Err(Throw::class_cast(format!(
+                "Cannot cast from: {from} to class [Ljava.lang.Object;"
+            )))
+        }
     }
 }
 
@@ -1110,7 +1125,9 @@ impl JObject for JStringBuilder {
                     let s = self.buf.borrow().clone();
                     let n = len16(&s) as i32;
                     if i < 0 || i > n {
-                        return Err(sioobe(format!("offset {i}, length {n}")));
+                        return Err(sioobe(format!(
+                            "Range [{i}, {n}) out of bounds for length {n}"
+                        )));
                     }
                     let new = format!(
                         "{}{}{}",
@@ -1126,7 +1143,9 @@ impl JObject for JStringBuilder {
                     let n = len16(&s) as i32;
                     let (a, b) = (int_arg(&args[0])?, int_arg(&args[1])?.min(n));
                     if a < 0 || a > b {
-                        return Err(sioobe(format!("start {a}, end {b}, length {n}")));
+                        return Err(sioobe(format!(
+                            "Range [{a}, {b}) out of bounds for length {n}"
+                        )));
                     }
                     let new = format!("{}{}", substring(&s, 0, a)?, substring(&s, b, n)?);
                     *self.buf.borrow_mut() = new;
@@ -1137,7 +1156,7 @@ impl JObject for JStringBuilder {
                     let n = len16(&s) as i32;
                     let a = int_arg(&args[0])?;
                     if a < 0 || a >= n {
-                        return Err(sioobe(format!("index {a},length {n}")));
+                        return Err(sioobe(format!("Index {a} out of bounds for length {n}")));
                     }
                     let new = format!("{}{}", substring(&s, 0, a)?, substring(&s, a + 1, n)?);
                     *self.buf.borrow_mut() = new;
@@ -1179,7 +1198,9 @@ impl JObject for JStringBuilder {
                     };
                     let n = u.len();
                     *u.get_mut(usize::try_from(i).unwrap_or(usize::MAX))
-                        .ok_or_else(|| sioobe(format!("index {i},length {n}")))? = c;
+                        .ok_or_else(|| {
+                            sioobe(format!("Index {i} out of bounds for length {n}"))
+                        })? = c;
                     *self.buf.borrow_mut() = from_utf16(&u);
                     Value::Null
                 }

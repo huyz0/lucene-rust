@@ -1047,6 +1047,9 @@ public class AcceleratedSearchPlugin extends Plugin implements
                 )
             );
         HybridSearch.initialize(threadPool);
+        if (directSearch != null) {
+            directSearch.executor(threadPool.executor(org.opensearch.threadpool.ThreadPool.Names.SEARCH));
+        }
         org.lucenerust.opensearch.store.PageCacheAccounting.start(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
         NeuralSparseQueryBuilder.initialize(mlClient());
@@ -1087,7 +1090,7 @@ public class AcceleratedSearchPlugin extends Plugin implements
                 org.opensearch.rest.RestChannel channel,
                 org.opensearch.transport.client.node.NodeClient client
             ) throws Exception {
-                if (directSearch.handle(request, channel) == false) {
+                if (directSearch.handle(request, channel, () -> handler.handleRequest(request, channel, client)) == false) {
                     handler.handleRequest(request, channel, client);
                 }
             }

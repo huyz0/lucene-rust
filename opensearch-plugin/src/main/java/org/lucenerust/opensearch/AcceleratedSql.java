@@ -66,6 +66,8 @@ public final class AcceleratedSql {
 
     private static final org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(AcceleratedSql.class);
 
+    private static final String HANDLER_NAME = "accelerated_sql";
+
     /** The path of the endpoint. */
     public static final String PATH = "/_plugins/accelerated/sql";
 
@@ -286,7 +288,7 @@ public final class AcceleratedSql {
         static byte[] run(IndexShard shard, IndexService service, String name, String sql) throws IOException {
             SqlTables.Table table = table(service.index().getName(), name, service);
             long start = System.nanoTime();
-            try (Engine.Searcher searcher = shard.acquireSearcher("accelerated_sql")) {
+            try (Engine.Searcher searcher = shard.acquireSearcher("sql_statement")) {
                 NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
                 if (acquired.handle() == 0) {
                     throw new OpenSearchStatusException(
@@ -316,7 +318,7 @@ public final class AcceleratedSql {
             return switch (e.status()) {
                 case NativeBridge.MEMORY_LIMIT, NativeBridge.TOO_MANY_BUCKETS -> RestStatus.TOO_MANY_REQUESTS;
                 case NativeBridge.CANCELLED -> RestStatus.REQUEST_TIMEOUT;
-                case NativeBridge.INVALID_ARGUMENT, NativeBridge.SEARCH_FAILED, NativeBridge.DECODE -> RestStatus.BAD_REQUEST;
+                case NativeBridge.INVALID_ARGUMENT, NativeBridge.SEARCH, NativeBridge.DECODE -> RestStatus.BAD_REQUEST;
                 default -> RestStatus.INTERNAL_SERVER_ERROR;
             };
         }
@@ -405,7 +407,7 @@ public final class AcceleratedSql {
 
         @Override
         public String getName() {
-            return "accelerated_sql";
+            return HANDLER_NAME;
         }
 
         @Override

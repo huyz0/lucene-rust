@@ -12,7 +12,8 @@ fn length_indexing_and_substrings_count_utf16_units() {
     assert_eq!(t(&s("hello"), "substring", &[i(1)]), "ello");
     assert_eq!(t(&s("hello"), "substring", &[i(1), i(3)]), "el");
     assert_eq!(t(&s("hello"), "subSequence", &[i(0), i(5)]), "hello");
-    assert!(t(&s("hello"), "substring", &[i(3), i(2)]).contains("begin 3, end 2, length 5"));
+    assert!(t(&s("hello"), "substring", &[i(3), i(2)])
+        .contains("Range [3, 2) out of bounds for length 5"));
     assert!(t(&s("hello"), "substring", &[i(-1), i(2)]).contains("StringIndexOutOfBounds"));
     assert_eq!(t(&g, "substring", &[i(0), i(1)]), "a");
 }
@@ -88,6 +89,17 @@ fn splitting_and_base64() {
         elems(call(&s("a,b,c"), "splitOnToken", &[s(","), i(2)])),
         "[a, b,c]"
     );
+    // unlike String.split, trailing empty strings stay, with no limit and with limit 0
+    assert_eq!(
+        elems(call(&s("a,b,,c,,"), "splitOnToken", &[s(",")])),
+        "[a, b, , c, , ]"
+    );
+    assert_eq!(
+        elems(call(&s("a,,"), "splitOnToken", &[s(","), i(0)])),
+        "[a, , ]"
+    );
+    assert_eq!(elems(call(&s(""), "splitOnToken", &[s(",")])), "[]");
+    assert_eq!(elems(call(&s(",,"), "splitOnToken", &[s(",")])), "[, , ]");
     assert_eq!(t(&s("hello"), "encodeBase64", &[]), "aGVsbG8=");
     assert_eq!(t(&s("aGVsbG8="), "decodeBase64", &[]), "hello");
     assert!(t(&s("***"), "decodeBase64", &[]).contains("IllegalArgument"));
@@ -194,6 +206,17 @@ fn string_statics_and_constructors() {
         )),
         "n=4"
     );
+    // a lone value that reached `String.format` through `def` is not the array the JVM wants
+    assert!(text(stat(
+        static_lookup,
+        "format",
+        &[s("%e"), Value::Double(0.5)]
+    ))
+    .contains("ClassCast"));
+    assert_eq!(
+        text(stat(static_lookup, "format", &[s("x"), Value::Null])),
+        "x"
+    );
     assert!(static_lookup("nope", 1).is_none());
     assert!(string_constructor(1).is_none());
     assert_eq!(
@@ -232,12 +255,13 @@ fn string_builder_edits_in_place() {
 #[test]
 fn string_builder_range_errors() {
     let b = builder("abc");
-    assert!(t(&b, "insert", &[i(9), s("x")]).contains("offset 9, length 3"));
+    assert!(t(&b, "insert", &[i(9), s("x")]).contains("Range [9, 3) out of bounds for length 3"));
     let r = t(&b, "delete", &[i(2), i(9)]);
     assert_eq!(r, "ab");
     assert!(t(&b, "delete", &[i(7), i(9)]).contains("StringIndexOutOfBounds"));
-    assert!(t(&b, "deleteCharAt", &[i(7)]).contains("index 7,length 2"));
-    assert!(t(&b, "setCharAt", &[i(7), Value::Char('x' as u16)]).contains("index 7,length 2"));
+    assert!(t(&b, "deleteCharAt", &[i(7)]).contains("Index 7 out of bounds for length 2"));
+    assert!(t(&b, "setCharAt", &[i(7), Value::Char('x' as u16)])
+        .contains("Index 7 out of bounds for length 2"));
     assert!(t(&b, "setCharAt", &[i(0), i(1)]).contains("ClassCast"));
     assert!(builder_constructor(1).is_some());
 }
