@@ -341,10 +341,12 @@ impl ExecutionPlan for SegScanExec {
         ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let scope = crate::scope::of(&ctx);
-        let batches = lucene_util::memory::within(scope.as_ref(), || self.run(partition)).map_err(|e| match e {
-            Error::DataFusion(d) => d,
-            other => external(other),
-        })?;
+        let batches = lucene_util::memory::within(scope.as_ref(), || self.run(partition)).map_err(
+            |e| match e {
+                Error::DataFusion(d) => d,
+                other => external(other),
+            },
+        )?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
             futures::stream::iter(batches.into_iter().map(Ok)),

@@ -290,11 +290,11 @@ impl ExecutionPlan for GroupScanExec {
             self.snapshot.group_by(self.key, &self.aggs, &self.preds)
         })
         .map_err(external)?
-            .ok_or_else(|| {
-                external(KernelInexact(
-                    "a document has no group key, or a sum or extreme is beyond 2^53".into(),
-                ))
-            })?;
+        .ok_or_else(|| {
+            external(KernelInexact(
+                "a document has no group key, or a sum or extreme is beyond 2^53".into(),
+            ))
+        })?;
         let mut columns = vec![grouped.keys];
         columns.extend(grouped.aggs);
         let batch = datafusion::arrow::array::RecordBatch::try_new(self.schema.clone(), columns)?;
