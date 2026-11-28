@@ -136,7 +136,7 @@ miniz_oxide = "0.9"
 # `zstd_no_dict` stored fields of OpenSearch's custom-codecs plugin
 # (`lucene-zstd`). `default-features = false` drops the legacy and
 # multithreaded-compression parts nothing here uses.
-zstd-safe = { version = "8", default-features = false, features = ["std"] }
+zstd-safe = { version = "8.4", default-features = false, features = ["std"] }
 unicode-segmentation = "1"
 rayon = "1"
 proptest = "1"

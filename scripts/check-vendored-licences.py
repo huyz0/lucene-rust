@@ -65,6 +65,9 @@ VENDORED = {
     "crates/lucene-painless/src/api": [
         ("this project's JDK-generated Painless API test tables (Apache-2.0)", "LICENSE", APACHE),
     ],
+    "fixtures/data/painless-moving": [
+        ("this project's JDK-generated Painless moving-function test tables (Apache-2.0)", "LICENSE", APACHE),
+    ],
     "crates/lucene-painless/src/front": [
         ("OpenSearch's Painless allowlist (spi/*.txt) as a table (Apache-2.0)", "LICENSE", APACHE),
     ],
