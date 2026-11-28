@@ -309,11 +309,6 @@ fn split_on_token(s: &str, token: &str, limit: i32) -> Result<Vec<String>, Throw
             }
         }
     }
-    if limit == 0 {
-        while out.last().is_some_and(String::is_empty) {
-            out.pop();
-        }
-    }
     let _ = compare::str_cmp;
     Ok(out)
 }
@@ -429,16 +424,34 @@ pub fn static_lookup(name: &str, arity: usize) -> Option<ApiFn> {
                     .join(&sep),
             ))
         },
-        ("format", 2) => |_vm, a| Ok(Value::string(format(&str_arg(&a[0])?, &varargs(&a[1]))?)),
-        ("format", 3) => |_vm, a| Ok(Value::string(format(&str_arg(&a[1])?, &varargs(&a[2]))?)),
+        ("format", 2) => |_vm, a| Ok(Value::string(format(&str_arg(&a[0])?, &varargs(&a[1])?)?)),
+        ("format", 3) => |_vm, a| Ok(Value::string(format(&str_arg(&a[1])?, &varargs(&a[2])?)?)),
         _ => return None,
     })
 }
 
-fn varargs(v: &Value) -> Vec<Value> {
+/// The `def[]` a `String.format` takes: a lone value that reaches it through a `def` is
+/// not an array, which the JVM refuses.
+fn varargs(v: &Value) -> Result<Vec<Value>, Throw> {
     match v {
-        Value::Array(a) => a.borrow().items.clone(),
-        other => vec![other.clone()],
+        Value::Array(a) => Ok(a.borrow().items.clone()),
+        Value::Null => Ok(Vec::new()),
+        other => {
+            let from = match other {
+                Value::Bool(_) => "boolean".to_string(),
+                Value::Byte(_) => "byte".into(),
+                Value::Short(_) => "short".into(),
+                Value::Char(_) => "char".into(),
+                Value::Int(_) => "int".into(),
+                Value::Long(_) => "long".into(),
+                Value::Float(_) => "float".into(),
+                Value::Double(_) => "double".into(),
+                o => format!("class {}", o.class_name()),
+            };
+            Err(Throw::class_cast(format!(
+                "Cannot cast from: {from} to class [Ljava.lang.Object;"
+            )))
+        }
     }
 }
 

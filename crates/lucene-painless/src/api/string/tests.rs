@@ -88,6 +88,17 @@ fn splitting_and_base64() {
         elems(call(&s("a,b,c"), "splitOnToken", &[s(","), i(2)])),
         "[a, b,c]"
     );
+    // unlike String.split, trailing empty strings stay, with no limit and with limit 0
+    assert_eq!(
+        elems(call(&s("a,b,,c,,"), "splitOnToken", &[s(",")])),
+        "[a, b, , c, , ]"
+    );
+    assert_eq!(
+        elems(call(&s("a,,"), "splitOnToken", &[s(","), i(0)])),
+        "[a, , ]"
+    );
+    assert_eq!(elems(call(&s(""), "splitOnToken", &[s(",")])), "[]");
+    assert_eq!(elems(call(&s(",,"), "splitOnToken", &[s(",")])), "[, , ]");
     assert_eq!(t(&s("hello"), "encodeBase64", &[]), "aGVsbG8=");
     assert_eq!(t(&s("aGVsbG8="), "decodeBase64", &[]), "hello");
     assert!(t(&s("***"), "decodeBase64", &[]).contains("IllegalArgument"));
@@ -193,6 +204,17 @@ fn string_statics_and_constructors() {
             &[s("%s=%d"), Value::array("def", vec![s("n"), i(4)])]
         )),
         "n=4"
+    );
+    // a lone value that reached `String.format` through `def` is not the array the JVM wants
+    assert!(text(stat(
+        static_lookup,
+        "format",
+        &[s("%e"), Value::Double(0.5)]
+    ))
+    .contains("ClassCast"));
+    assert_eq!(
+        text(stat(static_lookup, "format", &[s("x"), Value::Null])),
+        "x"
     );
     assert!(static_lookup("nope", 1).is_none());
     assert!(string_constructor(1).is_none());
