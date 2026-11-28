@@ -83,6 +83,18 @@ written), `method.engine` picks the k-NN engine. `extended` needs
 it: with it on, a document carrying a `__accelerated_panic` field makes the
 writer panic.
 
+### SQL endpoint
+
+`/_plugins/accelerated/sql` serves read-only SQL over one index with one shard, next to the stock `/_plugins/_sql`.
+Node settings (static):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `plugins.accelerated.sql.enabled` | `true` | serve the endpoint |
+| `plugins.accelerated.sql.direct` | `true` | answer from the REST layer when this node holds the index; never used with the security plugin, which sees the request through the transport action instead |
+| `plugins.accelerated.sql.max_rows` | `10000` | the most rows a statement may return; a statement that returns more fails |
+| `plugins.accelerated.sql.memory_limit` | `512mb` | what one table's operators (sorts, aggregations) may hold at once |
+
 ### Hot rows (update coalescing)
 
 `index.hot_tier.max_memory` (index setting, final, default `8mb` a shard, `0` = off) holds the latest version of rows that are

@@ -920,6 +920,11 @@ fn scan_literals(
 /// How many templates the shape cache holds before it starts over.
 const MAX_TEMPLATES: usize = 4096;
 
+/// The longest template the shape cache keeps: a longer statement is
+/// recognised again each time, so the cache holds at most `MAX_TEMPLATES`
+/// short strings, whatever the statements are.
+pub(crate) const MAX_TEMPLATE_BYTES: usize = 2048;
+
 /// The shape cache and the executor of recognised shapes over one snapshot.
 pub struct Router {
     snapshot: Arc<Snapshot>,
@@ -938,7 +943,9 @@ impl Router {
     /// The shape of `sql` with its literals bound, when it is one.
     pub fn shape(&self, sql: &str) -> Option<Shape> {
         let (template, lits) = templatize(sql)?;
-        let (cached, slots) = {
+        let (cached, slots) = if template.len() > MAX_TEMPLATE_BYTES {
+            recognise(&template, self.snapshot.spec())
+        } else {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if cache.len() >= MAX_TEMPLATES && !cache.contains_key(&template) {
                 cache.clear();
